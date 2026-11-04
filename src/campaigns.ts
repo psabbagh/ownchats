@@ -1,6 +1,18 @@
 import { matchesKeyword, parseKeywords } from "./match";
 import { plainText, type Button, type OutMessage } from "./meta/client";
 
+/**
+ * none: link only. optional: the link, plus an optional "reply with your email".
+ * first: ask for the email, re-ask once, then send the link either way.
+ */
+export type EmailMode = "none" | "optional" | "first";
+export const EMAIL_MODES: EmailMode[] = ["none", "optional", "first"];
+
+export interface Link {
+  label: string;
+  url: string;
+}
+
 export interface Campaign {
   id: number;
   name: string;
@@ -9,14 +21,19 @@ export interface Campaign {
   mediaId: string | null;
   mediaLabel: string | null;
   publicReplies: string[];
+  /** Index of the public reply used last, so the next one differs. */
+  replyCursor: number;
   openingText: string;
   openingButton: string;
-  askEmail: boolean;
+  emailMode: EmailMode;
   emailPrompt: string;
   emailReask: string;
+  emailThanks: string;
+  optionalPrompt: string;
+  optionalThanks: string;
+  consentText: string;
   linkText: string;
-  linkUrl: string;
-  linkButton: string;
+  links: Link[];
   dmKeyword: boolean;
   active: boolean;
   createdAt: number;
@@ -31,14 +48,18 @@ interface CampaignRow {
   media_id: string | null;
   media_label: string | null;
   public_replies: string;
+  reply_cursor: number;
   opening_text: string;
   opening_button: string;
-  ask_email: number;
+  email_mode: string;
   email_prompt: string;
   email_reask: string;
+  email_thanks: string;
+  optional_prompt: string;
+  optional_thanks: string;
+  consent_text: string;
   link_text: string;
-  link_url: string;
-  link_button: string;
+  links: string;
   dm_keyword: number;
   active: number;
   created_at: number;
@@ -54,14 +75,18 @@ function fromRow(r: CampaignRow): Campaign {
     mediaId: r.media_id,
     mediaLabel: r.media_label,
     publicReplies: JSON.parse(r.public_replies) as string[],
+    replyCursor: r.reply_cursor,
     openingText: r.opening_text,
     openingButton: r.opening_button,
-    askEmail: !!r.ask_email,
+    emailMode: (EMAIL_MODES as string[]).includes(r.email_mode) ? (r.email_mode as EmailMode) : "none",
     emailPrompt: r.email_prompt,
     emailReask: r.email_reask,
+    emailThanks: r.email_thanks,
+    optionalPrompt: r.optional_prompt,
+    optionalThanks: r.optional_thanks,
+    consentText: r.consent_text,
     linkText: r.link_text,
-    linkUrl: r.link_url,
-    linkButton: r.link_button,
+    links: JSON.parse(r.links) as Link[],
     dmKeyword: !!r.dm_keyword,
     active: !!r.active,
     createdAt: r.created_at,
@@ -80,68 +105,66 @@ export async function getCampaign(db: D1Database, id: number): Promise<Campaign 
   return row ? fromRow(row) : null;
 }
 
-/** Wording a new campaign starts with. Plain, and says where the DM may land. */
+/** Wording a new campaign starts with, so it works without editing. */
 export const DEFAULTS = {
   publicReplies: [
     "Sent! Check your DMs, it may be under message requests.",
     "Just sent it to your DMs. Look in message requests if you don't see it.",
     "Done, check your DMs (or your message requests).",
   ],
-  openingText: "Hey! Thanks for your comment. Tap the button and I'll send it over.",
+  openingText: "Hey {name}! Thanks for your comment. Tap the button and I'll send it over.",
   openingButton: "Send me the link",
   emailPrompt: "What's your email? I'll send you the link here, and you'll also get my newsletter. You can unsubscribe anytime.",
   emailReask: "Hmm, that doesn't look like an email address. Could you type it again? (Or reply anything and I'll just send the link.)",
+  emailThanks: "Thanks! Here it is:",
+  optionalPrompt: "Want more like this? Reply with your email and I'll add you to my newsletter. You can unsubscribe anytime.",
+  optionalThanks: "Thanks, you're on the list!",
   linkText: "Here you go:",
-  linkButton: "Open",
+  linkLabel: "Open",
 };
 
-// Meta's limits for button templates: 640 characters of text, 20 per button title.
+// Meta's limits: 640 characters of text in a button template, 1000 in a text
+// message, up to 3 buttons, and 20 characters per button label.
 const MAX_TEMPLATE_TEXT = 640;
 const MAX_TEXT = 1000;
 const MAX_BUTTON = 20;
+const MAX_LINKS = 3;
 
-export interface CampaignInput {
-  name: string;
-  keywords: string[];
-  anyComment: boolean;
-  mediaId: string | null;
-  mediaLabel: string | null;
-  publicReplies: string[];
-  openingText: string;
-  openingButton: string;
-  askEmail: boolean;
-  emailPrompt: string;
-  emailReask: string;
-  linkText: string;
-  linkUrl: string;
-  linkButton: string;
-  dmKeyword: boolean;
-  active: boolean;
-}
+export type CampaignInput = Omit<Campaign, "id" | "replyCursor" | "createdAt" | "updatedAt">;
 
 /** Reads the dashboard form. Returns the input and a list of problems, in plain words. */
 export function campaignFromForm(form: FormData): { input: CampaignInput; errors: string[] } {
   const text = (k: string) => String(form.get(k) ?? "").trim();
-  const replies = text("public_replies")
-    .split("\n")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const lines = (k: string) =>
+    text(k)
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
   const mediaId = text("media_id");
+  const mode = text("email_mode");
+  const links: Link[] = [];
+  for (let i = 0; i < MAX_LINKS; i++) {
+    const url = text(`link_url_${i}`);
+    if (url) links.push({ url, label: text(`link_label_${i}`) });
+  }
   const input: CampaignInput = {
     name: text("name"),
     keywords: parseKeywords(text("keywords")),
     anyComment: form.get("any_comment") === "on",
     mediaId: mediaId && mediaId !== "all" ? mediaId : null,
     mediaLabel: mediaId && mediaId !== "all" ? text("media_label") || null : null,
-    publicReplies: replies,
+    publicReplies: lines("public_replies"),
     openingText: text("opening_text"),
     openingButton: text("opening_button"),
-    askEmail: form.get("ask_email") === "on",
+    emailMode: (EMAIL_MODES as string[]).includes(mode) ? (mode as EmailMode) : "none",
     emailPrompt: text("email_prompt"),
     emailReask: text("email_reask"),
+    emailThanks: text("email_thanks"),
+    optionalPrompt: text("optional_prompt"),
+    optionalThanks: text("optional_thanks"),
+    consentText: text("consent_text"),
     linkText: text("link_text"),
-    linkUrl: text("link_url"),
-    linkButton: text("link_button"),
+    links,
     dmKeyword: form.get("dm_keyword") === "on",
     active: form.get("active") === "on",
   };
@@ -150,31 +173,43 @@ export function campaignFromForm(form: FormData): { input: CampaignInput; errors
 
 export function validateCampaign(c: CampaignInput): string[] {
   const errors: string[] = [];
+  const longest = (...texts: string[]) => Math.max(...texts.map((t) => fill(t, {}).length));
   if (!c.name) errors.push("Give the campaign a name.");
   if (!c.anyComment && c.keywords.length === 0) errors.push("Add at least one keyword, or turn on \"any comment\".");
   if (c.anyComment && !c.mediaId) errors.push("\"Any comment\" needs one chosen post, not all posts.");
-  try {
-    const u = new URL(c.linkUrl);
-    if (u.protocol !== "https:" && u.protocol !== "http:") throw new Error();
-  } catch {
-    errors.push("The link must be a full web address starting with https://");
+
+  if (c.links.length === 0) errors.push("Add the link to send.");
+  for (const l of c.links) {
+    try {
+      const u = new URL(l.url);
+      if (u.protocol !== "https:" && u.protocol !== "http:") throw new Error();
+    } catch {
+      errors.push(`"${l.url}" is not a full web address. Links start with https://`);
+    }
+    if (l.label.length > MAX_BUTTON) errors.push(`Button labels must be ${MAX_BUTTON} characters or fewer ("${l.label}").`);
   }
+  const buttons = usesButtons(c.links);
+  if (c.links.some((l) => l.label) && !buttons) errors.push("Give every link a button label, or none of them (then the links go in the text).");
+  if (buttons && !c.linkText) errors.push("Write the message that goes with the link buttons.");
+  const linkLimit = buttons ? MAX_TEMPLATE_TEXT : MAX_TEXT - c.links.reduce((n, l) => n + l.url.length + 1, 0);
+  const withAsk = c.emailMode === "optional" ? `${c.linkText}\n\n${c.optionalPrompt}` : c.linkText;
+  if (longest(withAsk, c.emailMode === "first" ? c.emailThanks : "") > linkLimit) {
+    errors.push(`The message with the link must be ${linkLimit} characters or fewer${c.emailMode === "optional" ? ", including the email line" : ""}.`);
+  }
+
   if (c.openingButton) {
     if (!c.openingText) errors.push("Write the opening message that goes with the button.");
-    if (c.openingText.length > MAX_TEMPLATE_TEXT) errors.push(`The opening message must be ${MAX_TEMPLATE_TEXT} characters or fewer.`);
+    if (longest(c.openingText) > MAX_TEMPLATE_TEXT) errors.push(`The opening message must be ${MAX_TEMPLATE_TEXT} characters or fewer.`);
     if (c.openingButton.length > MAX_BUTTON) errors.push(`The opening button label must be ${MAX_BUTTON} characters or fewer.`);
   }
-  if (c.askEmail) {
+  if (c.emailMode === "first") {
     if (!c.emailPrompt) errors.push("Write the email question, and say what people will receive.");
-    if (!c.emailReask) errors.push("Write the re-ask message.");
-    if (c.emailPrompt.length > MAX_TEXT || c.emailReask.length > MAX_TEXT) errors.push(`Email messages must be ${MAX_TEXT} characters or fewer.`);
+    if (!c.emailReask) errors.push("Write the reply for when the answer is not an email.");
+    if (longest(c.emailPrompt, c.emailReask) > MAX_TEXT) errors.push(`Email messages must be ${MAX_TEXT} characters or fewer.`);
   }
-  if (c.linkButton) {
-    if (c.linkButton.length > MAX_BUTTON) errors.push(`The link button label must be ${MAX_BUTTON} characters or fewer.`);
-    if (!c.linkText) errors.push("Write the message that goes with the link button.");
-    if (c.linkText.length > MAX_TEMPLATE_TEXT) errors.push(`The link message must be ${MAX_TEMPLATE_TEXT} characters or fewer.`);
-  } else if (`${c.linkText}\n${c.linkUrl}`.length > MAX_TEXT) {
-    errors.push(`The link message must be ${MAX_TEXT} characters or fewer.`);
+  if (c.emailMode === "optional") {
+    if (!c.optionalPrompt) errors.push("Write the optional email line, and say what people will receive.");
+    if (longest(c.optionalThanks) > MAX_TEXT) errors.push(`The thank-you must be ${MAX_TEXT} characters or fewer.`);
   }
   if (c.publicReplies.some((r) => r.length > 300)) errors.push("Keep each public reply under 300 characters.");
   return errors;
@@ -190,32 +225,34 @@ export async function saveCampaign(db: D1Database, c: CampaignInput, id: number 
     JSON.stringify(c.publicReplies),
     c.openingText,
     c.openingButton,
-    c.askEmail ? 1 : 0,
+    c.emailMode,
     c.emailPrompt,
     c.emailReask,
+    c.emailThanks,
+    c.optionalPrompt,
+    c.optionalThanks,
+    c.consentText,
     c.linkText,
-    c.linkUrl,
-    c.linkButton,
+    JSON.stringify(c.links),
     c.dmKeyword ? 1 : 0,
     c.active ? 1 : 0,
   ];
+  const columns = `name, keywords, any_comment, media_id, media_label, public_replies, opening_text, opening_button, email_mode,
+    email_prompt, email_reask, email_thanks, optional_prompt, optional_thanks, consent_text, link_text, links, dm_keyword, active`;
   if (id === null) {
     const row = await db
-      .prepare(
-        `INSERT INTO campaigns (name, keywords, any_comment, media_id, media_label, public_replies, opening_text, opening_button,
-          ask_email, email_prompt, email_reask, link_text, link_url, link_button, dm_keyword, active, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-      )
+      // reply_cursor -1: no public reply used yet, so any variant can come first.
+      .prepare(`INSERT INTO campaigns (${columns}, reply_cursor, created_at, updated_at) VALUES (${values.map(() => "?").join(", ")}, -1, ?, ?) RETURNING id`)
       .bind(...values, now, now)
       .first<{ id: number }>();
     return row!.id;
   }
+  const sets = columns
+    .split(",")
+    .map((c) => `${c.trim()} = ?`)
+    .join(", ");
   await db
-    .prepare(
-      `UPDATE campaigns SET name = ?, keywords = ?, any_comment = ?, media_id = ?, media_label = ?, public_replies = ?,
-        opening_text = ?, opening_button = ?, ask_email = ?, email_prompt = ?, email_reask = ?, link_text = ?, link_url = ?,
-        link_button = ?, dm_keyword = ?, active = ?, updated_at = ? WHERE id = ?`,
-    )
+    .prepare(`UPDATE campaigns SET ${sets}, updated_at = ? WHERE id = ?`)
     .bind(...values, now, id)
     .run();
   return id;
@@ -239,44 +276,94 @@ export function matchDm(campaigns: Campaign[], text: string): Campaign | null {
   return campaigns.find((c) => c.active && c.dmKeyword && !c.anyComment && matchesKeyword(text, c.keywords)) ?? null;
 }
 
-export type ConversationState = "opened" | "awaiting_email" | "reasked" | "done";
+/** Who a message is for, as far as OwnChats knows. */
+export interface Person {
+  name?: string | null;
+  username?: string | null;
+}
 
-export function linkMessage(c: Campaign): OutMessage {
-  if (c.linkButton) {
-    const buttons: Button[] = [{ type: "web_url", title: c.linkButton, url: c.linkUrl }];
-    return { kind: "buttons", text: c.linkText, buttons };
+/**
+ * Fills {name} and {username}. {name} is the person's Instagram name when Meta
+ * shares it, otherwise their username; with neither, "there" ("Hey there!").
+ */
+export function fill(text: string, p: Person): string {
+  const username = p.username?.trim() || "";
+  const name = p.name?.trim() || username || "there";
+  return text.replace(/\{\s*name\s*\}/gi, name).replace(/\{\s*username\s*\}/gi, username || "there");
+}
+
+export type ConversationState = "opened" | "awaiting_email" | "reasked" | "optional_email" | "done";
+
+function usesButtons(links: Link[]): boolean {
+  return links.length > 0 && links.length <= MAX_LINKS && links.every((l) => l.label);
+}
+
+/** The link message: buttons when every link has a label, otherwise the links in the text. */
+export function linkMessage(c: Campaign, p: Person, text = c.linkText): OutMessage {
+  const body = fill(text, p);
+  if (usesButtons(c.links)) {
+    const buttons: Button[] = c.links.map((l) => ({ type: "web_url", title: fill(l.label, p), url: l.url }));
+    return { kind: "buttons", text: body, buttons };
   }
-  return { kind: "text", text: c.linkText ? `${c.linkText}\n${c.linkUrl}` : c.linkUrl };
+  return { kind: "text", text: [body, ...c.links.map((l) => l.url)].filter(Boolean).join("\n") };
+}
+
+/** The link, with the optional email line under it in "link plus optional email" mode. */
+function linkStep(c: Campaign, p: Person): { message: OutMessage; state: ConversationState } {
+  if (c.emailMode === "optional") {
+    const text = [c.linkText, c.optionalPrompt].filter(Boolean).join("\n\n");
+    return { message: linkMessage(c, p, text), state: "optional_email" };
+  }
+  return { message: linkMessage(c, p), state: "done" };
 }
 
 export const OPEN_PAYLOAD_PREFIX = "OWNCHATS_OPEN:";
 
 /** The first DM, and the state it leaves the conversation in. */
-export function firstMessage(c: Campaign, trigger: "comment" | "dm"): { message: OutMessage; state: ConversationState } {
+export function firstMessage(c: Campaign, trigger: "comment" | "dm", p: Person): { message: OutMessage; state: ConversationState } {
   if (trigger === "comment" && c.openingButton) {
     return {
       message: {
         kind: "buttons",
-        text: c.openingText,
-        buttons: [{ type: "postback", title: c.openingButton, payload: `${OPEN_PAYLOAD_PREFIX}${c.id}` }],
+        text: fill(c.openingText, p),
+        buttons: [{ type: "postback", title: fill(c.openingButton, p), payload: `${OPEN_PAYLOAD_PREFIX}${c.id}` }],
       },
       state: "opened",
     };
   }
-  return afterOpening(c);
+  return afterOpening(c, p);
 }
 
 /** What follows the tap (or the first DM when there is no button). */
-export function afterOpening(c: Campaign): { message: OutMessage; state: ConversationState } {
-  if (c.askEmail) return { message: { kind: "text", text: c.emailPrompt }, state: "awaiting_email" };
-  return { message: linkMessage(c), state: "done" };
+export function afterOpening(c: Campaign, p: Person): { message: OutMessage; state: ConversationState } {
+  if (c.emailMode === "first") return { message: { kind: "text", text: fill(c.emailPrompt, p) }, state: "awaiting_email" };
+  return linkStep(c, p);
+}
+
+/** Email first: the link once the email is saved, with the thank-you as its text. */
+export function linkAfterEmail(c: Campaign, p: Person): OutMessage {
+  return linkMessage(c, p, c.emailThanks || c.linkText);
+}
+
+/** The wording saved with a lead: the campaign's consent text, or the question the person answered. */
+export function consentFor(c: Campaign): string {
+  return c.consentText || (c.emailMode === "optional" ? c.optionalPrompt : c.emailPrompt);
 }
 
 /**
  * The first DM without any button, for when Meta refuses a button template in a
  * private reply: the email question, or the link as text.
  */
-export function plainFirstMessage(c: Campaign): { message: OutMessage; state: ConversationState } {
-  if (c.askEmail) return { message: { kind: "text", text: c.emailPrompt }, state: "awaiting_email" };
-  return { message: plainText(linkMessage(c)), state: "done" };
+export function plainFirstMessage(c: Campaign, p: Person): { message: OutMessage; state: ConversationState } {
+  const next = afterOpening(c, p);
+  return { message: plainText(next.message), state: next.state };
+}
+
+/** A public reply variant picked at random, never the same one twice in a row. */
+export function pickPublicReply(c: Campaign, random: () => number): { index: number; text: string } | null {
+  const n = c.publicReplies.length;
+  if (!n) return null;
+  let index = Math.floor(random() * n) % n;
+  if (n > 1 && index === c.replyCursor) index = (index + 1 + Math.floor(random() * (n - 1))) % n;
+  return { index, text: c.publicReplies[index]! };
 }

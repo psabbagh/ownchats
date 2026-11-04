@@ -13,6 +13,8 @@ export interface Ctx {
   /** Null until Instagram is connected. */
   meta: MetaClient | null;
   now(): number;
+  /** For picking public reply variants; tests make it predictable. */
+  random(): number;
   budget: Budget;
   /** Private replies sent in the last hour, counted once per invocation. */
   sentLastHour?: number;
@@ -23,6 +25,7 @@ export type MetaFactory = (env: Env, settings: Settings) => MetaClient | null;
 export interface AppOptions {
   meta: MetaFactory;
   now?: () => number;
+  random?: () => number;
 }
 
 /**
@@ -103,6 +106,7 @@ export async function buildCtx(env: Env, options: AppOptions): Promise<Ctx> {
     settings,
     meta: options.meta(env, settings),
     now: options.now ?? Date.now,
+    random: options.random ?? Math.random,
     budget,
   };
 }

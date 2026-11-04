@@ -1,4 +1,4 @@
-import { firstMessage, listCampaigns, matchComment, plainFirstMessage, type Campaign } from "../campaigns";
+import { fill, firstMessage, listCampaigns, matchComment, pickPublicReply, plainFirstMessage, type Campaign, type ConversationState } from "../campaigns";
 import { logStatement, type ActivityEntry, type Ctx } from "../context";
 import { explainError, isTemplateRejection, MetaError, type IgComment } from "../meta/client";
 import { HOUR, MINUTE, PRIVATE_REPLIES_PER_HOUR, PRIVATE_REPLY_WINDOW } from "../time";
@@ -20,6 +20,14 @@ interface CommentRow {
 }
 
 const MAX_ATTEMPTS = 5;
+
+const FIRST_DM_REASON: Record<ConversationState, string> = {
+  opened: "opening button",
+  awaiting_email: "email question",
+  reasked: "email question",
+  optional_email: "link with the optional email line",
+  done: "link",
+};
 const STALE_LOCK = 2 * MINUTE;
 /** D1 queries one comment can take, worst case; handling stops when fewer are left. */
 export const QUERIES_PER_COMMENT = 6;
@@ -196,7 +204,8 @@ export async function handleComment(ctx: Ctx, id: string, campaigns?: Campaign[]
   }
   if (!ctx.budget.take(campaign.publicReplies.length ? 2 : 1)) return void (await settle("queued", "waiting for the next run", cid));
 
-  const first = firstMessage(campaign, "comment");
+  const person = { username: row.from_username };
+  const first = firstMessage(campaign, "comment", person);
   let conversationId = await claimConversation(ctx.db, {
     campaignId: cid,
     igUserId: row.from_id,
@@ -225,7 +234,7 @@ export async function handleComment(ctx: Ctx, id: string, campaigns?: Campaign[]
     } catch (err) {
       // Meta documents only text private replies. If it refuses the button, send the next step as text.
       if (first.message.kind !== "buttons" || !isTemplateRejection(err)) throw err;
-      sent = plainFirstMessage(campaign);
+      sent = plainFirstMessage(campaign, person);
       recipientId = (await ctx.meta.sendPrivateReply(row.id, sent.message)).recipientId;
     }
   } catch (err) {
@@ -239,7 +248,9 @@ export async function handleComment(ctx: Ctx, id: string, campaigns?: Campaign[]
   }
   ctx.sentLastHour = (ctx.sentLastHour ?? 0) + 1;
 
-  const [, , , cursor] = await ctx.db.batch<{ reply_cursor: number }>([
+  // Public reply variants are picked at random, never the same one twice in a row.
+  const reply = pickPublicReply(campaign, ctx.random);
+  await ctx.db.batch([
     ctx.db
       .prepare("UPDATE conversations SET first_sent_at = ?, updated_at = ?, state = ? WHERE id = ?")
       .bind(ctx.now(), ctx.now(), sent.state, conversationId),
@@ -250,21 +261,18 @@ export async function handleComment(ctx: Ctx, id: string, campaigns?: Campaign[]
     logStatement(ctx, {
       kind: "private_reply",
       outcome: "sent",
-      reason:
-        (sent.state === "opened" ? "opening button" : sent.state === "awaiting_email" ? "email question" : "link") +
-        (sent === first ? "" : " (as text: Meta refused the button)"),
+      reason: FIRST_DM_REASON[sent.state] + (sent === first ? "" : " (as text: Meta refused the button)"),
       campaignId: cid,
       ...who,
     }),
-    ctx.db.prepare("UPDATE campaigns SET reply_cursor = reply_cursor + 1 WHERE id = ? RETURNING reply_cursor").bind(cid),
+    ...(reply ? [ctx.db.prepare("UPDATE campaigns SET reply_cursor = ? WHERE id = ?").bind(reply.index, cid)] : []),
   ]);
+  if (reply) campaign.replyCursor = reply.index;
 
-  // The public reply goes out only once the DM did, so "Sent!" is true. Variants are used in turn.
-  const replies = campaign.publicReplies;
+  // The public reply goes out only once the DM did, so "Sent!" is true.
   const extra: D1PreparedStatement[] = [];
-  if (replies.length) {
-    const n = (cursor?.results[0]?.reply_cursor ?? 1) - 1;
-    const variant = replies[n % replies.length]!;
+  if (reply) {
+    const variant = fill(reply.text, person);
     let entry: ActivityEntry;
     try {
       await ctx.meta.replyToComment(row.id, variant);

@@ -6,6 +6,8 @@ export interface Conversation {
   ig_user_id: string;
   commenter_id: string | null;
   username: string | null;
+  /** Instagram name for {name}; null until asked, "" when Meta had none. */
+  name: string | null;
   trigger: "comment" | "dm";
   comment_id: string | null;
   state: ConversationState;

@@ -81,17 +81,45 @@ describe("admin pages", () => {
 
   it("create a campaign from the form, and explain mistakes", async () => {
     const cookie = await w.signIn();
-    const bad = await w.fetch("/dashboard/campaigns/new", form(cookie, { name: "", keywords: "", link_url: "not a link", media_id: "all" }));
+    const bad = await w.fetch("/dashboard/campaigns/new", form(cookie, { name: "", keywords: "", link_url_0: "not a link", media_id: "all" }));
     const text = await bad.text();
     expect(text).toContain("Give the campaign a name.");
     expect(text).toContain("full web address");
     const ok = await w.fetch(
       "/dashboard/campaigns/new",
-      form(cookie, { name: "Prompts", keywords: "PROMPTS, PROMPT", media_id: "all", link_url: "https://example.com/p", link_text: "Here:", public_replies: "a\nb", active: "on", dm_keyword: "on" }),
+      form(cookie, {
+        name: "Prompts",
+        keywords: "PROMPTS, PROMPT",
+        media_id: "all",
+        link_text: "Here:",
+        link_url_0: "https://example.com/p",
+        link_label_0: "Prompts",
+        link_url_1: "https://example.com/q",
+        link_label_1: "Bonus",
+        email_mode: "optional",
+        optional_prompt: "Reply with your email for more.",
+        public_replies: "a\nb",
+        active: "on",
+        dm_keyword: "on",
+      }),
     );
     expect(ok.status).toBe(303);
-    const row = await env.DB.prepare("SELECT keywords, media_id, public_replies FROM campaigns").first();
-    expect(row).toEqual({ keywords: '["PROMPTS","PROMPT"]', media_id: null, public_replies: '["a","b"]' });
+    const row = await env.DB.prepare("SELECT keywords, media_id, public_replies, email_mode, links FROM campaigns").first();
+    expect(row).toEqual({
+      keywords: '["PROMPTS","PROMPT"]',
+      media_id: null,
+      public_replies: '["a","b"]',
+      email_mode: "optional",
+      links: '[{"url":"https://example.com/p","label":"Prompts"},{"url":"https://example.com/q","label":"Bonus"}]',
+    });
+    const mixed = await w.fetch("/dashboard/campaigns/new", form(cookie, { name: "x", keywords: "X", media_id: "all", link_text: "t", link_url_0: "https://example.com/a", link_label_0: "A", link_url_1: "https://example.com/b" }));
+    expect(await mixed.text()).toContain("every link a button label, or none");
+  });
+
+  it("let browsers send their real Origin on form posts", async () => {
+    // With "no-referrer", browsers send "Origin: null" on POSTs and every form would be refused.
+    const res = await w.fetch("/login");
+    expect(res.headers.get("referrer-policy")).toBe("same-origin");
   });
 
   it("refuse cross-site form posts", async () => {
@@ -101,7 +129,7 @@ describe("admin pages", () => {
   });
 
   it("delete everything about a person on request", async () => {
-    const id = await w.campaign({ askEmail: true, openingButton: "" });
+    const id = await w.campaign({ emailMode: "first", openingButton: "" });
     await w.sendComment(w.comment("agents", FAN));
     await w.sendDm(FAN.id, "fan@example.com");
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM leads").first()).toMatchObject({ n: 1 });
@@ -117,7 +145,7 @@ describe("admin pages", () => {
 
 describe("Google Sheets link", () => {
   it("serves the CSV only with the current secret, and stops after it is turned off", async () => {
-    await w.campaign({ askEmail: true, openingButton: "" });
+    await w.campaign({ emailMode: "first", openingButton: "" });
     await w.sendComment(w.comment("agents", FAN));
     await w.sendDm(FAN.id, "=cmd@example.com is my address? no: fan@example.com");
     const cookie = await w.signIn();

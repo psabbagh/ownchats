@@ -72,7 +72,9 @@ export function page(title: string, body: Html, opts: { nav?: boolean; head?: Ht
     headers: {
       "content-type": "text/html; charset=utf-8",
       "x-frame-options": "DENY",
-      "referrer-policy": "no-referrer",
+      // Not "no-referrer": with it, browsers send "Origin: null" on form posts, and the
+      // same-origin check would refuse every form. "same-origin" still sends nothing to other sites.
+      "referrer-policy": "same-origin",
       "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src https: data:; form-action 'self' https://www.facebook.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'",
     },
   });

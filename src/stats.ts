@@ -14,7 +14,7 @@ export interface CampaignCounts {
 export async function campaignCounts(ctx: Ctx): Promise<Map<number, CampaignCounts>> {
   const [conv, taps, leads, failed] = await ctx.db.batch<Record<string, number>>([
     ctx.db.prepare(
-      `SELECT campaign_id, COUNT(*) AS people, COUNT(first_sent_at) AS dms, SUM(state = 'done') AS links
+      `SELECT campaign_id, COUNT(*) AS people, COUNT(first_sent_at) AS dms, SUM(state IN ('done', 'optional_email')) AS links
        FROM conversations GROUP BY campaign_id`,
     ),
     ctx.db.prepare("SELECT campaign_id, COUNT(*) AS n FROM activity WHERE kind = 'tap' AND outcome = 'received' GROUP BY campaign_id"),

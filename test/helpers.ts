@@ -38,7 +38,10 @@ export async function setupWorld(opts: { connected?: boolean } = {}) {
     env.ADMIN_PASSWORD,
     opts.connected === false ? base : { ...base, access_token: "test-access-token", ig_user_id: OWNER.id, ig_username: OWNER.username },
   );
-  const options = { meta: (_e: unknown, s: { access_token?: string }) => (s.access_token ? meta : null), now: clock.now };
+  // Public reply picks are random in production; here they follow a fixed sequence.
+  let r = 0;
+  const random = () => [0.1, 0.6, 0.3, 0.9, 0.5][r++ % 5]!;
+  const options = { meta: (_e: unknown, s: { access_token?: string }) => (s.access_token ? meta : null), now: clock.now, random };
   const app = createApp(options);
   let seq = 0;
 
@@ -59,12 +62,15 @@ export async function setupWorld(opts: { connected?: boolean } = {}) {
         publicReplies: DEFAULTS.publicReplies,
         openingText: DEFAULTS.openingText,
         openingButton: DEFAULTS.openingButton,
-        askEmail: false,
+        emailMode: "none",
         emailPrompt: DEFAULTS.emailPrompt,
         emailReask: DEFAULTS.emailReask,
+        emailThanks: DEFAULTS.emailThanks,
+        optionalPrompt: DEFAULTS.optionalPrompt,
+        optionalThanks: DEFAULTS.optionalThanks,
+        consentText: "",
         linkText: DEFAULTS.linkText,
-        linkUrl: "https://example.com/library",
-        linkButton: DEFAULTS.linkButton,
+        links: [{ label: DEFAULTS.linkLabel, url: "https://example.com/library" }],
         dmKeyword: true,
         active: true,
         ...overrides,
