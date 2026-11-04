@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ownchats",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["no_nodejs_compat"],
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  // Every minute: retry queued comments and check watched posts for missed ones.
+  "triggers": { "crons": ["* * * * *"] },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ownchats",
+      // Left empty on purpose: Deploy to Cloudflare creates the database in your account.
+      "database_id": "",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

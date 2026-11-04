@@ -1,0 +1,32 @@
+{
+  "name": "ownchats",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Your own Instagram comment-to-DM bot on Cloudflare Workers and D1.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
+    "check": "tsc --noEmit && tsc --noEmit -p test",
+    "test": "vitest run",
+    "types": "wrangler types"
+  },
+  "cloudflare": {
+    "bindings": {
+      "ADMIN_PASSWORD": {
+        "description": "Choose a long password for your OwnChats dashboard. Save it in your password manager: you need it to sign in."
+      },
+      "DB": {
+        "description": "The database for campaigns, leads and the activity log."
+      }
+    }
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.5.1",
+    "@cloudflare/workers-types": "^5.20261104.1",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0",
+    "wrangler": "^4.157.0"
+  }
+}
