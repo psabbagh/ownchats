@@ -64,7 +64,7 @@ describe("one private reply per comment", () => {
   });
 
   it("falls back to plain text when Meta refuses the button template", async () => {
-    await w.campaign({ askEmail: true });
+    await w.campaign({ emailMode: "first" });
     w.meta.failNext("sendPrivateReply", new MetaError("Invalid parameter", 400, 100));
     await w.sendComment(w.comment("agents", FAN));
     const dm = w.meta.sent.find((s) => s.kind === "private_reply")!;
@@ -106,7 +106,7 @@ describe("7-day window", () => {
 
 describe("follow-ups only within 24 hours of the person's reply", () => {
   it("sends nothing after the private reply until the person taps or writes", async () => {
-    await w.campaign({ askEmail: true });
+    await w.campaign({ emailMode: "first" });
     await w.sendComment(w.comment("agents", FAN));
     for (let i = 0; i < 5; i++) {
       w.clock.advance(HOUR);
@@ -116,7 +116,7 @@ describe("follow-ups only within 24 hours of the person's reply", () => {
   });
 
   it("runs the whole email flow: tap, ask, email saved with consent, link", async () => {
-    const id = await w.campaign({ askEmail: true });
+    const id = await w.campaign({ emailMode: "first" });
     await w.sendComment(w.comment("agents", FAN));
     await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
     await w.sendDm(FAN.id, "sure! it's Invented.Fan@Example.com.");
@@ -129,7 +129,7 @@ describe("follow-ups only within 24 hours of the person's reply", () => {
   });
 
   it("re-asks once, then sends the link anyway", async () => {
-    const id = await w.campaign({ askEmail: true });
+    const id = await w.campaign({ emailMode: "first" });
     await w.sendComment(w.comment("agents", FAN));
     await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
     await w.sendDm(FAN.id, "what?");
@@ -145,7 +145,7 @@ describe("follow-ups only within 24 hours of the person's reply", () => {
   });
 
   it("does not answer an event that is more than 24 hours old", async () => {
-    const id = await w.campaign({ askEmail: true });
+    const id = await w.campaign({ emailMode: "first" });
     await w.sendComment(w.comment("agents", FAN));
     // A tap from 25 hours ago, delivered late (Meta retries webhooks for up to 36 hours).
     const late = w.clock.now();
@@ -179,7 +179,7 @@ describe("own comments ignored", () => {
   });
 
   it("ignores echoes of OwnChats' own DMs", async () => {
-    const id = await w.campaign({ askEmail: true });
+    const id = await w.campaign({ emailMode: "first" });
     await w.sendComment(w.comment("agents", FAN));
     await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
     const before = w.meta.sent.length;
@@ -251,17 +251,20 @@ describe("matching", () => {
     expect(w.meta.sent.filter((s) => s.kind === "private_reply").map((s) => s.to)).toHaveLength(1);
   });
 
-  it("uses public reply variants in turn", async () => {
-    await w.campaign({ publicReplies: ["one", "two"] });
-    const people = Array.from({ length: 3 }, (_, i) => ({ id: `90000000000020${i}`, username: `fan_${i}` }));
+  it("picks public reply variants at random, never the same one twice in a row", async () => {
+    await w.campaign({ publicReplies: ["one", "two", "three"] });
+    const people = Array.from({ length: 8 }, (_, i) => ({ id: `90000000000020${i}`, username: `fan_${i}` }));
     for (const p of people) await w.sendComment(w.comment("agents", p));
-    expect(w.meta.sent.filter((s) => s.kind === "public_reply").map((s) => s.message)).toEqual(["one", "two", "one"]);
+    const replies = w.meta.sent.filter((s) => s.kind === "public_reply").map((s) => s.message);
+    expect(replies).toHaveLength(8);
+    expect(new Set(replies).size).toBeGreaterThan(1);
+    replies.forEach((r, i) => i && expect(r, `reply ${i}`).not.toBe(replies[i - 1]));
   });
 });
 
 describe("DM keyword", () => {
   it("starts the flow from a DM, without the button and without a private reply", async () => {
-    await w.campaign({ askEmail: true });
+    await w.campaign({ emailMode: "first" });
     w.meta.usernames.set(FAN.id, FAN.username);
     await w.sendDm(FAN.id, "hi, AGENTS please");
     expect(w.meta.calls).not.toContain("sendPrivateReply");
@@ -327,5 +330,115 @@ describe("polling", () => {
       await w.cron();
     }
     expect(w.meta.sent.filter((s) => s.kind === "private_reply")).toHaveLength(50);
+  });
+});
+
+describe("email modes", () => {
+  it("link only: the tap sends the link, and nothing asks for an email", async () => {
+    const id = await w.campaign({ emailMode: "none" });
+    await w.sendComment(w.comment("agents", FAN));
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
+    const [link] = w.meta.sentTo(FAN.id);
+    expect(link!.message).toMatchObject({ kind: "buttons", text: "Here you go:" });
+    await w.sendDm(FAN.id, "fan@example.com");
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM leads").first()).toMatchObject({ n: 0 });
+  });
+
+  it("link plus optional email: link and the email line at once, an email reply is saved and thanked", async () => {
+    const id = await w.campaign({ emailMode: "optional", consentText: "Newsletter from test_creator" });
+    await w.sendComment(w.comment("agents", FAN));
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
+    const [link] = w.meta.sentTo(FAN.id);
+    expect(link!.message).toMatchObject({ kind: "buttons", text: expect.stringContaining("Reply with your email") });
+    expect(link!.message).toMatchObject({ buttons: [{ type: "web_url", url: "https://example.com/library" }] });
+    await w.sendDm(FAN.id, "ok here: fan@example.com");
+    expect(await env.DB.prepare("SELECT email, consent_text FROM leads").first()).toEqual({ email: "fan@example.com", consent_text: "Newsletter from test_creator" });
+    expect(w.meta.sentTo(FAN.id)[1]!.message).toEqual({ kind: "text", text: "Thanks, you're on the list!" });
+  });
+
+  it("link plus optional email: other replies get no re-ask, and silence is fine", async () => {
+    const id = await w.campaign({ emailMode: "optional" });
+    await w.sendComment(w.comment("agents", FAN));
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
+    await w.sendDm(FAN.id, "thanks!");
+    w.clock.advance(3 * HOUR);
+    await w.cron();
+    expect(w.meta.sentTo(FAN.id)).toHaveLength(1);
+    // The link counts as sent even though the conversation stays open for an email.
+    const counts = await env.DB.prepare("SELECT state FROM conversations").first();
+    expect(counts).toEqual({ state: "optional_email" });
+  });
+
+  it("link plus optional email without the button puts both in the first DM", async () => {
+    await w.campaign({ emailMode: "optional", openingButton: "", links: [{ label: "", url: "https://example.com/library" }] });
+    await w.sendComment(w.comment("agents", FAN));
+    const dm = w.meta.sent.find((s) => s.kind === "private_reply")!;
+    expect(dm.message).toEqual({
+      kind: "text",
+      text: `Here you go:\n\n${"Want more like this? Reply with your email and I'll add you to my newsletter. You can unsubscribe anytime."}\nhttps://example.com/library`,
+    });
+  });
+
+  it("a keyword for another campaign still works while an optional email is pending", async () => {
+    const a = await w.campaign({ emailMode: "optional" });
+    await w.campaign({ name: "Prompts", keywords: ["PROMPTS"], mediaId: OTHER_POST, openingButton: "", links: [{ label: "Get it", url: "https://example.com/prompts" }] });
+    await w.sendComment(w.comment("agents", FAN));
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${a}`);
+    await w.sendDm(FAN.id, "PROMPTS please");
+    expect(w.meta.sentTo(FAN.id).at(-1)!.message).toMatchObject({ buttons: [{ url: "https://example.com/prompts" }] });
+  });
+
+  it("email first: the thank-you text goes with the link, and the consent defaults to the question", async () => {
+    const id = await w.campaign({ emailMode: "first", emailThanks: "Thanks {name}! Here it is:" });
+    w.meta.names.set(FAN.id, "Invented Fan");
+    await w.sendComment(w.comment("agents", FAN));
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
+    await w.sendDm(FAN.id, "fan@example.com");
+    expect(w.meta.sentTo(FAN.id)[1]!.message).toMatchObject({ kind: "buttons", text: "Thanks Invented Fan! Here it is:" });
+    const lead = await env.DB.prepare("SELECT consent_text FROM leads").first<{ consent_text: string }>();
+    expect(lead!.consent_text).toContain("What's your email?");
+  });
+});
+
+describe("editable texts", () => {
+  it("fills {name} and {username}, falling back to the username, then to 'there'", async () => {
+    const id = await w.campaign({ openingText: "Hey {name}, hi @{username}!", publicReplies: ["Sent, {username}!"], linkText: "For you, {name}:" });
+    await w.sendComment(w.comment("agents", FAN));
+    // Before they interact, OwnChats only knows the username from the comment.
+    expect(w.meta.sent[0]!.message).toMatchObject({ text: `Hey ${FAN.username}, hi @${FAN.username}!` });
+    expect(w.meta.sent[1]!.message).toBe(`Sent, ${FAN.username}!`);
+    // After the tap Meta shares their name, asked for once.
+    w.meta.names.set(FAN.id, "Invented Fan");
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
+    expect(w.meta.sentTo(FAN.id)[0]!.message).toMatchObject({ text: "For you, Invented Fan:" });
+    expect(w.meta.calls.filter((c) => c === "getProfile")).toHaveLength(1);
+    const { fill } = await import("../src/campaigns");
+    expect(fill("Hey {name}!", { name: "Invented Fan", username: "x" })).toBe("Hey Invented Fan!");
+    expect(fill("Hey {name}!", {})).toBe("Hey there!");
+  });
+
+  it("sends up to three links as buttons, or in the text when they have no labels", async () => {
+    const id = await w.campaign({
+      links: [
+        { label: "Library", url: "https://example.com/1" },
+        { label: "Bonus", url: "https://example.com/2" },
+      ],
+    });
+    await w.sendComment(w.comment("agents", FAN));
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
+    expect(w.meta.sentTo(FAN.id)[0]!.message).toMatchObject({
+      kind: "buttons",
+      buttons: [
+        { title: "Library", url: "https://example.com/1" },
+        { title: "Bonus", url: "https://example.com/2" },
+      ],
+    });
+    const plain = await w.campaign({ name: "Plain", keywords: ["PLAIN"], openingButton: "", links: [{ label: "", url: "https://example.com/a" }, { label: "", url: "https://example.com/b" }] });
+    await w.sendComment(w.comment("plain", FAN2));
+    expect(w.meta.sent.find((s) => s.kind === "private_reply" && s.to !== w.meta.sent[0]!.to)!.message).toEqual({
+      kind: "text",
+      text: "Here you go:\nhttps://example.com/a\nhttps://example.com/b",
+    });
+    expect(plain).toBeGreaterThan(id);
   });
 });

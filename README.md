@@ -9,10 +9,14 @@ I built this for my own Instagram account and I'm sharing it as-is. Take it, cha
 ## What it does
 
 - **Keyword, then link.** Someone comments AGENTS on your Reel. OwnChats replies under the comment ("Sent! Check your DMs") and sends a DM with a "Send me the link" button. The tap sends the link.
-- **Email capture.** Optionally, after the tap it asks for their email and says what they'll get. A valid email is saved and the link goes out. Anything else gets one re-ask, then the link goes out anyway, so nobody leaves empty-handed.
+- **Email, three ways, per campaign:**
+  - **Link only.**
+  - **Link plus optional email:** the link comes right away with "Reply with your email if you want more". An email reply is saved; anything else is left alone.
+  - **Email first:** it asks for their email and says what they'll get. A valid email is saved and the link goes out. Anything else gets one re-ask, then the link goes out anyway, so nobody leaves empty-handed.
+- **Every word is yours.** Each campaign's public replies, DMs, button labels, links (up to three) and consent wording are editable, with defaults that work as they are. Write `{name}` to greet people by name.
 - **DM keyword.** Someone sends AGENTS by DM (for example, their comment is older than a week) and gets the same flow.
 - **One post or all posts.** Arm a campaign on one Reel, or on all your posts so it's live before the Reel goes up. A campaign on one post can also answer every comment, keyword or not.
-- **Rotating public replies**, so identical replies on a busy post don't get your comments limited.
+- **Varied public replies**, picked at random and never the same twice in a row, so identical replies on a busy post don't get your comments limited.
 - **A dashboard** with your campaigns, their numbers (people, DMs, taps, emails, links), your leads, and an activity log that says why each comment did or didn't get a DM.
 - **Your leads where you work:** CSV download, a live Google Sheet with one formula, and a read-only JSON API for your own tools.
 
@@ -70,7 +74,7 @@ second account.
 
 ## Using it
 
-- **Campaigns:** in the dashboard, New campaign. Pick the keyword (add extra spellings with commas), the post or all posts, the public replies, the first DM and its button, the email question if you want one, and the link.
+- **Campaigns:** in the dashboard, New campaign. Pick the keyword (add extra spellings with commas), the post or all posts, and the link. Then adjust any of the wording if you like: the public replies, the first DM and its button, the email mode and its messages.
 - **Only one tool per Reel.** Instagram allows one private reply per comment. If ManyChat or another tool also answers a Reel, the second one fails. Move a Reel to OwnChats by turning it off in the other tool first.
 - **Leads:** the Leads page lists every email with the wording the person agreed to and when. Download a CSV there.
 - **Google Sheets:** Settings, Create link, then paste the `=IMPORTDATA("...")` formula it shows into cell A1 of a sheet. It refreshes about once an hour. Anyone with the link can read your leads, so you can regenerate or turn it off at any time.

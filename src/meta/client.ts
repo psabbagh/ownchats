@@ -24,8 +24,8 @@ export interface MetaClient {
   sendPrivateReply(commentId: string, message: OutMessage): Promise<{ messageId?: string; recipientId?: string }>;
   /** A DM to someone who messaged or tapped within the last 24 hours. */
   sendMessage(igUserId: string, message: OutMessage): Promise<{ messageId?: string }>;
-  /** The person's username, readable once they have messaged the account. */
-  getUsername(igUserId: string): Promise<string | null>;
+  /** The person's name and username, readable once they have messaged or tapped. */
+  getProfile(igUserId: string): Promise<{ name: string | null; username: string | null }>;
 }
 
 export interface TokenInfo {

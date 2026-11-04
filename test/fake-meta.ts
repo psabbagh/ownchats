@@ -28,6 +28,7 @@ export class FakeMeta implements MetaClient {
   subscribed: string[] = [];
   token: TokenInfo = { valid: true, expiresAt: null, dataAccessExpiresAt: null, scopes: [] };
   usernames = new Map<string, string>();
+  names = new Map<string, string>();
   /** When set, the messaging id Meta returns for a commenter differs from the id on the comment. */
   messagingIds = new Map<string, string>();
   private failures = new Map<string, MetaError[]>();
@@ -111,8 +112,8 @@ export class FakeMeta implements MetaClient {
     this.sent.push({ kind: "message", to: igUserId, message, at: this.now() });
     return { messageId: `m_${this.sent.length}` };
   }
-  async getUsername(igUserId: string) {
-    this.call("getUsername");
-    return this.usernames.get(igUserId) ?? null;
+  async getProfile(igUserId: string) {
+    this.call("getProfile");
+    return { name: this.names.get(igUserId) ?? null, username: this.usernames.get(igUserId) ?? null };
   }
 }

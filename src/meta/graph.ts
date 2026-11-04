@@ -227,9 +227,9 @@ export class GraphMetaClient implements MetaClient {
     return { messageId: res.message_id };
   }
 
-  async getUsername(igUserId: string) {
-    const res = await this.get<{ username?: string }>(igUserId, { fields: "username" });
-    return res.username ?? null;
+  async getProfile(igUserId: string) {
+    const res = await this.get<{ name?: string; username?: string }>(igUserId, { fields: "name,username" });
+    return { name: res.name ?? null, username: res.username ?? null };
   }
 }
 

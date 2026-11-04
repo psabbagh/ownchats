@@ -1,4 +1,30 @@
-import { campaignFromForm, DEFAULTS, getCampaign, listCampaigns, saveCampaign, type Campaign, type CampaignInput } from "../campaigns";
+import { campaignFromForm, DEFAULTS, getCampaign, listCampaigns, saveCampaign, type Campaign, type CampaignInput, type EmailMode } from "../campaigns";
+
+const EMAIL_MODE_LABEL: Record<EmailMode, string> = { none: "link only", optional: "link plus optional email", first: "email first" };
+
+function newCampaignDefaults(): CampaignInput {
+  return {
+    name: "",
+    keywords: [],
+    anyComment: false,
+    mediaId: null,
+    mediaLabel: null,
+    publicReplies: DEFAULTS.publicReplies,
+    openingText: DEFAULTS.openingText,
+    openingButton: DEFAULTS.openingButton,
+    emailMode: "none",
+    emailPrompt: DEFAULTS.emailPrompt,
+    emailReask: DEFAULTS.emailReask,
+    emailThanks: DEFAULTS.emailThanks,
+    optionalPrompt: DEFAULTS.optionalPrompt,
+    optionalThanks: DEFAULTS.optionalThanks,
+    consentText: "",
+    linkText: DEFAULTS.linkText,
+    links: [{ label: DEFAULTS.linkLabel, url: "" }],
+    dmKeyword: true,
+    active: true,
+  };
+}
 import type { Ctx } from "../context";
 import { randomToken, sha256Hex } from "../crypto";
 import { leadsCsv, listLeads } from "../export";
@@ -34,11 +60,11 @@ export async function dashboardHome(ctx: Ctx): Promise<Response> {
         return html`<div class="card">
           <div class="row"><h3 style="flex:1"><a href="/dashboard/campaigns/${c.id}">${c.name}</a></h3>
             <span class="pill ${c.active ? "sent" : "skipped"}">${c.active ? "on" : "off"}</span></div>
-          <p class="muted small">${c.anyComment ? "Any comment" : `Keyword: ${c.keywords.join(", ")}`} on ${c.mediaId ? c.mediaLabel || `post ${c.mediaId}` : "all posts"}${c.askEmail ? ", asks for email" : ""}</p>
+          <p class="muted small">${c.anyComment ? "Any comment" : `Keyword: ${c.keywords.join(", ")}`} on ${c.mediaId ? c.mediaLabel || `post ${c.mediaId}` : "all posts"}, ${EMAIL_MODE_LABEL[c.emailMode]}</p>
           <div class="stats small">
             <div><b>${n?.people ?? 0}</b>people</div><div><b>${n?.dmsSent ?? 0}</b>DMs sent</div>
             ${c.openingButton ? html`<div><b>${n?.taps ?? 0}</b>taps</div>` : ""}
-            ${c.askEmail ? html`<div><b>${n?.emails ?? 0}</b>emails</div>` : ""}
+            ${c.emailMode !== "none" ? html`<div><b>${n?.emails ?? 0}</b>emails</div>` : ""}
             <div><b>${n?.linksSent ?? 0}</b>links sent</div><div><b>${n?.failed ?? 0}</b>failed</div>
           </div></div>`;
       })}`,
@@ -77,32 +103,17 @@ async function campaignForm(ctx: Ctx, current: Campaign | null, input?: Campaign
   } catch (e) {
     mediaProblem = e instanceof Error ? e.message : String(e);
   }
-  const v = input ?? (current
-    ? current
-    : {
-        name: "",
-        keywords: [],
-        anyComment: false,
-        mediaId: null,
-        mediaLabel: null,
-        publicReplies: DEFAULTS.publicReplies,
-        openingText: DEFAULTS.openingText,
-        openingButton: DEFAULTS.openingButton,
-        askEmail: false,
-        emailPrompt: DEFAULTS.emailPrompt,
-        emailReask: DEFAULTS.emailReask,
-        linkText: DEFAULTS.linkText,
-        linkUrl: "",
-        linkButton: DEFAULTS.linkButton,
-        dmKeyword: true,
-        active: true,
-      });
+  const v: CampaignInput = input ?? current ?? newCampaignDefaults();
   const action = current ? `/dashboard/campaigns/${current.id}` : "/dashboard/campaigns/new";
   const checked = (b: boolean) => (b ? "checked" : "");
+  const mode = (m: EmailMode, label: string, hint: string) =>
+    html`<label class="inline"><input type="radio" name="email_mode" value="${m}" ${checked(v.emailMode === m)}> <span><b>${label}</b> <span class="muted small">${hint}</span></span></label>`;
+  const links = [...v.links, { label: "", url: "" }, { label: "", url: "" }, { label: "", url: "" }].slice(0, 3);
   return page(
     current ? `Edit ${current.name}` : "New campaign",
     html`<h1>${current ? `Edit "${current.name}"` : "New campaign"}</h1>
       ${errors.length ? html`<div class="card errors"><ul>${errors.map((e) => html`<li>${e}</li>`)}</ul></div>` : ""}
+      <p class="muted">Every message below is yours to edit. Write <code>{name}</code> for the person's Instagram name (their username when Meta doesn't share the name) or <code>{username}</code> for their username.</p>
       <form method="post" action="${action}">
         <div class="card">
           <label for="name">Name</label><input id="name" name="name" type="text" value="${v.name}" placeholder="Agents library" required>
@@ -116,28 +127,45 @@ async function campaignForm(ctx: Ctx, current: Campaign | null, input?: Campaign
           <h3>Public reply under the comment</h3>
           <label for="public_replies">Reply variants, one per line</label>
           <textarea id="public_replies" name="public_replies" rows="4">${v.publicReplies.join("\n")}</textarea>
-          <p class="hint">Used in turn. Several variants help avoid Instagram limiting identical replies. Leave empty for no public reply.</p>
+          <p class="hint">One is picked at random each time, never the same twice in a row: identical replies on a busy post can get your comments limited. Leave empty for no public reply.</p>
         </div>
         <div class="card">
           <h3>First DM</h3>
           <label for="opening_text">Message</label><textarea id="opening_text" name="opening_text">${v.openingText}</textarea>
           <label for="opening_button">Button label</label><input id="opening_button" name="opening_button" type="text" value="${v.openingButton}" maxlength="20">
-          <p class="hint">Instagram lets you send one DM per comment until the person answers. The tap counts as an answer, so the next message can follow. Leave the label empty to put the link (or email question) straight in the first DM.</p>
-        </div>
-        <div class="card">
-          <h3>Email</h3>
-          <label class="inline"><input type="checkbox" name="ask_email" ${checked(v.askEmail)}> Ask for an email before sending the link</label>
-          <label for="email_prompt">Question</label><textarea id="email_prompt" name="email_prompt">${v.emailPrompt}</textarea>
-          <p class="hint">Say what people will receive. This wording is saved with each email as their consent.</p>
-          <label for="email_reask">Re-ask, if the reply is not an email</label><textarea id="email_reask" name="email_reask">${v.emailReask}</textarea>
-          <p class="hint">After one re-ask, the link is sent anyway.</p>
+          <p class="hint">Instagram lets you send one DM per comment until the person answers. The tap counts as an answer, so the next message can follow. Leave the label empty to send the next step (the link, or the email question) as the first DM.</p>
         </div>
         <div class="card">
           <h3>Link</h3>
-          <label for="link_url">Link</label><input id="link_url" name="link_url" type="url" value="${v.linkUrl}" placeholder="https://" required>
           <label for="link_text">Message with the link</label><textarea id="link_text" name="link_text">${v.linkText}</textarea>
-          <label for="link_button">Button label</label><input id="link_button" name="link_button" type="text" value="${v.linkButton}" maxlength="20">
-          <p class="hint">Leave empty to paste the link in the message instead of a button.</p>
+          ${links.map(
+            (l, i) => html`<div class="row" style="align-items:flex-end">
+              <div style="flex:2;min-width:220px"><label for="link_url_${i}">${i === 0 ? "Link" : `Link ${i + 1} (optional)`}</label>
+                <input id="link_url_${i}" name="link_url_${i}" type="url" value="${l.url}" placeholder="https://" ${i === 0 ? "required" : ""}></div>
+              <div style="flex:1;min-width:140px"><label for="link_label_${i}">Button label</label>
+                <input id="link_label_${i}" name="link_label_${i}" type="text" value="${l.label}" maxlength="20" placeholder="${i === 0 ? DEFAULTS.linkLabel : ""}"></div></div>`,
+          )}
+          <p class="hint">Up to three links. With button labels they show as buttons under the message; leave every label empty to put the links in the message instead.</p>
+        </div>
+        <div class="card">
+          <h3>Email</h3>
+          ${mode("none", "Link only", "no email ask")}
+          ${mode("optional", "Link plus optional email", "the link comes right away, with a line inviting them to reply with their email")}
+          ${mode("first", "Email first", "ask for the email, re-ask once, then send the link either way")}
+          <h3 style="margin-top:16px">Link plus optional email</h3>
+          <label for="optional_prompt">Line added under the link</label><textarea id="optional_prompt" name="optional_prompt">${v.optionalPrompt}</textarea>
+          <p class="hint">Say what people will receive. Replies that aren't an email are left alone: no re-ask.</p>
+          <label for="optional_thanks">Reply once the email is saved</label><textarea id="optional_thanks" name="optional_thanks">${v.optionalThanks}</textarea>
+          <p class="hint">Leave empty to say nothing.</p>
+          <h3 style="margin-top:16px">Email first</h3>
+          <label for="email_prompt">Question</label><textarea id="email_prompt" name="email_prompt">${v.emailPrompt}</textarea>
+          <p class="hint">Say what people will receive.</p>
+          <label for="email_reask">Reply when the answer isn't an email (sent once)</label><textarea id="email_reask" name="email_reask">${v.emailReask}</textarea>
+          <label for="email_thanks">Message with the link once the email is saved</label><textarea id="email_thanks" name="email_thanks">${v.emailThanks}</textarea>
+          <p class="hint">Leave empty to use the link message above. After a second answer that isn't an email, the link is sent anyway with the link message.</p>
+          <h3 style="margin-top:16px">Consent</h3>
+          <label for="consent_text">Wording saved with each email</label><textarea id="consent_text" name="consent_text" placeholder="Leave empty to save the question they answered">${v.consentText}</textarea>
+          <p class="hint">Stored with every lead, with the date, as the record of what they agreed to.</p>
         </div>
         <div class="card">
           <label class="inline"><input type="checkbox" name="dm_keyword" ${checked(v.dmKeyword)}> Also answer the keyword when someone sends it by DM</label>
