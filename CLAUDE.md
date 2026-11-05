@@ -2,6 +2,8 @@
 
 An Instagram comment-to-DM bot that runs on one Cloudflare Worker with D1. The plan and its reasons are in `docs/design.md`; read it before changing behaviour, and update it when a decision changes.
 
+Helping someone set up, run or update their own copy? Follow `docs/guide-for-ai-agents.md`. The rest of this file is for working on OwnChats itself, in its public repository.
+
 ## This repo is public
 
 Pierre made it public from day one on purpose (2026-11-04), to build it in public. So everything committed is published the moment it is pushed.

@@ -74,7 +74,7 @@ Any text can use `{name}` (the person's Instagram name when Meta shares it, othe
 4. **Test**: comment the test keyword from another account and watch it arrive and the DM go out.
 5. **Create the first campaign** in the dashboard.
 
-The README also carries a "set this up with Claude" prompt for people who prefer to be walked through it. Updating a deployed copy (pulling fixes from this repo) must be documented and tested.
+The README also carries a prompt for people who prefer an AI agent to walk them through it, and `docs/guide-for-ai-agents.md` holds what the first real setup taught: what Meta's screens actually show, the problems and their fixes, diagnosing from the database, and updating a deployed copy. A Deploy-button copy shares no history with this repo, so updating applies the upstream diff since the copy was made; the guide's commands were tested on a real copy.
 
 ## Exports and integrations
 
@@ -95,11 +95,16 @@ Follow gate, Story reply triggers, Live comments, AI replies, a visual flow desi
 
 ## Open questions
 
-- Whether Standard Access is enough for private replies to strangers on Unified Login (see above). If it is not, App Review and Business Verification become part of setup, and the README must say so plainly.
-- Whether `messages` and `messaging_postbacks` webhooks arrive from strangers under Standard Access. Button taps and typed emails only reach OwnChats by webhook.
-- Whether a private reply can carry the opening button (see above). If Meta refuses the template, OwnChats sends the next step as plain text instead, and the log says so.
-- Whether one business portfolio can both own the app and hold the Instagram account. Meta's docs say the app's portfolio "needs to be separate from" the client's; for a creator they are the same.
-- Whether `business_management` in the configuration (needed, in one report, for Meta to list the Instagram account) requires Business Verification. `/setup` accepts the account id typed in by hand as a fallback.
+Answered by the first real run on 2026-11-04 (one account, published app, Standard Access, no App Review, no Business Verification):
+
+- Standard Access is enough: strangers' comments arrive by webhook and private replies reach them.
+- A private reply can carry a button: both a link button and the opening button were delivered.
+- Typed DMs (`messages`) from an account with no role on the app arrive once no other tool holds the conversation.
+- `business_management` was not needed. Meta listed the account once the person was assigned to it in their business portfolio. The app itself was left without a portfolio.
+
+Still open:
+
+- Whether `messaging_postbacks` (the opening button's tap) arrive from strangers. The only test ran while ManyChat still held the DM thread, and the tap never arrived.
 
 ## Decisions
 
