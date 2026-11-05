@@ -16,6 +16,7 @@ interface CommentRow {
   source: string;
   status: string;
   reason: string | null;
+  campaign_id: number | null;
   attempts: number;
 }
 
@@ -92,6 +93,11 @@ interface CommentFacts {
   fromId?: string | null;
   fromUsername?: string | null;
   parentId?: string | null;
+  /**
+   * The campaign a waiting comment already belongs to: the one it matched before
+   * it was queued, or the one the owner chose with "Answer" on the dashboard.
+   */
+  campaignId?: number | null;
 }
 
 type Decision = { campaign: Campaign } | { skip: string; campaignId: number | null; silent?: boolean };
@@ -103,9 +109,11 @@ function decide(ctx: Ctx, c: CommentFacts, campaigns: Campaign[]): Decision {
     if (c.parentId) return { skip: "own reply", campaignId: null, silent: true };
     return { skip: "your own comment (test from a second account)", campaignId: null };
   }
-  const campaign = matchComment(campaigns, c.mediaId, c.text);
+  // A campaign chosen earlier is kept while it is on, whatever the text says now.
+  const chosen = c.campaignId ? campaigns.find((x) => x.id === c.campaignId && x.active) : undefined;
+  const campaign = chosen ?? matchComment(campaigns, c.mediaId, c.text);
   if (!campaign) return { skip: "no matching campaign", campaignId: null };
-  if (c.timestamp < campaign.createdAt) return { skip: "written before the campaign started", campaignId: campaign.id };
+  if (!chosen && c.timestamp < campaign.createdAt) return { skip: "written before the campaign started", campaignId: campaign.id };
   if (ctx.now() - c.timestamp > PRIVATE_REPLY_WINDOW) return { skip: "older than 7 days, Meta no longer allows a DM", campaignId: campaign.id };
   if (!c.fromId) return { skip: "Meta did not say who wrote it", campaignId: campaign.id };
   if (!ctx.meta) return { skip: "Instagram is not connected", campaignId: campaign.id };
@@ -177,6 +185,7 @@ export async function handleComment(ctx: Ctx, id: string, campaigns?: Campaign[]
     fromId: row.from_id,
     fromUsername: row.from_username,
     parentId: row.parent_id,
+    campaignId: row.campaign_id,
   };
   const who = { commentId: row.id, igUserId: row.from_id, username: row.from_username };
   const settle = (status: string, reason: string | null, campaignId: number | null, extra: D1PreparedStatement[] = [], attempts = row.attempts) =>

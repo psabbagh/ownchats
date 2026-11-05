@@ -30,6 +30,7 @@ import { randomToken, sha256Hex } from "../crypto";
 import { leadsCsv, listLeads } from "../export";
 import type { Media } from "../meta/client";
 import { recentMedia } from "../pipeline/poll";
+import { missedComments } from "../missed";
 import { deleteSettings, saveSettings } from "../settings";
 import { campaignCounts, deletePerson, findPersonByUsername, listActivity, type ActivityRow } from "../stats";
 import { copyField, fmtTime, html, page, redirect, type Html } from "./html";
@@ -48,6 +49,7 @@ export function healthBanner(ctx: Ctx): Html {
 export async function dashboardHome(ctx: Ctx): Promise<Response> {
   const campaigns = await listCampaigns(ctx.db);
   const counts = await campaignCounts(ctx);
+  const missed = await missedComments(ctx, campaigns.filter((c) => c.active));
   const s = ctx.settings;
   return page(
     "OwnChats",
@@ -61,6 +63,9 @@ export async function dashboardHome(ctx: Ctx): Promise<Response> {
           <div class="row"><h3 style="flex:1"><a href="/dashboard/campaigns/${c.id}">${c.name}</a></h3>
             <span class="pill ${c.active ? "sent" : "skipped"}">${c.active ? "on" : "off"}</span></div>
           <p class="muted small">${c.anyComment ? "Any comment" : `Keyword: ${c.keywords.join(", ")}`} on ${c.mediaId ? c.mediaLabel || `post ${c.mediaId}` : "all posts"}, ${EMAIL_MODE_LABEL[c.emailMode]}</p>
+          ${missed.get(c.id)?.length
+            ? html`<p class="small"><a class="warn" href="/dashboard/campaigns/${c.id}#to-check">${missed.get(c.id)!.length === 1 ? "1 comment" : `${missed.get(c.id)!.length} comments`} to check</a></p>`
+            : ""}
           <div class="stats small">
             <div><b>${n?.people ?? 0}</b>people</div><div><b>${n?.dmsSent ?? 0}</b>DMs sent</div>
             ${c.openingButton ? html`<div><b>${n?.taps ?? 0}</b>taps</div>` : ""}

@@ -67,7 +67,7 @@ The `/setup` checklist in the app is the main path. Its wording was written befo
 
 - **Spellings.** Matching ignores case and needs the whole word. A space or dash in a keyword matches any spaces or dashes, so SET UP covers "set up" and "set-up". A joined or split word is a separate spelling: add both SETUP and SET UP. Add the doubled letters people type (AGENTSS). After the first day, open the campaign and look at its skipped comments for spellings you missed.
 - **DM keywords match anywhere in a DM.** With a common word as the keyword, a DM like "can we set up a call?" gets that campaign's link. Pick distinctive keywords, or turn the DM keyword off for that campaign.
-- **Arming a Reel before it's posted.** Comments written before a campaign was created are ignored, and comments that arrive while it is off are skipped and not retried. Create the campaign before posting, switched off, then attach it to the Reel and switch it on as soon as the Reel is live. An agent can watch the account's latest posts and do this; on the first run it took 2 minutes after posting.
+- **Arming a Reel before it's posted.** Comments written before a campaign was created are ignored, and comments that arrive while it is off are skipped and not retried. Both show under the campaign's To check for 7 days, where the owner can answer them one by one. Create the campaign before posting, switched off, then attach it to the Reel and switch it on as soon as the Reel is live. An agent can watch the account's latest posts and do this; on the first run it took 2 minutes after posting.
 - **Google Sheets** shows `#REF!` until someone clicks Allow access in the sheet.
 - **The export link and the API token** are stored encrypted. Get them from Settings in the dashboard; the values in the database are not usable.
 
@@ -117,20 +117,28 @@ Write to the database only for the fix below, and only with the person's OK.
 
 ## Answering a comment OwnChats missed
 
-On the first night, someone commented "Set-up" when the spellings were SETUP and SET UP, and got nothing. It only showed up in the skipped comments. To answer such a comment:
+On the first night, someone commented "Set-up" when the spellings were SETUP and SET UP, and got nothing. It only showed up in the skipped comments. Now such comments are listed on the campaign's page, under **To check**, with the time left in Meta's 7-day window:
 
-1. Fix the cause first, usually a missing spelling: edit the campaign in the dashboard.
-2. Check that the comment is less than 7 days old. After that, Meta refuses.
-3. With the person's OK, mark the comment as not yet handled:
+- near misses: a typo or two, a plural, joined or split words ("Set-up", "PROMTS", "work shop");
+- comments that match now: they came in while the campaign was off, or before a spelling was added;
+- comments written before the campaign started.
 
-   ```sql
-   UPDATE comments SET status = 'new', reason = NULL, campaign_id = NULL
-   WHERE id = '<comment id>' AND status = 'skipped';
-   ```
+People who already got the campaign's DM aren't listed. To answer one, with the person's OK:
 
-4. The Cron picks it up within a minute and sends the usual DM and public reply. Check that the row now says `done`.
+1. Switch the campaign on, if it's off.
+2. Click **Answer**, or for a near miss **Add "SET-UP" and answer**, which also adds the spelling so the next one matches.
+3. The page says what happened. Answered means the DM and public reply went out. If another tool already answered the comment, Meta refuses the second private reply, and nothing is sent.
 
-If the comment was already answered once, Meta refuses the second private reply and the row says `failed`. Nothing is sent twice.
+Each comment can be answered once. A second click, or the form sent again, does nothing.
+
+On a copy deployed before 2026-11-05, which has no To check list, mark the comment as not yet handled instead, after fixing the spelling in the campaign:
+
+```sql
+UPDATE comments SET status = 'new', reason = NULL, campaign_id = NULL
+WHERE id = '<comment id>' AND status = 'skipped';
+```
+
+The Cron picks it up within a minute. Check that the row now says `done`, or `failed` if Meta refused.
 
 ## Deleting someone's data
 
