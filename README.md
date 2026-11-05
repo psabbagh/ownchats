@@ -4,7 +4,7 @@ Your own Instagram comment-to-DM bot. Someone comments a keyword on your Reel, a
 
 I built this for my own Instagram account and I'm sharing it as-is. Take it, change it, run it. I don't promise support.
 
-**Status: v0, being built in public. The code is done and tested against a stand-in for Meta. The first real run on a live Instagram account hasn't happened yet**, and it has to answer one question Meta's docs contradict themselves on (see [What isn't proven yet](#what-isnt-proven-yet)). Until then, treat this as an experiment.
+**Status: v0, built in public.** It has answered real comments and DMs on my Instagram account since 2026-11-04. It has only run on one account so far, and one part is still unproven (see [What's proven so far](#whats-proven-so-far)), so treat it as an early version.
 
 ## What it does
 
@@ -23,7 +23,7 @@ I built this for my own Instagram account and I'm sharing it as-is. Take it, cha
 ## What you need
 
 - An Instagram **Creator** or **Business** account, set to public
-- A Facebook account, to create a free Meta developer account and a free Meta business portfolio
+- A Facebook account, to create a free Meta developer account and a free Meta business portfolio of your own (not your employer's)
 - A free **GitHub** account and a free **Cloudflare** account
 - A second Instagram account to test with (a friend's works)
 - About an hour, most of it in Meta's dashboard
@@ -55,27 +55,26 @@ Open your OwnChats address and sign in with your password. You land on **/setup*
 7. Test with a second account: comment OWNCHATS on any post and watch the reply, the DM, the tap, the email and the link arrive
 8. Create your first campaign
 
-### Or: set it up with Claude
+### Or: set it up with an AI agent
 
-If you use Claude (Claude Code, or Claude with browser access), paste this and it will walk you through:
+[docs/guide-for-ai-agents.md](docs/guide-for-ai-agents.md) is written for an AI agent to follow: what Meta's screens actually showed during the first real setup, the problems we hit and how we fixed them, how to diagnose a missed comment, and how to update your copy. If you use Claude Code, Codex or another agent that can use a browser, paste this:
 
 ```text
 I want to set up OwnChats, an Instagram comment-to-DM bot, from
-https://github.com/psabbagh/ownchats. Read its README and docs/design.md first.
+https://github.com/psabbagh/ownchats. First read docs/guide-for-ai-agents.md,
+then the README and docs/design.md, and follow the guide's ground rules.
 Walk me through it one step at a time: the Deploy to Cloudflare button, then
-every step of the /setup checklist on my OwnChats address, including the Meta
-developer dashboard. Tell me exactly where to click and what to paste.
-Rules: never ask me for a password, app secret or token, and never type one
-yourself. I type those myself. Don't create accounts for me. If a screen in
-Meta's dashboard doesn't match the checklist, tell me what you see and we'll
-work it out together. At the end, help me run the test in step 7 with my
-second account.
+every step of the /setup checklist on my OwnChats address, including Meta's
+developer dashboard. Tell me exactly where to click and what to paste. I type
+every password, app secret and token myself. If a screen doesn't match what
+the guide or the checklist says, tell me what you see and we'll work it out.
+At the end, help me run the test with my second account.
 ```
 
 ## Using it
 
 - **Campaigns:** in the dashboard, New campaign. Pick the keyword (add extra spellings with commas), the post or all posts, and the link. Then adjust any of the wording if you like: the public replies, the first DM and its button, the email mode and its messages.
-- **Only one tool per Reel.** Instagram allows one private reply per comment. If ManyChat or another tool also answers a Reel, the second one fails. Move a Reel to OwnChats by turning it off in the other tool first.
+- **Only one tool per Reel.** Instagram allows one private reply per comment. If ManyChat or another tool also answers a Reel, the second one fails. Move a Reel to OwnChats by turning it off in the other tool first. While the other tool's Instagram channel stays connected, it can keep the DM threads to itself, so button taps and DMs may not reach OwnChats; the [guide](docs/guide-for-ai-agents.md#moving-from-manychat-or-another-tool) explains how to switch it off.
 - **Leads:** the Leads page lists every email with the wording the person agreed to and when. Download a CSV there.
 - **Google Sheets:** Settings, Create link, then paste the `=IMPORTDATA("...")` formula it shows into cell A1 of a sheet. It refreshes about once an hour. Anyone with the link can read your leads, so you can regenerate or turn it off at any time.
 - **API:** Settings, Create token. Then `GET /api/campaigns`, `/api/leads`, `/api/activity` and `/api/stats` with `Authorization: Bearer <token>`. `GET /api` lists them. It's read-only.
@@ -90,25 +89,22 @@ second account.
 - Your own comments never trigger anything. Test from a second account.
 - There's no way to DM someone when they follow you: Meta has no such event for apps like this.
 
-## What isn't proven yet
+## What's proven so far
 
-- **Whether Meta delivers strangers' comments to your own app without App Review.** Meta's docs say an app that only serves your own account needs no review, and also that comment notifications need "Advanced Access". OwnChats also checks your watched posts for new comments every minute, so it doesn't depend on the notifications for comments. But button taps and typed emails only arrive as notifications. The first real run will settle it, and this README will say plainly if App Review turns out to be part of setup.
-- **Whether the "Send me the link" button works in a private reply** on new Meta apps. Meta documents only text there. If Meta refuses the button, OwnChats sends the next step as plain text instead and notes it in the activity log.
-- **Meta changed how new apps connect in October 2026** ("Unified Login", which needs a business portfolio). OwnChats is built for that path; older guides for other tools are not.
+The first real run, on my account on 2026-11-04, settled the question Meta's docs contradict themselves on. With the app published, on Standard Access, and without App Review or Business Verification:
+
+- Comments from strangers arrive within about a second, and they get the DM and the public reply.
+- The button in the first DM works.
+- Typed DMs arrive, so DM keywords and the email question work.
+- The email chain works end to end, through to the Leads page and Google Sheets.
+
+Still unproven: whether a tap on the "Send me the link" button reaches OwnChats from a stranger. The only test ran while ManyChat still held that DM thread. A campaign without the button sends the link in the first DM and doesn't depend on it. The [guide](docs/guide-for-ai-agents.md#whats-proven-so-far) has the details.
+
+Meta changed how new apps connect in October 2026 ("Unified Login", which needs a business portfolio). OwnChats is built for that path; older guides for other tools are not.
 
 ## Updating your copy
 
-Your copy on GitHub is yours, and Cloudflare redeploys it each time it changes. To pull in fixes from this repository, run this once in a copy of your repository on your computer, or ask Claude to do it for you:
-
-```bash
-git remote add upstream https://github.com/psabbagh/ownchats.git
-```
-
-Then, each time you want the latest version:
-
-```bash
-git pull upstream main && git push
-```
+Your copy on GitHub is yours, and Cloudflare redeploys it each time it changes. The Deploy button makes it as a fresh copy with no shared history with this repository, so a plain `git pull` from here refuses to merge. To pull in fixes, you apply what changed here since your copy was made. The [guide](docs/guide-for-ai-agents.md#updating-a-copy) has the exact commands, tested on a real copy; you can also ask your AI agent to follow them.
 
 Database changes apply themselves on the next deploy.
 
