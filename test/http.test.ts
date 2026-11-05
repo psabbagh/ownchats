@@ -135,11 +135,40 @@ describe("admin pages", () => {
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM leads").first()).toMatchObject({ n: 1 });
     const cookie = await w.signIn();
     await w.fetch("/dashboard/people/delete", form(cookie, { username: `@${FAN.username}` }));
-    for (const table of ["leads", "conversations", "comments"]) {
+    for (const table of ["leads", "conversations"]) {
       expect(await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first(), table).toMatchObject({ n: 0 });
     }
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM activity WHERE ig_user_id = ?").bind(FAN.id).first()).toMatchObject({ n: 0 });
+    // The comment keeps its id and nothing about the person.
+    expect(await env.DB.prepare("SELECT from_id, from_username, text, status, campaign_id FROM comments").all().then((r) => r.results)).toEqual([
+      { from_id: null, from_username: null, text: "", status: "skipped", campaign_id: null },
+    ]);
     expect(id).toBeGreaterThan(0);
+  });
+
+  it("never take a deleted person's old comment for a new one", async () => {
+    await w.campaign({ emailMode: "first", openingButton: "" });
+    const old = w.comment("agents", FAN);
+    await w.sendComment(old);
+    await w.sendDm(FAN.id, "fan@example.com");
+    const cookie = await w.signIn();
+    await w.fetch("/dashboard/people/delete", form(cookie, { ig_user_id: FAN.id }));
+    const sent = w.meta.sent.length;
+
+    // The poll reads the comment again, and Meta delivers its webhook again.
+    w.meta.calls.length = 0;
+    w.clock.advance(5 * 60_000);
+    await w.cron();
+    expect(w.meta.calls).toContain("listComments");
+    await w.sendComment(old);
+
+    expect(w.meta.sent.length).toBe(sent);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM comments WHERE from_id IS NOT NULL OR from_username IS NOT NULL OR text != ''").first()).toMatchObject({ n: 0 });
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM activity WHERE ig_user_id = ? OR username = ?").bind(FAN.id, FAN.username).first()).toMatchObject({ n: 0 });
+
+    // A new comment from them is a new request, and gets its answer.
+    await w.sendComment(w.comment("agents please", FAN));
+    expect(w.meta.sent.filter((s) => s.kind === "private_reply").length).toBe(2);
   });
 });
 

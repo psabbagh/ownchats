@@ -76,13 +76,32 @@ export async function listActivity(
   return results;
 }
 
-/** Deletes everything stored about one person: their data-deletion request. */
+/**
+ * Deletes everything stored about one person: their data-deletion request.
+ *
+ * Each of their comments keeps its id and nothing else. Without that marker, the
+ * next poll (or a webhook Meta delivers again) would take the comment for a new
+ * one, store the person again and try to answer them again. The Cron removes the
+ * markers with the other old comments, long after the poll stops reading them.
+ */
 export async function deletePerson(ctx: Ctx, igUserId: string): Promise<void> {
+  // A comment can carry a different id from the messaging one; their conversations know both.
+  const { results } = await ctx.db
+    .prepare("SELECT DISTINCT commenter_id AS id FROM conversations WHERE ig_user_id = ? AND commenter_id IS NOT NULL")
+    .bind(igUserId)
+    .all<{ id: string }>();
+  const ids = [...new Set([igUserId, ...results.map((r) => r.id)])];
+  const marks = ids.map(() => "?").join(", ");
   await ctx.db.batch([
     ctx.db.prepare("DELETE FROM leads WHERE ig_user_id = ?").bind(igUserId),
     ctx.db.prepare("DELETE FROM conversations WHERE ig_user_id = ?").bind(igUserId),
-    ctx.db.prepare("DELETE FROM comments WHERE from_id = ?").bind(igUserId),
-    ctx.db.prepare("DELETE FROM activity WHERE ig_user_id = ?").bind(igUserId),
+    ctx.db
+      .prepare(
+        `UPDATE comments SET from_id = NULL, from_username = NULL, text = '', status = 'skipped', reason = 'person deleted',
+           campaign_id = NULL, locked_at = NULL WHERE from_id IN (${marks})`,
+      )
+      .bind(...ids),
+    ctx.db.prepare(`DELETE FROM activity WHERE ig_user_id IN (${marks})`).bind(...ids),
   ]);
 }
 
