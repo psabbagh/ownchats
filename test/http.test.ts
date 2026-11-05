@@ -79,6 +79,15 @@ describe("admin pages", () => {
     }
   });
 
+  it("start new campaigns, and the setup test campaign, with the DM keyword off", async () => {
+    const cookie = await w.signIn();
+    const page = await (await w.fetch("/dashboard/campaigns/new", { headers: { cookie } })).text();
+    expect(page).toMatch(/<input type="checkbox" name="dm_keyword"\s*>/);
+    expect(page).not.toMatch(/name="dm_keyword" checked/);
+    expect((await w.fetch("/setup/test", form(cookie, { do: "create" }))).status).toBe(303);
+    expect(await env.DB.prepare("SELECT dm_keyword FROM campaigns").first()).toEqual({ dm_keyword: 0 });
+  });
+
   it("create a campaign from the form, and explain mistakes", async () => {
     const cookie = await w.signIn();
     const bad = await w.fetch("/dashboard/campaigns/new", form(cookie, { name: "", keywords: "", link_url_0: "not a link", media_id: "all" }));

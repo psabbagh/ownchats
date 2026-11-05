@@ -21,7 +21,8 @@ function newCampaignDefaults(): CampaignInput {
     consentText: "",
     linkText: DEFAULTS.linkText,
     links: [{ label: DEFAULTS.linkLabel, url: "" }],
-    dmKeyword: true,
+    // Off by default: a keyword that is a common word ("traffic") would answer ordinary DMs.
+    dmKeyword: false,
     active: true,
   };
 }

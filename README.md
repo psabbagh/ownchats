@@ -14,7 +14,7 @@ I built this for my own Instagram account and I'm sharing it as-is. Take it, cha
   - **Link plus optional email:** the link comes right away with "Reply with your email if you want more". An email reply is saved; anything else is left alone.
   - **Email first:** it asks for their email and says what they'll get. A valid email is saved and the link goes out. Anything else gets one re-ask, then the link goes out anyway, so nobody leaves empty-handed.
 - **Every word is yours.** Each campaign's public replies, DMs, button labels, links (up to three) and consent wording are editable, with defaults that work as they are. Write `{name}` to greet people by name.
-- **DM keyword.** Someone sends AGENTS by DM (for example, their comment is older than a week) and gets the same flow.
+- **DM keyword.** Someone sends AGENTS by DM (for example, their comment is older than a week) and gets the same flow. Off by default; switch it on per campaign.
 - **One post or all posts.** Arm a campaign on one Reel, or on all your posts so it's live before the Reel goes up. A campaign on one post can also answer every comment, keyword or not.
 - **Varied public replies**, picked at random and never the same twice in a row, so identical replies on a busy post don't get your comments limited.
 - **A dashboard** with your campaigns, your leads and an activity log. Each campaign shows every comment on its post and why it did or didn't get a DM, and how many people tapped, gave their email and got the link.
