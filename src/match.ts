@@ -7,16 +7,21 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** Spaces and dashes of any kind (hyphen, en dash, em dash...) between the words of a keyword. */
+const GAP = /[\s\p{Pd}]+/gu;
+
 /**
  * Whole-word, case-insensitive match of any keyword. "Agents", "AGENTS!" and
- * "#agents" match AGENTS; "agentsmith" does not. Keywords may contain spaces.
+ * "#agents" match AGENTS; "agentsmith" does not. Keywords may contain spaces,
+ * and a space or dash in a keyword matches any run of spaces and dashes, so
+ * SET UP matches "set-up" with any kind of dash, and CHEAT-SHEET matches "cheat sheet".
  */
 export function matchesKeyword(text: string, keywords: string[]): boolean {
   const haystack = normalise(text);
   return keywords.some((raw) => {
-    const keyword = normalise(raw.trim()).replace(/\s+/g, " ");
+    const keyword = normalise(raw).replace(GAP, " ").trim();
     if (!keyword) return false;
-    const pattern = escapeRegExp(keyword).replace(/ /g, "\\s+");
+    const pattern = escapeRegExp(keyword).replace(/ /g, "[\\s\\p{Pd}]+");
     return new RegExp(`(?<![\\p{L}\\p{N}_])${pattern}(?![\\p{L}\\p{N}_])`, "u").test(haystack);
   });
 }

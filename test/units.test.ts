@@ -18,6 +18,23 @@ describe("keywords", () => {
     expect(matchesKeyword("CAFÉ", ["café"])).toBe(true);
   });
 
+  it("treat a dash between the words of a keyword like a space", () => {
+    const k = ["SET UP"];
+    expect(matchesKeyword("Set-up", k)).toBe(true);
+    expect(matchesKeyword("set–up please", k)).toBe(true); // en dash
+    expect(matchesKeyword("set—up", k)).toBe(true); // em dash, from a phone keyboard
+    expect(matchesKeyword("set - up", k)).toBe(true);
+    expect(matchesKeyword("Cheat sheet!", ["CHEAT-SHEET"])).toBe(true);
+    expect(matchesKeyword("30-day plan", ["30 DAY PLAN"])).toBe(true);
+    // Joining or splitting words is still up to the extra spellings.
+    expect(matchesKeyword("setup", k)).toBe(false);
+    expect(matchesKeyword("set up", ["SETUP"])).toBe(false);
+    expect(matchesKeyword("upset-up", k)).toBe(false);
+    // A one-word keyword already matched beside a dash.
+    expect(matchesKeyword("AI-agents", ["AGENTS"])).toBe(true);
+    expect(matchesKeyword("-", ["-"])).toBe(false);
+  });
+
   it("parse a typed list without duplicates", () => {
     expect(parseKeywords("AGENTS, agent,  AGENTS ,\n")).toEqual(["AGENTS", "agent"]);
   });
