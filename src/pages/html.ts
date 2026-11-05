@@ -55,6 +55,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;p
 .pill.sent,.pill.saved,.pill.received{color:var(--ok);border-color:var(--ok)}.pill.failed{color:var(--bad);border-color:var(--bad)}.pill.skipped,.pill.queued{color:var(--muted)}
 .errors{border-color:var(--bad)}.notice{border-color:var(--warn)}
 .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}table.figures{max-width:480px}
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px}.stats div{border:1px solid var(--line);border-radius:8px;padding:8px}.stats b{display:block;font-size:22px}
 `;
 
