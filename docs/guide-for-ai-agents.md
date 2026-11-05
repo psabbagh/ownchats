@@ -65,7 +65,7 @@ The `/setup` checklist in the app is the main path. Its wording was written befo
 
 ## Running campaigns
 
-- **Spellings.** Matching ignores case and needs the whole word. A space or dash in a keyword matches any spaces or dashes, so SET UP covers "set up" and "set-up". A joined or split word is a separate spelling: add both SETUP and SET UP. Add the doubled letters people type (AGENTSS). After the first day, look at the skipped comments for spellings you missed.
+- **Spellings.** Matching ignores case and needs the whole word. A space or dash in a keyword matches any spaces or dashes, so SET UP covers "set up" and "set-up". A joined or split word is a separate spelling: add both SETUP and SET UP. Add the doubled letters people type (AGENTSS). After the first day, open the campaign and look at its skipped comments for spellings you missed.
 - **DM keywords match anywhere in a DM.** With a common word as the keyword, a DM like "can we set up a call?" gets that campaign's link. Pick distinctive keywords, or turn the DM keyword off for that campaign.
 - **Arming a Reel before it's posted.** Comments written before a campaign was created are ignored, and comments that arrive while it is off are skipped and not retried. Create the campaign before posting, switched off, then attach it to the Reel and switch it on as soon as the Reel is live. An agent can watch the account's latest posts and do this; on the first run it took 2 minutes after posting.
 - **Google Sheets** shows `#REF!` until someone clicks Allow access in the sheet.
@@ -73,7 +73,7 @@ The `/setup` checklist in the app is the main path. Its wording was written befo
 
 ## Diagnosing with the database
 
-The dashboard's activity log answers most questions. For the rest, read the database from a clone of the person's copy, after `npx wrangler login` with their Cloudflare account. `DB` is the database binding in `wrangler.jsonc`, so these commands work whatever the database is called:
+The dashboard answers most questions: a campaign's page lists every comment on its post, what happened to it and why, and the activity log shows every step. For anything else, read the database from a clone of the person's copy, after `npx wrangler login` with their Cloudflare account. `DB` is the database binding in `wrangler.jsonc`, so these commands work whatever the database is called:
 
 ```bash
 npx wrangler d1 execute DB --remote --command "SELECT id, name, media_id, keywords, active FROM campaigns"

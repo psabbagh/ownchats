@@ -17,7 +17,7 @@ I built this for my own Instagram account and I'm sharing it as-is. Take it, cha
 - **DM keyword.** Someone sends AGENTS by DM (for example, their comment is older than a week) and gets the same flow.
 - **One post or all posts.** Arm a campaign on one Reel, or on all your posts so it's live before the Reel goes up. A campaign on one post can also answer every comment, keyword or not.
 - **Varied public replies**, picked at random and never the same twice in a row, so identical replies on a busy post don't get your comments limited.
-- **A dashboard** with your campaigns, their numbers (people, DMs, taps, emails, links), your leads, and an activity log that says why each comment did or didn't get a DM.
+- **A dashboard** with your campaigns, your leads and an activity log. Each campaign shows every comment on its post and why it did or didn't get a DM, and how many people tapped, gave their email and got the link.
 - **Your leads where you work:** CSV download, a live Google Sheet with one formula, and a read-only JSON API for your own tools.
 
 ## What you need

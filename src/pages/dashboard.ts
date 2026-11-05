@@ -1,6 +1,6 @@
 import { campaignFromForm, DEFAULTS, getCampaign, listCampaigns, saveCampaign, type Campaign, type CampaignInput, type EmailMode } from "../campaigns";
 
-const EMAIL_MODE_LABEL: Record<EmailMode, string> = { none: "link only", optional: "link plus optional email", first: "email first" };
+export const EMAIL_MODE_LABEL: Record<EmailMode, string> = { none: "link only", optional: "link plus optional email", first: "email first" };
 
 function newCampaignDefaults(): CampaignInput {
   return {
@@ -170,13 +170,12 @@ async function campaignForm(ctx: Ctx, current: Campaign | null, input?: Campaign
         <div class="card">
           <label class="inline"><input type="checkbox" name="dm_keyword" ${checked(v.dmKeyword)}> Also answer the keyword when someone sends it by DM</label>
           <label class="inline"><input type="checkbox" name="active" ${checked(v.active)}> Campaign is on</label>
-          <p><button>${current ? "Save" : "Create campaign"}</button> <a href="/dashboard">Cancel</a></p>
+          <p><button>${current ? "Save" : "Create campaign"}</button> <a href="${current ? `/dashboard/campaigns/${current.id}` : "/dashboard"}">Cancel</a></p>
         </div>
       </form>
       ${current
         ? html`<form method="post" action="/dashboard/campaigns/${current.id}/delete" onsubmit="return confirm('Delete this campaign? Its emails stay in Leads.')">
-            <button class="danger">Delete campaign</button></form>
-            <h2>Recent activity</h2>${activityTable(await listActivity(ctx, { campaignId: current.id, limit: 50 }), new Map([[current.id, current.name]]))}`
+            <button class="danger">Delete campaign</button></form>`
         : ""}`,
     { nav: true },
   );
@@ -209,22 +208,24 @@ export async function deleteCampaign(ctx: Ctx, id: number): Promise<Response> {
   return redirect("/dashboard");
 }
 
+/** What each kind of log entry is, in the dashboard's words. */
+export const KIND_LABEL: Record<string, string> = {
+  comment: "Comment",
+  private_reply: "First DM",
+  public_reply: "Public reply",
+  tap: "Button tap",
+  message: "DM",
+  email: "Email",
+  link: "Link",
+  token: "Token",
+};
+
 export function activityTable(rows: ActivityRow[], names: Map<number, string>): Html {
   if (!rows.length) return html`<p class="muted">Nothing yet.</p>`;
-  const what: Record<string, string> = {
-    comment: "Comment",
-    private_reply: "First DM",
-    public_reply: "Public reply",
-    tap: "Button tap",
-    message: "DM",
-    email: "Email",
-    link: "Link",
-    token: "Token",
-  };
   return html`<table><thead><tr><th>When</th><th>What</th><th>Result</th><th>Who</th><th>Why</th></tr></thead><tbody>
     ${rows.map(
       (r) => html`<tr><td class="small">${fmtTime(r.at)}</td>
-        <td>${what[r.kind] ?? r.kind}${r.campaign_id ? html`<br><span class="muted small">${names.get(r.campaign_id) ?? `campaign ${r.campaign_id}`}</span>` : ""}</td>
+        <td>${KIND_LABEL[r.kind] ?? r.kind}${r.campaign_id ? html`<br><span class="muted small">${names.get(r.campaign_id) ?? `campaign ${r.campaign_id}`}</span>` : ""}</td>
         <td><span class="pill ${r.outcome}">${r.outcome}</span></td>
         <td>${r.username ? `@${r.username}` : ""}</td>
         <td class="small">${r.reason ?? ""}${r.detail ? html`<br><span class="muted">${r.detail}</span>` : ""}</td></tr>`,

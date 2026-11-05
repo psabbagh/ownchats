@@ -54,7 +54,7 @@ Any text can use `{name}` (the person's Instagram name when Meta shares it, othe
 - Routes:
   - `/webhook`: Meta's verification handshake and incoming events.
   - `/setup`: the setup checklist (below).
-  - `/dashboard`: campaigns, leads and the activity log.
+  - `/dashboard`: campaigns, leads and the activity log. A campaign opens on its results: every comment on its post and what happened to it, why comments were skipped, the DMs from comments and from the DM keyword, and Meta's refusals. The form is behind Edit.
   - `/api`: token-protected JSON for integrations.
   - `/privacy` and `/data-deletion`: the pages Meta requires, served by the app itself.
   - `/export/leads.csv`: a revocable secret link for Google Sheets.
@@ -112,3 +112,4 @@ Still open:
 - 2026-11-04: from the must-have research (ranked list in the author's notes), v0 adds the opening button, rotating public replies, all-posts targeting and any-comment mode. Follow gate, story triggers, newsletter push and click tracking stay out.
 - 2026-11-04: the email ask is a per-campaign choice of three modes: link only, link plus optional email, email first. This replaces the earlier two scenarios (link, or email before the link).
 - 2026-11-04: every outgoing text, button label and link is editable per campaign, with defaults and `{name}` / `{username}` placeholders. Public replies are picked at random rather than in turn.
+- 2026-11-05: a campaign opens on its results rather than its form, so checking a Reel needs no database query. Comment counts cover 30 days, since comment rows are deleted after that. The DM funnel counts conversations, which last as long as the campaign. Taps in the last 24 hours, links sent again and failures come from the log, which keeps 90 days.
