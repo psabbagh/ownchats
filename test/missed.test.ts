@@ -1,6 +1,8 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
-import { nearMiss } from "../src/match";
+import { listCampaigns } from "../src/campaigns";
+import { CommentText, editDistanceWithin, KeywordSet, nearMiss } from "../src/match";
+import { missedComments } from "../src/missed";
 import { MetaError } from "../src/meta/client";
 import { DAY, HOUR, MINUTE } from "../src/time";
 import { BASE, FAN, FAN2, OTHER_POST, OWNER, setupWorld } from "./helpers";
@@ -40,6 +42,43 @@ describe("near misses", () => {
     }
     for (const text of ["hear hear", "dear", "year"]) expect(nearMiss(text, ["GEAR"]), text).toBeNull();
     expect(nearMiss("AGENTS please", ["AGENTS"])).toBeNull();
+  });
+});
+
+describe("bounded edit distance", () => {
+  /** The full table, as a reference: swapping two neighbouring letters counts as one edit. */
+  function full(a: string, b: string): number {
+    const d = Array.from({ length: a.length + 1 }, (_, i) => Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)));
+    for (let i = 1; i <= a.length; i++) {
+      for (let j = 1; j <= b.length; j++) {
+        d[i]![j] = Math.min(d[i - 1]![j]! + 1, d[i]![j - 1]! + 1, d[i - 1]![j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+        if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i]![j] = Math.min(d[i]![j]!, d[i - 2]![j - 2]! + 1);
+      }
+    }
+    return d[a.length]![b.length]!;
+  }
+
+  it("agrees with the full table up to its limit, and stops early beyond it", () => {
+    let seed = 1;
+    const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+    const word = () => Array.from({ length: Math.floor(rnd() * 10) }, () => "abcd"[Math.floor(rnd() * 4)]).join("");
+    for (let n = 0; n < 3000; n++) {
+      const a = word();
+      const b = word();
+      const max = Math.floor(rnd() * 4);
+      expect(editDistanceWithin(a, b, max), `${a} ${b} ${max}`).toBe(Math.min(full(a, b), max + 1));
+    }
+    expect(editDistanceWithin("agnets", "agents", 1)).toBe(1);
+    expect(editDistanceWithin("a".repeat(60), "b".repeat(60), 2)).toBe(3);
+  });
+
+  it("gives the same answers when keywords and comments are prepared once for many checks", () => {
+    const keywords = new KeywordSet(["PROMPTS", "SET UP"]);
+    for (const text of ["PROMTS please", "promts", "love this", "Setup", "set up", "agents"]) {
+      const t = new CommentText(text);
+      expect(keywords.nearMiss(t), text).toEqual(nearMiss(text, ["PROMPTS", "SET UP"]));
+      expect(keywords.nearMiss(t), `${text}, again`).toEqual(nearMiss(text, ["PROMPTS", "SET UP"]));
+    }
   });
 });
 
@@ -155,6 +194,18 @@ describe("answering a missed comment", () => {
       expect(res.headers.get("location"), commentId).toContain(`problem=${problem}`);
     }
     expect(w.meta.sent.length).toBe(sent);
+  });
+
+  it("lists near misses on any post for an all-posts campaign, and only on its own post otherwise", async () => {
+    const all = await w.campaign({ name: "Gear", keywords: ["GEAR"], mediaId: null, mediaLabel: null });
+    const reel = await w.campaign();
+    const gears = w.comment("gears please", FAN, { media: OTHER_POST });
+    await w.sendComment(gears);
+    await w.sendComment(w.comment("agnets", FAN2, { media: OTHER_POST }));
+    const ctx = await w.ctx();
+    const missed = await missedComments(ctx, await listCampaigns(env.DB, true));
+    expect(missed.get(all)?.map((m) => [m.id, m.spelling])).toEqual([[gears.id, "GEARS"]]);
+    expect(missed.get(reel)).toBeUndefined();
   });
 
   it("refuses a spelling that doesn't match the comment, and only answers on a signed-in, same-site POST", async () => {
