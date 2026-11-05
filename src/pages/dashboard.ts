@@ -274,7 +274,7 @@ export async function leadsPage(ctx: Ctx, message = ""): Promise<Response> {
       <h2>Delete someone's data</h2>
       <form method="post" action="/dashboard/people/delete" class="card">
         <label for="username">Instagram username</label><input id="username" name="username" type="text" placeholder="@username">
-        <p class="hint">Deletes their email, conversations, comments and log entries. Use it when someone asks for their data to be deleted.</p>
+        <p class="hint">Deletes their email, conversations, comments and log entries. Each comment keeps only its id, so OwnChats never answers it again. Use it when someone asks for their data to be deleted.</p>
         <p><button class="danger">Delete their data</button></p>
       </form>`,
     { nav: true },

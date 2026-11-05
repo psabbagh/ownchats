@@ -38,7 +38,7 @@ export function dataDeletionPage(ctx: Ctx): Response {
     "Delete your data",
     html`<h1>How to delete your data</h1>
       <p>This service, run by ${handle}, stores your Instagram username and id, your comments and messages to the account, and your email address if you gave it.</p>
-      <p>To have all of it deleted, send ${contact} asking for your data to be deleted. Include your Instagram username. Everything stored about you is deleted, usually within a few days, and you get a reply when it is done.</p>
+      <p>To have all of it deleted, send ${contact} asking for your data to be deleted. Include your Instagram username. Everything stored about you is deleted, usually within a few days, and you get a reply when it is done. Only the id of each of your comments is kept, with nothing else, for up to 30 days, so they are never answered or stored again.</p>
       <p>You can also remove this service's access through Instagram: Settings, then Apps and websites.</p>`,
   );
 }

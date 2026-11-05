@@ -87,6 +87,7 @@ OwnChats knows nothing about any particular integration. Integrations call the A
 
 - The email ask says what the person will receive.
 - Each lead is stored with the consent wording shown and a timestamp, and can be deleted on request through the data-deletion route.
+- Deleting a person removes their lead, conversations and log entries, and the text, username and id on each of their comments. Each comment keeps only its own id until the 30-day cleanup, so the poll and redelivered webhooks never take it for a new comment, store the person again or try to answer it twice. A new comment from them afterwards is a new request and is answered.
 
 ## Not in v0
 
