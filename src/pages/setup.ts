@@ -282,7 +282,7 @@ export async function testCampaign(ctx: Ctx, request: Request): Promise<Response
       consentText: "OwnChats setup test",
       linkText: "Test complete. Here is the link:",
       links: [{ label: DEFAULTS.linkLabel, url: "https://github.com/psabbagh/ownchats" }],
-      dmKeyword: true,
+      dmKeyword: false,
       active: true,
     },
     null,
