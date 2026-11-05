@@ -1,6 +1,7 @@
 import { getCampaign, listCampaigns, type Campaign } from "../campaigns";
 import type { Ctx } from "../context";
 import type { Media } from "../meta/client";
+import { ANSWER_PROBLEM, answerMissed, answerOutcome, missedComments, type AnswerProblem, type MissedComment } from "../missed";
 import { recentMedia } from "../pipeline/poll";
 import {
   campaignResults,
@@ -13,9 +14,11 @@ import {
   type CommentTally,
 } from "../stats";
 import { activityTable, EMAIL_MODE_LABEL, healthBanner, KIND_LABEL } from "./dashboard";
-import { fmtTime, html, page, type Html } from "./html";
+import { fmtTime, html, page, redirect, type Html } from "./html";
+import { DAY, HOUR } from "../time";
 
 const COMMENTS_PER_PAGE = 100;
+const MISSED_SHOWN = 50;
 
 /** How far the DM went, for an answered comment. */
 const PROGRESS: Record<string, string> = {
@@ -63,6 +66,75 @@ function commentText(line: CommentLine): Html {
   return html`${line.parent_id ? html`<span class="muted small">reply: </span>` : ""}${text}`;
 }
 
+function timeLeft(ms: number): string {
+  if (ms >= 2 * DAY) return `${Math.floor(ms / DAY)} days left to answer`;
+  if (ms >= DAY) return "1 day left to answer";
+  if (ms >= 2 * HOUR) return `${Math.floor(ms / HOUR)} hours left to answer`;
+  return "less than 2 hours left to answer";
+}
+
+function whyMissed(m: MissedComment, campaign: Campaign): string {
+  const before = m.beforeStart ? ", and was written before the campaign started" : "";
+  if (m.why === "close") return `Close to ${m.keyword}${before}.`;
+  if (m.why === "before") return "Written before the campaign started.";
+  if (m.beforeStart) return campaign.anyComment ? "Written before the campaign started." : "Has the keyword, but was written before the campaign started.";
+  return campaign.anyComment
+    ? "Came in while the campaign was off."
+    : "Has the keyword now: it came in while the campaign was off, or before this spelling was added.";
+}
+
+function missedSection(campaign: Campaign, missed: MissedComment[]): Html {
+  if (!missed.length) return html``;
+  const action = `/dashboard/campaigns/${campaign.id}/answer`;
+  return html`<h2>To check (${missed.length})</h2>
+    <p class="muted small">Skipped comments this campaign can still answer. Answering sends its usual DM and public reply, once, to that one person.
+      If another tool already answered a comment, Meta refuses and nothing is sent.</p>
+    ${campaign.active ? "" : html`<p class="warn small">The campaign is off. Switch it on to answer these.</p>`}
+    ${missed.slice(0, MISSED_SHOWN).map((m) => {
+      const who = m.fromUsername ? `@${m.fromUsername}` : "this person";
+      const ask = `Send this campaign's DM to ${who}?`;
+      return html`<div class="card">
+        <p style="margin:0"><b>${m.fromUsername ? `@${m.fromUsername}` : "Someone"}</b> <span class="muted small">${fmtTime(m.commentedAt)}, ${timeLeft(m.left)}</span></p>
+        <p style="margin:4px 0;overflow-wrap:anywhere">${m.text.length > 280 ? `${m.text.slice(0, 280)}...` : m.text}</p>
+        <p class="muted small" style="margin:0">${whyMissed(m, campaign)}</p>
+        ${campaign.active
+          ? html`<div class="row" style="margin-top:8px">
+              <form method="post" action="${action}" data-ask="${ask}" onsubmit="return confirm(this.dataset.ask)">
+                <input type="hidden" name="comment_id" value="${m.id}"><button>Answer</button></form>
+              ${m.spelling && !campaign.anyComment
+                ? html`<form method="post" action="${action}" data-ask="${`Add ${m.spelling} as a spelling and send this campaign's DM to ${who}?`}" onsubmit="return confirm(this.dataset.ask)">
+                    <input type="hidden" name="comment_id" value="${m.id}"><input type="hidden" name="spelling" value="${m.spelling}">
+                    <button class="secondary">Add "${m.spelling}" and answer</button></form>`
+                : ""}
+            </div>`
+          : ""}
+      </div>`;
+    })}
+    ${missed.length > MISSED_SHOWN ? html`<p class="muted small">And ${missed.length - MISSED_SHOWN} more, older ones. Answer these first.</p>` : ""}`;
+}
+
+/** What the last "Answer" did, from the address the form came back to. */
+async function answerNotice(ctx: Ctx, url: URL): Promise<Html> {
+  const problem = url.searchParams.get("problem") as AnswerProblem | null;
+  if (problem && Object.hasOwn(ANSWER_PROBLEM, problem)) return html`<div class="card notice"><p>${ANSWER_PROBLEM[problem]}</p></div>`;
+  const answered = url.searchParams.get("answered");
+  const outcome = answered ? await answerOutcome(ctx, answered) : null;
+  if (!outcome) return html``;
+  return html`<div class="card ${outcome.ok ? "" : "notice"}"><p class="${outcome.ok ? "ok" : ""}">${outcome.text}</p></div>`;
+}
+
+/** The "Answer" and "Add spelling and answer" buttons: only ever on the owner's click. */
+export async function answerMissedForm(ctx: Ctx, request: Request, id: number): Promise<Response> {
+  const form = await request.formData();
+  const commentId = String(form.get("comment_id") ?? "").trim();
+  const spelling = String(form.get("spelling") ?? "").trim();
+  const base = `/dashboard/campaigns/${id}`;
+  if (!commentId) return redirect(`${base}?problem=gone#to-check`);
+  const result = await answerMissed(ctx, id, commentId, spelling);
+  if ("problem" in result) return redirect(`${base}?problem=${result.problem}#to-check`);
+  return redirect(`${base}?answered=${encodeURIComponent(commentId)}#to-check`);
+}
+
 function tallyTable(day: CommentTally, month: CommentTally): Html {
   const rows: Array<[string, keyof CommentTally]> = [
     ["Comments", "total"],
@@ -92,6 +164,8 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
       // The page works without the thumbnail.
     }
   }
+  const notice = await answerNotice(ctx, url);
+  const missed = (await missedComments(ctx, [campaign])).get(campaign.id) ?? [];
   const results = await campaignResults(ctx, campaign);
   const comments = await listCampaignComments(ctx, campaign, { show, before, limit: COMMENTS_PER_PAGE });
   const names = new Map((await listCampaigns(ctx.db)).map((c) => [c.id, c.name]));
@@ -122,6 +196,8 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
             ${media?.permalink ? html`<a href="${media.permalink}" rel="noopener noreferrer" target="_blank">Open on Instagram</a>` : ""}</p>
         </div>
       </div>
+
+      <div id="to-check">${notice}${missedSection(campaign, missed)}</div>
 
       <h2>Comments</h2>
       <p class="muted small">${campaign.mediaId

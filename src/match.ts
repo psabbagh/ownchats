@@ -57,3 +57,66 @@ export function extractEmail(text: string): string | null {
   if (domain.split(".").some((label) => !label || label.startsWith("-") || label.endsWith("-"))) return null;
   return email;
 }
+
+/**
+ * Edit distance where swapping two neighbouring letters counts as one edit, so
+ * "agnets" is one typo away from "agents".
+ */
+export function editDistance(a: string, b: string): number {
+  const d: number[][] = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array<number>(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0]![j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      let v = Math.min(d[i - 1]![j]! + 1, d[i]![j - 1]! + 1, d[i - 1]![j - 1]! + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) v = Math.min(v, d[i - 2]![j - 2]! + 1);
+      d[i]![j] = v;
+    }
+  }
+  return d[a.length]![b.length]!;
+}
+
+export interface NearMiss {
+  /** The campaign keyword the comment came close to. */
+  keyword: string;
+  /** What to add as a spelling so comments like it match, or null when adding one makes no sense. */
+  spelling: string | null;
+}
+
+/** Typos allowed: none for short keywords, where they would catch ordinary words. */
+function tolerance(length: number): number {
+  return length >= 8 ? 2 : length >= 5 ? 1 : 0;
+}
+
+/**
+ * Whether a comment that matched none of the keywords came close to one: a typo
+ * or two ("PROMTS"), a plural ("TEMPLATES"), joined or split words ("work shop"
+ * for WORKSHOP, "setup" for SET UP), or a word that starts with the keyword
+ * ("gearlist"). Used to point the owner at comments worth answering by hand;
+ * nothing is sent on its basis.
+ */
+export function nearMiss(text: string, keywords: string[]): NearMiss | null {
+  if (matchesKeyword(text, keywords)) return null;
+  const words = normalise(text).match(/[\p{L}\p{N}]+/gu) ?? [];
+  if (!words.length) return null;
+  for (const raw of keywords) {
+    const keyword = normalise(raw).replace(GAP, "");
+    if (keyword.length < 3) continue;
+    const tol = tolerance(keyword.length);
+    for (let i = 0; i < words.length; i++) {
+      const word = words[i]!;
+      const pair = i + 1 < words.length ? `${word}${words[i + 1]}` : null;
+      if (Math.abs(word.length - keyword.length) <= tol && editDistance(word, keyword) <= tol) {
+        return { keyword: raw, spelling: word.toUpperCase() };
+      }
+      if (pair && Math.abs(pair.length - keyword.length) <= tol && editDistance(pair, keyword) <= tol) {
+        return { keyword: raw, spelling: `${word} ${words[i + 1]}`.toUpperCase() };
+      }
+      if (keyword.length >= 4 && word.length > keyword.length && word.startsWith(keyword)) {
+        // "gears" is worth a spelling; "gearlist" is better answered once by hand.
+        return { keyword: raw, spelling: word.length - keyword.length <= 2 ? word.toUpperCase() : null };
+      }
+    }
+  }
+  return null;
+}

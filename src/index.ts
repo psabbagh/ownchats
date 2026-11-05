@@ -19,7 +19,7 @@ import {
   settingsPage,
 } from "./pages/dashboard";
 import { redirect } from "./pages/html";
-import { campaignResultsPage } from "./pages/results";
+import { answerMissedForm, campaignResultsPage } from "./pages/results";
 import { dataDeletionPage, privacyPage, termsPage } from "./pages/legal";
 import { confirmPublished, finishConnect, rememberBaseUrl, resubscribe, saveAccountHint, saveAppValues, setupPage, startConnect, testCampaign } from "./pages/setup";
 import { receiveWebhook, verifyWebhook } from "./webhook";
@@ -43,10 +43,11 @@ async function adminRoutes(ctx: Ctx, request: Request, url: URL): Promise<Respon
 
   if (path === "/dashboard") return dashboardHome(ctx);
   if (path === "/dashboard/campaigns/new") return post ? saveCampaignForm(ctx, request, null) : newCampaignPage(ctx);
-  const campaign = path.match(/^\/dashboard\/campaigns\/(\d+)(\/delete|\/edit)?$/);
+  const campaign = path.match(/^\/dashboard\/campaigns\/(\d+)(\/delete|\/edit|\/answer)?$/);
   if (campaign) {
     const id = Number(campaign[1]);
     if (campaign[2] === "/delete") return post ? deleteCampaign(ctx, id) : null;
+    if (campaign[2] === "/answer") return post ? answerMissedForm(ctx, request, id) : null;
     if (campaign[2] === "/edit") return post ? saveCampaignForm(ctx, request, id) : editCampaignPage(ctx, id);
     return post ? saveCampaignForm(ctx, request, id) : campaignResultsPage(ctx, id, url);
   }
