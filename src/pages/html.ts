@@ -25,6 +25,9 @@ export function html(strings: TemplateStringsArray, ...values: unknown[]): Html 
   return new Html(out);
 }
 
+/** "1 comment", "3 comments". */
+export const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
+
 /** Trusted markup only. */
 export function raw(s: string): Html {
   return new Html(s);

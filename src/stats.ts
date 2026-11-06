@@ -262,12 +262,7 @@ export async function listActivity(
  * markers with the other old comments, long after the poll stops reading them.
  */
 export async function deletePerson(ctx: Ctx, igUserId: string): Promise<void> {
-  // A comment can carry a different id from the messaging one; their conversations know both.
-  const { results } = await ctx.db
-    .prepare("SELECT DISTINCT commenter_id AS id FROM conversations WHERE ig_user_id = ? AND commenter_id IS NOT NULL")
-    .bind(igUserId)
-    .all<{ id: string }>();
-  const ids = [...new Set([igUserId, ...results.map((r) => r.id)])];
+  const ids = await withCommenterIds(ctx, [igUserId]);
   const marks = ids.map(() => "?").join(", ");
   await ctx.db.batch([
     ctx.db.prepare("DELETE FROM leads WHERE ig_user_id = ?").bind(igUserId),
@@ -280,6 +275,47 @@ export async function deletePerson(ctx: Ctx, igUserId: string): Promise<void> {
       .bind(...ids),
     ctx.db.prepare(`DELETE FROM activity WHERE ig_user_id IN (${marks})`).bind(...ids),
   ]);
+}
+
+/** The messaging ids plus the ids on these people's comments: a comment can carry a different id, and their conversations know both. */
+async function withCommenterIds(ctx: Ctx, igUserIds: string[]): Promise<string[]> {
+  const marks = igUserIds.map(() => "?").join(", ");
+  const { results } = await ctx.db
+    .prepare(`SELECT DISTINCT commenter_id AS id FROM conversations WHERE ig_user_id IN (${marks}) AND commenter_id IS NOT NULL`)
+    .bind(...igUserIds)
+    .all<{ id: string }>();
+  return [...new Set([...igUserIds, ...results.map((r) => r.id)])];
+}
+
+export interface StoredAboutPerson {
+  emails: string[];
+  leads: number;
+  conversations: number;
+  comments: number;
+  logEntries: number;
+}
+
+/** What deletePerson would remove for these ids, counted the same way, shown before a deletion by username. */
+export async function storedAboutPeople(ctx: Ctx, igUserIds: string[]): Promise<StoredAboutPerson> {
+  if (!igUserIds.length) return { emails: [], leads: 0, conversations: 0, comments: 0, logEntries: 0 };
+  const ids = await withCommenterIds(ctx, igUserIds);
+  const people = igUserIds.map(() => "?").join(", ");
+  const marks = ids.map(() => "?").join(", ");
+  const [leads, conversations, comments, activity] = await ctx.db.batch<Record<string, unknown>>([
+    ctx.db.prepare(`SELECT email FROM leads WHERE ig_user_id IN (${people}) ORDER BY consented_at`).bind(...igUserIds),
+    ctx.db.prepare(`SELECT COUNT(*) AS n FROM conversations WHERE ig_user_id IN (${people})`).bind(...igUserIds),
+    ctx.db.prepare(`SELECT COUNT(*) AS n FROM comments WHERE from_id IN (${marks})`).bind(...ids),
+    ctx.db.prepare(`SELECT COUNT(*) AS n FROM activity WHERE ig_user_id IN (${marks})`).bind(...ids),
+  ]);
+  const count = (r: D1Result<Record<string, unknown>> | undefined) => Number(r?.results[0]?.n ?? 0);
+  const emails = (leads?.results ?? []).map((r) => String(r.email));
+  return {
+    emails: [...new Set(emails)],
+    leads: emails.length,
+    conversations: count(conversations),
+    comments: count(comments),
+    logEntries: count(activity),
+  };
 }
 
 /** Finds a person's id by username, for deletion requests that name only the username. */

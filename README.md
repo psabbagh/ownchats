@@ -78,7 +78,7 @@ At the end, help me run the test with my second account.
 - **Leads:** the Leads page lists every email with the wording the person agreed to and when. Download a CSV there.
 - **Google Sheets:** Settings, Create link, then paste the `=IMPORTDATA("...")` formula it shows into cell A1 of a sheet. It refreshes about once an hour. Anyone with the link can read your leads, so you can regenerate or turn it off at any time.
 - **API:** Settings, Create token. Then `GET /api/campaigns`, `/api/leads`, `/api/activity` and `/api/stats` with `Authorization: Bearer <token>`. `GET /api` lists them. It's read-only.
-- **Someone asks for their data to be deleted:** Leads, "Delete someone's data", enter their username.
+- **Someone asks for their data to be deleted:** Leads, "Delete someone's data", enter their username, then Find their data. It shows what OwnChats stores about them; Delete their data removes it.
 
 ## Instagram's rules, which OwnChats follows
 

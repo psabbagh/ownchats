@@ -33,8 +33,8 @@ import type { Media } from "../meta/client";
 import { recentMedia } from "../pipeline/poll";
 import { missedComments } from "../missed";
 import { deleteSettings, saveSettings } from "../settings";
-import { campaignCounts, deletePerson, findPersonByUsername, listActivity, type ActivityRow } from "../stats";
-import { copyField, fmtTime, html, page, redirect, type Html } from "./html";
+import { campaignCounts, deletePerson, findPersonByUsername, listActivity, storedAboutPeople, type ActivityRow } from "../stats";
+import { copyField, fmtTime, html, page, plural, redirect, type Html } from "./html";
 
 export function healthBanner(ctx: Ctx): Html {
   const s = ctx.settings;
@@ -281,8 +281,8 @@ export async function leadsPage(ctx: Ctx, message = ""): Promise<Response> {
       <h2>Delete someone's data</h2>
       <form method="post" action="/dashboard/people/delete" class="card">
         <label for="username">Instagram username</label><input id="username" name="username" type="text" placeholder="@username">
-        <p class="hint">Deletes their email, conversations, comments and log entries. Each comment keeps only its id, so OwnChats never answers it again. Use it when someone asks for their data to be deleted.</p>
-        <p><button class="danger">Delete their data</button></p>
+        <p class="hint">Use it when someone asks for their data to be deleted. It first shows what OwnChats stores about them, and deletes nothing until you confirm.</p>
+        <p><button class="secondary">Find their data</button></p>
       </form>`,
     { nav: true },
   );
@@ -296,11 +296,42 @@ export async function leadsCsvDownload(ctx: Ctx): Promise<Response> {
 
 export async function deletePersonForm(ctx: Ctx, request: Request): Promise<Response> {
   const form = await request.formData();
-  const id = String(form.get("ig_user_id") ?? "").trim();
-  const username = String(form.get("username") ?? "").trim();
-  const ids = id ? [id] : username ? await findPersonByUsername(ctx, username) : [];
-  for (const personId of ids) await deletePerson(ctx, personId);
-  return leadsPage(ctx, ids.length ? "Deleted everything stored about that person." : "Nobody with that username was found.");
+  const ids = form.getAll("ig_user_id").map((v) => String(v).trim()).filter(Boolean);
+  const username = String(form.get("username") ?? "").trim().replace(/^@/, "").toLowerCase();
+  if (ids.length) {
+    for (const personId of ids) await deletePerson(ctx, personId);
+    return leadsPage(ctx, username ? `Deleted everything stored about @${username}.` : "Deleted everything stored about that person.");
+  }
+  // A typed username only finds the person. Deleting takes a second click on what it found, so a typo can't delete someone else.
+  if (!username) return leadsPage(ctx, "Enter the Instagram username of the person whose data you want to delete.");
+  const found = await findPersonByUsername(ctx, username);
+  if (!found.length) return leadsPage(ctx, `Nobody with the username @${username} was found. Nothing was deleted.`);
+  return confirmDeletePage(ctx, username, found);
+}
+
+async function confirmDeletePage(ctx: Ctx, username: string, ids: string[]): Promise<Response> {
+  const s = await storedAboutPeople(ctx, ids);
+  return page(
+    "Delete someone's data",
+    html`<h1>Delete @${username}'s data?</h1>
+      <div class="card">
+        <p>OwnChats stores this about @${username}:</p>
+        <ul>
+          <li>${plural(s.leads, "email")}${s.emails.length ? `: ${s.emails.join(", ")}` : ""}</li>
+          <li>${plural(s.conversations, "conversation")}</li>
+          <li>${plural(s.comments, "comment")}</li>
+          <li>${plural(s.logEntries, "log entry", "log entries")}</li>
+        </ul>
+        <p class="hint">Each comment keeps only its id, so OwnChats never answers it again. The rest is gone for good.</p>
+        <form method="post" action="/dashboard/people/delete" class="row">
+          <input type="hidden" name="username" value="${username}">
+          ${ids.map((id) => html`<input type="hidden" name="ig_user_id" value="${id}">`)}
+          <button class="danger">Delete their data</button>
+          <a class="button secondary" href="/dashboard/leads">Cancel</a>
+        </form>
+      </div>`,
+    { nav: true },
+  );
 }
 
 export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string } = {}): Promise<Response> {
