@@ -1,6 +1,7 @@
 import { getCampaign, listCampaigns, type Campaign } from "../campaigns";
 import type { Ctx } from "../context";
 import type { Media } from "../meta/client";
+import { MISSING_PERMISSION, readMediaStats, type MediaStats } from "../insights";
 import { ANSWER_PROBLEM, answerMissed, answerOutcome, missedComments, type AnswerProblem, type MissedComment } from "../missed";
 import { recentMedia } from "../pipeline/poll";
 import {
@@ -14,7 +15,7 @@ import {
   type CommentTally,
 } from "../stats";
 import { activityTable, EMAIL_MODE_LABEL, healthBanner, KIND_LABEL } from "./dashboard";
-import { fmtTime, html, page, plural, redirect, type Html } from "./html";
+import { fmtCount, fmtTime, html, page, plural, redirect, type Html } from "./html";
 import { DAY, HOUR } from "../time";
 
 const COMMENTS_PER_PAGE = 100;
@@ -42,6 +43,48 @@ function caption(media: Media | undefined, c: Campaign): string {
   const text = (media?.caption || c.mediaLabel || "").replace(/\s+/g, " ").trim();
   if (!text) return c.mediaId ? `Post ${c.mediaId}` : "All posts";
   return text.length > 140 ? `${text.slice(0, 140)}...` : text;
+}
+
+/** A share of views. Most are well under 1%, so those keep two significant digits: 0.048%. */
+function ofViews(n: number, views: number): string {
+  const p = (100 * n) / views;
+  if (p === 0) return "0%";
+  if (p < 1) return `${Number(p.toPrecision(2))}%`;
+  return `${p < 10 ? p.toFixed(1) : Math.round(p)}%`;
+}
+
+/** Instagram's numbers for the campaign's post, and how many of its viewers this campaign reached. */
+function postNumbers(campaign: Campaign, stats: MediaStats | undefined, dmsSent: number, links: number): Html {
+  if (!campaign.mediaId) return html``;
+  if (!stats) {
+    return html`<p class="muted small">${campaign.active
+      ? "Instagram's numbers for this post (views, reach, likes, shares, saves) appear here within a few minutes."
+      : "Instagram's numbers for this post are read while the campaign is on."}</p>`;
+  }
+  const tiles: Array<[number | undefined, string]> = [
+    [stats.views, "views"],
+    [stats.reach, "reached"],
+    [stats.likes, "likes"],
+    [stats.comments, "comments"],
+    [stats.shares, "shares"],
+    [stats.saved, "saves"],
+  ];
+  const shown = tiles.filter((t): t is [number, string] => t[0] !== undefined);
+  const views = stats.views ?? 0;
+  const problem =
+    stats.problem === MISSING_PERMISSION
+      ? html`<div class="card notice"><p>Instagram didn't share this post's numbers: your Meta login configuration doesn't include <code>instagram_manage_insights</code>.
+          Add it to the configuration (<a href="/setup#step-3">setup, step 3</a>), then click Reconnect (<a href="/setup#step-4">step 4</a>). The numbers appear a few minutes later.</p></div>`
+      : stats.problem
+        ? html`<p class="warn small">Could not read Instagram's numbers for this post: ${stats.problem}</p>`
+        : "";
+  return html`${problem}
+    ${shown.length ? html`<div class="stats small">${shown.map(([n, label]) => html`<div><b>${fmtCount(n)}</b>${label}</div>`)}</div>` : ""}
+    ${stats.updatedAt
+      ? html`<p class="muted small">${views > 0 && dmsSent > 0
+          ? `${ofViews(dmsSent, views)} of views led to a DM from this campaign, and ${ofViews(links, views)} to the link. `
+          : ""}Views count since the post went up, DMs since the campaign started. From Instagram, ${campaign.active ? "updated" : "last read"} ${fmtTime(stats.updatedAt)}.</p>`
+      : ""}`;
 }
 
 function outcome(line: CommentLine, campaign: Campaign, names: Map<number, string>): Html {
@@ -169,6 +212,7 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
   const comments = await listCampaignComments(ctx, campaign, { show, before, limit: COMMENTS_PER_PAGE });
   const names = new Map((await listCampaigns(ctx.db)).map((c) => [c.id, c.name]));
   const activity = await listActivity(ctx, { campaignId: campaign.id, limit: 50 });
+  const stats = campaign.mediaId ? (await readMediaStats(ctx, [campaign.mediaId])).get(campaign.mediaId) : undefined;
 
   const base = `/dashboard/campaigns/${campaign.id}`;
   const { fromComments: fc, fromDms: fd, lastDay } = results;
@@ -195,6 +239,8 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
             ${media?.permalink ? html`<a href="${media.permalink}" rel="noopener noreferrer" target="_blank">Open on Instagram</a>` : ""}</p>
         </div>
       </div>
+
+      ${postNumbers(campaign, stats, fc.dmsSent, fc.links)}
 
       <div id="to-check">${notice}${missedSection(campaign, missed)}</div>
 

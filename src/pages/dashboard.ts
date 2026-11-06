@@ -31,10 +31,11 @@ import { randomToken, sha256Hex } from "../crypto";
 import { leadsCsv, listLeads } from "../export";
 import type { Media } from "../meta/client";
 import { recentMedia } from "../pipeline/poll";
+import { MISSING_PERMISSION, readMediaStats } from "../insights";
 import { missedComments } from "../missed";
 import { deleteSettings, saveSettings } from "../settings";
 import { campaignCounts, deletePerson, findPersonByUsername, listActivity, storedAboutPeople, type ActivityRow } from "../stats";
-import { copyField, fmtTime, html, page, plural, redirect, type Html } from "./html";
+import { copyField, fmtCount, fmtTime, html, page, plural, redirect, type Html } from "./html";
 
 export function healthBanner(ctx: Ctx): Html {
   const s = ctx.settings;
@@ -51,15 +52,19 @@ export async function dashboardHome(ctx: Ctx): Promise<Response> {
   const campaigns = await listCampaigns(ctx.db);
   const counts = await campaignCounts(ctx);
   const missed = await missedComments(ctx, campaigns.filter((c) => c.active));
+  const stats = await readMediaStats(ctx, campaigns.flatMap((c) => (c.mediaId ? [c.mediaId] : [])));
+  const noPermission = campaigns.some((c) => c.active && c.mediaId && stats.get(c.mediaId)?.problem === MISSING_PERMISSION);
   const s = ctx.settings;
   return page(
     "OwnChats",
     html`${healthBanner(ctx)}
       <div class="row"><h1 style="flex:1">Campaigns</h1><a class="button" href="/dashboard/campaigns/new">New campaign</a></div>
       ${s.ig_username ? html`<p class="muted">Connected to @${s.ig_username}. Last webhook: ${fmtTime(Number(s.last_webhook_at)) || "none yet"}. Last check for missed comments: ${fmtTime(Number(s.last_poll_at)) || "none yet"}.</p>` : ""}
+      ${noPermission ? html`<p class="warn small">Instagram shares each post's views once your Meta login configuration includes <code>instagram_manage_insights</code>. <a href="/setup#step-3">Add it in setup</a>, then reconnect.</p>` : ""}
       ${campaigns.length === 0 ? html`<div class="card"><p>No campaigns yet. Create one: a keyword, the post it watches, and the link to send.</p></div>` : ""}
       ${campaigns.map((c) => {
         const n = counts.get(c.id);
+        const views = c.mediaId ? stats.get(c.mediaId)?.views : undefined;
         return html`<div class="card">
           <div class="row"><h3 style="flex:1"><a href="/dashboard/campaigns/${c.id}">${c.name}</a></h3>
             <span class="pill ${c.active ? "sent" : "skipped"}">${c.active ? "on" : "off"}</span></div>
@@ -68,6 +73,7 @@ export async function dashboardHome(ctx: Ctx): Promise<Response> {
             ? html`<p class="small"><a class="warn" href="/dashboard/campaigns/${c.id}#to-check">${missed.get(c.id)!.length === 1 ? "1 comment" : `${missed.get(c.id)!.length} comments`} to check</a></p>`
             : ""}
           <div class="stats small">
+            ${views !== undefined ? html`<div><b>${fmtCount(views)}</b>views</div>` : ""}
             <div><b>${n?.people ?? 0}</b>people</div><div><b>${n?.dmsSent ?? 0}</b>DMs sent</div>
             ${c.openingButton ? html`<div><b>${n?.taps ?? 0}</b>taps</div>` : ""}
             ${c.emailMode !== "none" ? html`<div><b>${n?.emails ?? 0}</b>emails</div>` : ""}

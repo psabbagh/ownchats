@@ -1,5 +1,5 @@
 import type { Env } from "../env";
-import { MetaError, type IgComment, type Media, type MetaClient, type OutMessage, type TokenInfo } from "./client";
+import { INSIGHT_METRICS, MetaError, type IgComment, type Media, type MediaInsights, type MetaClient, type OutMessage, type TokenInfo } from "./client";
 
 /** Pinned so Meta's changes arrive when OwnChats is updated, not by surprise. */
 export const GRAPH_VERSION = "v26.0";
@@ -230,6 +230,25 @@ export class GraphMetaClient implements MetaClient {
   async getProfile(igUserId: string) {
     const res = await this.get<{ name?: string; username?: string }>(igUserId, { fields: "name,username" });
     return { name: res.name ?? null, username: res.username ?? null };
+  }
+
+  async mediaInsights(mediaId: string): Promise<MediaInsights> {
+    type Row = { name?: string; values?: Array<{ value?: unknown }>; total_value?: { value?: unknown } };
+    let res: { data?: Row[] };
+    try {
+      res = await this.get(`${mediaId}/insights`, { metric: INSIGHT_METRICS.join(",") });
+    } catch (err) {
+      // Meta refuses the whole request when one metric doesn't apply to the post's type: ask again for the ones every post has.
+      if (!(err instanceof MetaError) || err.code !== 100 || err.subcode === 33) throw err;
+      res = await this.get(`${mediaId}/insights`, { metric: "reach,likes,comments,saved" });
+    }
+    const out: MediaInsights = {};
+    for (const row of res.data ?? []) {
+      const value = row.total_value?.value ?? row.values?.[0]?.value;
+      const name = INSIGHT_METRICS.find((m) => m === row.name);
+      if (name && typeof value === "number") out[name] = value;
+    }
+    return out;
   }
 }
 

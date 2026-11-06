@@ -25,6 +25,9 @@ export function html(strings: TemplateStringsArray, ...values: unknown[]): Html 
   return new Html(out);
 }
 
+/** 12345 as "12,345". */
+export const fmtCount = (n: number): string => n.toLocaleString("en-US");
+
 /** "1 comment", "3 comments". */
 export const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
 

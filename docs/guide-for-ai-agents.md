@@ -32,7 +32,7 @@ The `/setup` checklist in the app is the main path. Its wording was written befo
 ### Meta app
 
 - A new app gets Unified Login only, and a banner says so. "API setup with Instagram login" is gone for apps created since about 2026-10-08, so guides for other tools written for that path don't apply.
-- Meta creates a default configuration: a system-user access token expiring Never, with `instagram_basic`, `instagram_manage_comments`, `instagram_manage_messages`, `instagram_content_publish` and two ads permissions. Keep it as it is, and copy its Configuration ID.
+- Meta creates a default configuration: a system-user access token expiring Never, with `instagram_basic`, `instagram_manage_comments`, `instagram_manage_messages`, `instagram_content_publish` and two ads permissions. Keep it as it is, add `instagram_manage_insights` for views on each campaign (see [Views on each campaign](#views-on-each-campaign)), and copy its Configuration ID.
 - The redirect URL goes on the use case's **API setup with Unified login** page, in its Redirect URL field, not in the Facebook Login for Business settings.
 - Skip Meta's own "Generate access tokens" / "Add account" step on that page. It is for Instagram testers and shows role errors. OwnChats gets its token through Connect.
 - `business_management` was not needed, and neither was Business Verification.
@@ -145,6 +145,20 @@ The Cron picks it up within a minute. Check that the row now says `done`, or `fa
 The person does it from Leads, "Delete someone's data". The username only finds the person: OwnChats lists their emails and how many conversations, comments and log entries it holds, and deletes nothing until they click Delete their data. It then clears the lead, the conversations, the log entries, and the text, username and id on each comment, keeping only each comment's id for up to 30 days, so the poll never takes it for a new comment.
 
 Copies deployed before 2026-11-05 deleted the comment rows instead. The next poll then stored that person's comments again and tried to answer them; Meta refused the repeats, so nothing was sent twice. Update such a copy, then delete the person once more.
+
+## Views on each campaign
+
+Since 2026-11-06 each campaign shows its post's views, reach, likes, comments, shares and saves, and what share of the views led to a DM. The Cron reads one post a minute, each at most every 15 minutes, into the `media_stats` table.
+
+It needs `instagram_manage_insights` in the login configuration. Meta's default configuration (see Meta app above) may not include it. Without it the campaign page and the Campaigns home say so, and everything else works as before. To add it, the person edits the configuration in the app dashboard: the use case's **API setup with Unified login** page, or **Facebook Login for Business**, then **Configurations**, then **Edit**. Then they click **Reconnect** on `/setup`. Every post is read again within a few minutes.
+
+Not yet tested on a real app. To check what happened:
+
+```bash
+npx wrangler d1 execute <database> --remote --command "SELECT media_id, views, reach, datetime(updated_at/1000,'unixepoch') AS updated, problem FROM media_stats"
+```
+
+`problem` is `missing permission` when Meta refused for lack of the permission, otherwise Meta's error.
 
 ## Updating a copy
 

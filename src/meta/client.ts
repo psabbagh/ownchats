@@ -26,7 +26,15 @@ export interface MetaClient {
   sendMessage(igUserId: string, message: OutMessage): Promise<{ messageId?: string }>;
   /** The person's name and username, readable once they have messaged or tapped. */
   getProfile(igUserId: string): Promise<{ name: string | null; username: string | null }>;
+  /**
+   * Lifetime numbers for one of the account's posts. Needs instagram_manage_insights
+   * in the login configuration. A metric Meta has no number for is left out.
+   */
+  mediaInsights(mediaId: string): Promise<MediaInsights>;
 }
+
+export const INSIGHT_METRICS = ["views", "reach", "likes", "comments", "shares", "saved"] as const;
+export type MediaInsights = Partial<Record<(typeof INSIGHT_METRICS)[number], number>>;
 
 export interface TokenInfo {
   valid: boolean;
