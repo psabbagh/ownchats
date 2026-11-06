@@ -2,6 +2,7 @@ import { apiAuthorized } from "./auth";
 import { listCampaigns, type Campaign } from "./campaigns";
 import type { Ctx } from "./context";
 import { listLeads } from "./export";
+import { readMediaStats, type MediaStats } from "./insights";
 import { campaignCounts, listActivity } from "./stats";
 import { iso } from "./time";
 
@@ -10,6 +11,20 @@ function json(data: unknown, status = 200): Response {
     status,
     headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
   });
+}
+
+/** Instagram's lifetime numbers for a campaign's post, as last read; null until read. */
+function postJson(m: MediaStats | undefined) {
+  if (!m?.updatedAt) return null;
+  return {
+    views: m.views ?? null,
+    reach: m.reach ?? null,
+    likes: m.likes ?? null,
+    comments: m.comments ?? null,
+    shares: m.shares ?? null,
+    saves: m.saved ?? null,
+    updated_at: iso(m.updatedAt),
+  };
 }
 
 function campaignJson(c: Campaign) {
@@ -52,7 +67,7 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
   if (path === "/api") {
     return json({
       endpoints: {
-        "GET /api/campaigns": "campaigns with their counts",
+        "GET /api/campaigns": "campaigns with their counts and their post's views",
         "GET /api/leads?campaign_id=&since=ISO-8601&limit=": "emails collected, newest first",
         "GET /api/activity?campaign_id=&outcome=sent|skipped|failed&limit=": "what happened and why, newest first",
         "GET /api/stats": "totals and connection health",
@@ -62,8 +77,9 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
   if (path === "/api/campaigns") {
     const counts = await campaignCounts(ctx);
     const campaigns = await listCampaigns(ctx.db);
+    const stats = await readMediaStats(ctx, campaigns.flatMap((c) => (c.mediaId ? [c.mediaId] : [])));
     return json({
-      campaigns: campaigns.map((c) => ({ ...campaignJson(c), counts: counts.get(c.id) ?? null })),
+      campaigns: campaigns.map((c) => ({ ...campaignJson(c), counts: counts.get(c.id) ?? null, post: postJson(c.mediaId ? stats.get(c.mediaId) : undefined) })),
     });
   }
   if (path === "/api/leads") {

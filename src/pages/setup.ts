@@ -3,6 +3,7 @@ import { log, type Ctx } from "../context";
 import { randomToken, signValue, verifySigned } from "../crypto";
 import { explainError } from "../meta/client";
 import { checkApp, exchangeCode, findInstagramAccount, graphBase, GraphMetaClient, loginDialogUrl, WEBHOOK_FIELDS } from "../meta/graph";
+import { refreshMediaStatsSoon } from "../insights";
 import { deleteSettings, saveSettings } from "../settings";
 import { listActivity } from "../stats";
 import { MINUTE } from "../time";
@@ -77,7 +78,7 @@ export async function setupPage(ctx: Ctx, url: URL, message = ""): Promise<Respo
             <li>Token type: <b>System-user access token</b>, expiring <b>Never</b>.</li>
             <li>Tick <b>Instagram Login Compatible</b> if you see it, so you can log in with Instagram.</li>
             <li>Assets: your Instagram account only.</li>
-            <li>Permissions: <code>instagram_basic</code>, <code>instagram_manage_comments</code> and <code>instagram_manage_messages</code>.</li>
+            <li>Permissions: <code>instagram_basic</code>, <code>instagram_manage_comments</code>, <code>instagram_manage_messages</code> and <code>instagram_manage_insights</code>. The last one lets each campaign show its post's views and reach; without it everything else still works.</li>
           </ul>
           Copy its <b>Configuration ID</b>.</li>
         <li>Add <code>business_management</code> to the same configuration. Meta hides it on that page: add the <b>Facebook Login for Business</b> product to the app, open its <b>Configurations</b>, click <b>Edit</b> on your configuration, and tick it there. Without it Meta may connect you but list no Instagram account.</li>
@@ -223,10 +224,11 @@ export async function finishConnect(ctx: Ctx, url: URL): Promise<Response> {
     });
     Object.assign(ctx.settings, { access_token: token, ig_user_id: account.id, ig_username: account.username });
     ctx.meta = client;
+    await refreshMediaStatsSoon(ctx);
     await subscribe(ctx);
     await log(ctx, { kind: "token", outcome: "saved", reason: `connected @${account.username}` });
   } catch (err) {
-    return setupPage(ctx, url, `Connecting failed: ${explainError(err).detail}. Check that the configuration has all four permissions (step 3) and that your Instagram account is in your business portfolio (step 2).`);
+    return setupPage(ctx, url, `Connecting failed: ${explainError(err).detail}. Check that the configuration has the permissions listed in step 3 and that your Instagram account is in your business portfolio (step 2).`);
   }
   return redirect("/setup#step-5");
 }

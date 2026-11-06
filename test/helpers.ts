@@ -25,7 +25,7 @@ export class Clock {
   }
 }
 
-const TABLES = ["settings", "campaigns", "comments", "conversations", "leads", "inbound", "activity", "login_attempts"];
+const TABLES = ["settings", "campaigns", "comments", "conversations", "leads", "inbound", "activity", "login_attempts", "media_stats"];
 
 export async function setupWorld(opts: { connected?: boolean } = {}) {
   await env.DB.batch(TABLES.map((t) => env.DB.prepare(`DELETE FROM ${t}`)));

@@ -17,7 +17,7 @@ I built this for my own Instagram account and I'm sharing it as-is. Take it, cha
 - **DM keyword.** Someone sends AGENTS by DM (for example, their comment is older than a week) and gets the same flow. Off by default; switch it on per campaign.
 - **One post or all posts.** Arm a campaign on one Reel, or on all your posts so it's live before the Reel goes up. A campaign on one post can also answer every comment, keyword or not.
 - **Varied public replies**, picked at random and never the same twice in a row, so identical replies on a busy post don't get your comments limited.
-- **A dashboard** with your campaigns, your leads and an activity log. Each campaign shows every comment on its post and why it did or didn't get a DM, and how many people tapped, gave their email and got the link.
+- **A dashboard** with your campaigns, your leads and an activity log. Each campaign shows every comment on its post and why it did or didn't get a DM, and how many people tapped, gave their email and got the link. It also shows the post's views, reach, likes, shares and saves from Instagram, and what share of the views led to a DM.
 - **Your leads where you work:** CSV download, a live Google Sheet with one formula, and a read-only JSON API for your own tools.
 
 ## What you need
@@ -107,6 +107,8 @@ Meta changed how new apps connect in October 2026 ("Unified Login", which needs 
 Your copy on GitHub is yours, and Cloudflare redeploys it each time it changes. The Deploy button makes it as a fresh copy with no shared history with this repository, so a plain `git pull` from here refuses to merge. To pull in fixes, you apply what changed here since your copy was made. The [guide](docs/guide-for-ai-agents.md#updating-a-copy) has the exact commands, tested on a real copy; you can also ask your AI agent to follow them.
 
 Database changes apply themselves on the next deploy.
+
+Set up before 2026-11-06? To see views on each campaign, add `instagram_manage_insights` to your Meta login configuration, then click Reconnect on `/setup`. The [guide](docs/guide-for-ai-agents.md#views-on-each-campaign) says where.
 
 ## Costs and privacy
 

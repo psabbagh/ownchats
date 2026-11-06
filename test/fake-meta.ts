@@ -1,4 +1,4 @@
-import { MetaError, type IgComment, type Media, type MetaClient, type OutMessage, type TokenInfo } from "../src/meta/client";
+import { MetaError, type IgComment, type Media, type MediaInsights, type MetaClient, type OutMessage, type TokenInfo } from "../src/meta/client";
 import { DAY } from "../src/time";
 
 export interface Sent {
@@ -29,6 +29,8 @@ export class FakeMeta implements MetaClient {
   token: TokenInfo = { valid: true, expiresAt: null, dataAccessExpiresAt: null, scopes: [] };
   usernames = new Map<string, string>();
   names = new Map<string, string>();
+  /** Each post's lifetime numbers, as Meta's insights report them. */
+  insights = new Map<string, MediaInsights>();
   /** When set, the messaging id Meta returns for a commenter differs from the id on the comment. */
   messagingIds = new Map<string, string>();
   private failures = new Map<string, MetaError[]>();
@@ -115,5 +117,9 @@ export class FakeMeta implements MetaClient {
   async getProfile(igUserId: string) {
     this.call("getProfile");
     return { name: this.names.get(igUserId) ?? null, username: this.usernames.get(igUserId) ?? null };
+  }
+  async mediaInsights(mediaId: string) {
+    this.call("mediaInsights");
+    return { ...(this.insights.get(mediaId) ?? {}) };
   }
 }
