@@ -2,7 +2,7 @@ import { apiAuthorized } from "./auth";
 import { listCampaigns, type Campaign } from "./campaigns";
 import type { Ctx } from "./context";
 import { listLeads } from "./export";
-import { readMediaStats, type MediaStats } from "./insights";
+import { listPosts, readMediaStats, type MediaStats } from "./insights";
 import { campaignCounts, listActivity } from "./stats";
 import { iso } from "./time";
 
@@ -70,6 +70,8 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
         "GET /api/campaigns": "campaigns with their counts and their post's views",
         "GET /api/leads?campaign_id=&since=ISO-8601&limit=": "emails collected, newest first",
         "GET /api/activity?campaign_id=&outcome=sent|skipped|failed&limit=": "what happened and why, newest first",
+        "GET /api/posts?since=ISO-8601&limit=": "the account's posts from the last 90 days with Instagram's numbers, newest first",
+        "GET /api/account": "follower, following and post counts",
         "GET /api/stats": "totals and connection health",
       },
     });
@@ -116,6 +118,42 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
         instagram_username: r.username,
         comment_id: r.comment_id,
       })),
+    });
+  }
+  if (path === "/api/posts") {
+    const posts = await listPosts(ctx, { since: parseSince(url.searchParams.get("since")), limit });
+    const byPost = new Map<string, number[]>();
+    for (const c of await listCampaigns(ctx.db)) if (c.mediaId) byPost.set(c.mediaId, [...(byPost.get(c.mediaId) ?? []), c.id]);
+    return json({
+      posts: posts.map((p) => ({
+        id: p.mediaId,
+        caption: p.caption,
+        permalink: p.permalink,
+        posted_at: iso(p.postedAt ?? 0) || null,
+        media_type: p.mediaType,
+        thumbnail_url: p.thumbnailUrl,
+        views: p.views ?? null,
+        reach: p.reach ?? null,
+        likes: p.likes ?? null,
+        comments: p.comments ?? null,
+        shares: p.shares ?? null,
+        saves: p.saved ?? null,
+        numbers_updated_at: p.updatedAt ? iso(p.updatedAt) : null,
+        numbers_problem: p.problem,
+        campaign_ids: byPost.get(p.mediaId) ?? [],
+      })),
+    });
+  }
+  if (path === "/api/account") {
+    const s = ctx.settings;
+    const count = (v: string | undefined) => (v === undefined || v === "" ? null : Number(v));
+    return json({
+      instagram_username: s.ig_username ?? null,
+      followers: count(s.followers_count),
+      follows: count(s.follows_count),
+      media_count: count(s.media_count),
+      updated_at: Number(s.account_stats_at) ? iso(Number(s.account_stats_at)) : null,
+      problem: s.account_problem || null,
     });
   }
   if (path === "/api/stats") {

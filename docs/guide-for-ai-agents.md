@@ -148,7 +148,7 @@ Copies deployed before 2026-11-05 deleted the comment rows instead. The next pol
 
 ## Views on each campaign
 
-Since 2026-11-06 each campaign shows its post's views, reach, likes, comments, shares and saves, and what share of the views led to a DM. The Cron reads one post a minute, each at most every 15 minutes, into the `media_stats` table.
+Since 2026-11-06 each campaign shows its post's views, reach, likes, comments, shares and saves, and what share of the views led to a DM. The Cron also lists every post from the last 90 days and the follower count each hour, and reads up to two posts' numbers a minute into the `media_stats` table: a campaign's post every 15 minutes, other posts by age (often while new, daily after a month). `GET /api/posts` and `GET /api/account` serve them to the person's other tools.
 
 It needs `instagram_manage_insights` in the login configuration. Meta's default configuration (see Meta app above) may not include it. Without it the campaign page and the Campaigns home say so, and everything else works as before. To add it, the person edits the configuration in the app dashboard: the use case's **API setup with Unified login** page, or **Facebook Login for Business**, then **Configurations**, then **Edit**. Then they click **Reconnect** on `/setup`. Every post is read again within a few minutes.
 

@@ -13,6 +13,10 @@ export interface MetaClient {
   tokenInfo(): Promise<TokenInfo>;
 
   listMedia(limit: number): Promise<Media[]>;
+  /** The account's posts from `since` (Unix ms) on, newest first, at most `max`, following Meta's pages. */
+  listMediaSince(since: number, max: number): Promise<Media[]>;
+  /** Follower, following and post counts of the connected account. Null where Meta leaves one out. */
+  getAccountStats(): Promise<AccountStats>;
   /** Newest comments first, one page. */
   listComments(mediaId: string, after?: string): Promise<{ comments: IgComment[]; next?: string }>;
   /** Public reply under a comment. */
@@ -31,6 +35,12 @@ export interface MetaClient {
    * in the login configuration. A metric Meta has no number for is left out.
    */
   mediaInsights(mediaId: string): Promise<MediaInsights>;
+}
+
+export interface AccountStats {
+  followers: number | null;
+  follows: number | null;
+  mediaCount: number | null;
 }
 
 export const INSIGHT_METRICS = ["views", "reach", "likes", "comments", "shares", "saved"] as const;

@@ -1,9 +1,11 @@
 import type { Env } from "../env";
-import { INSIGHT_METRICS, MetaError, type IgComment, type Media, type MediaInsights, type MetaClient, type OutMessage, type TokenInfo } from "./client";
+import { INSIGHT_METRICS, MetaError, type AccountStats, type IgComment, type Media, type MediaInsights, type MetaClient, type OutMessage, type TokenInfo } from "./client";
 
 /** Pinned so Meta's changes arrive when OwnChats is updated, not by surprise. */
 export const GRAPH_VERSION = "v26.0";
 export const WEBHOOK_FIELDS = ["comments", "messages", "messaging_postbacks"];
+/** Pages read by listMediaSince, at most: callers reserve this many calls. */
+export const MEDIA_PAGES = 3;
 
 export function graphBase(env: Env): string {
   return (env.META_GRAPH_BASE ?? "https://graph.facebook.com").replace(/\/+$/, "");
@@ -168,17 +170,45 @@ export class GraphMetaClient implements MetaClient {
   }
 
   async listMedia(limit: number): Promise<Media[]> {
+    return (await this.mediaPage(limit)).media;
+  }
+
+  async listMediaSince(since: number, max: number): Promise<Media[]> {
+    const out: Media[] = [];
+    let after: string | undefined;
+    for (let page = 0; page < MEDIA_PAGES && out.length < max; page++) {
+      const { media, next } = await this.mediaPage(Math.min(50, max - out.length), after);
+      for (const m of media) {
+        if (m.timestamp && m.timestamp < since) return out;
+        out.push(m);
+      }
+      if (!next) break;
+      after = next;
+    }
+    return out;
+  }
+
+  async getAccountStats(): Promise<AccountStats> {
+    const a = await this.get<{ followers_count?: number; follows_count?: number; media_count?: number }>(this.igUserId, {
+      fields: "followers_count,follows_count,media_count",
+    });
+    return { followers: a.followers_count ?? null, follows: a.follows_count ?? null, mediaCount: a.media_count ?? null };
+  }
+
+  private async mediaPage(limit: number, after?: string): Promise<{ media: Media[]; next?: string }> {
     type Row = { id: string; caption?: string; permalink?: string; timestamp?: string; media_product_type?: string; media_type?: string; thumbnail_url?: string; media_url?: string };
-    const fields = "id,caption,permalink,timestamp,media_type,media_product_type,thumbnail_url,media_url";
-    let res: { data?: Row[] };
+    type Page = { data?: Row[]; paging?: { cursors?: { after?: string }; next?: string } };
+    const page = (fields: string) => this.get<Page>(`${this.igUserId}/media`, { fields, limit: String(limit), ...(after ? { after } : {}) });
+    let res: Page;
     try {
-      res = await this.get(`${this.igUserId}/media`, { fields, limit: String(limit) });
+      res = await page("id,caption,permalink,timestamp,media_type,media_product_type,thumbnail_url,media_url");
     } catch (err) {
       // Meta's reference marks caption and media_product_type as Facebook Login only; ask again without them.
       if (!(err instanceof MetaError) || err.code !== 100) throw err;
-      res = await this.get(`${this.igUserId}/media`, { fields: "id,permalink,timestamp,media_type,thumbnail_url,media_url", limit: String(limit) });
+      res = await page("id,permalink,timestamp,media_type,thumbnail_url,media_url");
     }
-    return (res.data ?? []).map((m) => ({
+    const next = res.paging?.next ? res.paging.cursors?.after : undefined;
+    const media = (res.data ?? []).map((m) => ({
       id: m.id,
       caption: m.caption ?? "",
       permalink: m.permalink ?? "",
@@ -186,6 +216,7 @@ export class GraphMetaClient implements MetaClient {
       mediaType: m.media_product_type ?? m.media_type ?? "",
       thumbnailUrl: m.thumbnail_url ?? (m.media_type === "IMAGE" ? m.media_url : undefined),
     }));
+    return { media, next };
   }
 
   async listComments(mediaId: string, after?: string) {
