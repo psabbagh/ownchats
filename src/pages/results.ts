@@ -14,7 +14,7 @@ import {
   type CommentTally,
 } from "../stats";
 import { activityTable, EMAIL_MODE_LABEL, healthBanner, KIND_LABEL } from "./dashboard";
-import { fmtTime, html, page, redirect, type Html } from "./html";
+import { fmtTime, html, page, plural, redirect, type Html } from "./html";
 import { DAY, HOUR } from "../time";
 
 const COMMENTS_PER_PAGE = 100;
@@ -37,7 +37,6 @@ const REASON: Record<string, string> = {
 
 const reason = (r: string | null) => (r ? REASON[r] ?? r : "");
 const share = (n: number, of: number) => (of > 0 ? ` (${Math.round((100 * n) / of)}%)` : "");
-const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 function caption(media: Media | undefined, c: Campaign): string {
   const text = (media?.caption || c.mediaLabel || "").replace(/\s+/g, " ").trim();

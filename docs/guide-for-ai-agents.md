@@ -142,7 +142,7 @@ The Cron picks it up within a minute. Check that the row now says `done`, or `fa
 
 ## Deleting someone's data
 
-The person does it from Leads, "Delete someone's data". OwnChats clears the lead, the conversations, the log entries, and the text, username and id on each comment, keeping only each comment's id for up to 30 days, so the poll never takes it for a new comment.
+The person does it from Leads, "Delete someone's data". The username only finds the person: OwnChats lists their emails and how many conversations, comments and log entries it holds, and deletes nothing until they click Delete their data. It then clears the lead, the conversations, the log entries, and the text, username and id on each comment, keeping only each comment's id for up to 30 days, so the poll never takes it for a new comment.
 
 Copies deployed before 2026-11-05 deleted the comment rows instead. The next poll then stored that person's comments again and tried to answer them; Meta refused the repeats, so nothing was sent twice. Update such a copy, then delete the person once more.
 

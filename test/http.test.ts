@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { saveSettings } from "../src/settings";
-import { BASE, FAN, OWNER, setupWorld, VERIFY_TOKEN } from "./helpers";
+import { BASE, FAN, FAN2, OWNER, setupWorld, VERIFY_TOKEN } from "./helpers";
 
 type World = Awaited<ReturnType<typeof setupWorld>>;
 let w: World;
@@ -142,8 +142,23 @@ describe("admin pages", () => {
     await w.sendComment(w.comment("agents", FAN));
     await w.sendDm(FAN.id, "fan@example.com");
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM leads").first()).toMatchObject({ n: 1 });
+    const logged = await env.DB.prepare("SELECT COUNT(*) AS n FROM activity WHERE ig_user_id = ?").bind(FAN.id).first<{ n: number }>();
     const cookie = await w.signIn();
-    await w.fetch("/dashboard/people/delete", form(cookie, { username: `@${FAN.username}` }));
+
+    // The typed username only shows what it matches: nothing is deleted yet.
+    const found = await (await w.fetch("/dashboard/people/delete", form(cookie, { username: `@${FAN.username.toUpperCase()}` }))).text();
+    expect(found).toContain(`Delete @${FAN.username}'s data?`);
+    expect(found).toContain("<li>1 email: fan@example.com</li>");
+    expect(found).toContain("<li>1 conversation</li>");
+    expect(found).toContain("<li>1 comment</li>");
+    expect(found).toContain(`<li>${logged!.n} log ${logged!.n === 1 ? "entry" : "entries"}</li>`);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM leads").first()).toMatchObject({ n: 1 });
+
+    // The second click sends back the ids it found.
+    const fields = [...found.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]+)">/g)].map((m) => [m[1]!, m[2]!]);
+    expect(fields).toContainEqual(["ig_user_id", FAN.id]);
+    const done = await w.fetch("/dashboard/people/delete", { ...form(cookie, {}), body: new URLSearchParams(fields) });
+    expect(await done.text()).toContain(`Deleted everything stored about @${FAN.username}.`);
     for (const table of ["leads", "conversations"]) {
       expect(await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first(), table).toMatchObject({ n: 0 });
     }
@@ -153,6 +168,27 @@ describe("admin pages", () => {
       { from_id: null, from_username: null, text: "", status: "skipped", campaign_id: null },
     ]);
     expect(id).toBeGreaterThan(0);
+  });
+
+  it("delete nothing for a username that matches nobody, and nothing else about the person searched for", async () => {
+    await w.campaign({ emailMode: "first", openingButton: "" });
+    await w.sendComment(w.comment("agents", FAN));
+    await w.sendComment(w.comment("agents", FAN2));
+    const cookie = await w.signIn();
+    const before = await env.DB.prepare("SELECT COUNT(*) AS n FROM conversations").first();
+
+    const typo = await (await w.fetch("/dashboard/people/delete", form(cookie, { username: `@${FAN.username}x` }))).text();
+    expect(typo).toContain(`Nobody with the username @${FAN.username}x was found. Nothing was deleted.`);
+    const empty = await (await w.fetch("/dashboard/people/delete", form(cookie, { username: " " }))).text();
+    expect(empty).toContain("Enter the Instagram username");
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM conversations").first()).toEqual(before);
+
+    // Finding one person counts only their data, and lists only their ids.
+    const found = await (await w.fetch("/dashboard/people/delete", form(cookie, { username: FAN2.username }))).text();
+    expect(found).toContain("<li>0 emails</li>");
+    expect(found).toContain("<li>1 conversation</li>");
+    expect(found).toContain("<li>1 comment</li>");
+    expect(found).not.toContain(FAN.id);
   });
 
   it("never take a deleted person's old comment for a new one", async () => {
