@@ -30,7 +30,14 @@ export type SettingKey =
   | "poll_cursor"
   | "last_poll_at"
   | "last_poll_problem"
-  | "daily_at";
+  | "daily_at"
+  | "posts_listed_at"
+  | "posts_problem"
+  | "account_stats_at"
+  | "account_problem"
+  | "followers_count"
+  | "follows_count"
+  | "media_count";
 
 export type Settings = Partial<Record<SettingKey, string>>;
 
