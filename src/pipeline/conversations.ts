@@ -13,6 +13,10 @@ export interface Conversation {
   state: ConversationState;
   first_sent_at: number | null;
   last_inbound_at: number | null;
+  /** Times asked to follow: 0, 1 or 2. */
+  follow_asked: number;
+  /** 1 or 0 at the last follow check; null while never checked, or when Meta didn't say. */
+  follows: number | null;
   created_at: number;
   updated_at: number;
 }

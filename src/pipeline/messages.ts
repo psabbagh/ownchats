@@ -3,6 +3,8 @@ import {
   consentFor,
   fill,
   firstMessage,
+  FOLLOW_PAYLOAD_PREFIX,
+  followAsk,
   getCampaign,
   linkAfterEmail,
   linkMessage,
@@ -45,7 +47,8 @@ export async function handleInbound(ctx: Ctx, ev: InboundEvent): Promise<void> {
   if (fresh.meta.changes !== 1) return; // redelivered webhook
   if (!ctx.meta) return;
 
-  if (ev.postbackPayload?.startsWith(OPEN_PAYLOAD_PREFIX)) return handleTap(ctx, ev);
+  if (ev.postbackPayload?.startsWith(OPEN_PAYLOAD_PREFIX)) return handleTap(ctx, ev, OPEN_PAYLOAD_PREFIX);
+  if (ev.postbackPayload?.startsWith(FOLLOW_PAYLOAD_PREFIX)) return handleTap(ctx, ev, FOLLOW_PAYLOAD_PREFIX);
 
   const text = ev.text ?? "";
   const open = await openConversation(ctx.db, ev.senderId, ctx.now() - 7 * DAY);
@@ -53,9 +56,10 @@ export async function handleInbound(ctx: Ctx, ev: InboundEvent): Promise<void> {
   if (open && campaign) {
     if (open.state !== "optional_email") {
       await touch(ctx, open, ev.timestamp);
+      // They wrote instead of tapping: that counts just the same, for either button.
+      if (open.state === "opened") return pastOpening(ctx, open, campaign, "reply instead of tap");
+      if (FOLLOW_STATES.includes(open.state)) return followStep(ctx, open, campaign, "reply instead of tap");
       await learnProfile(ctx, open);
-      // They wrote instead of tapping: that opens the conversation just the same.
-      if (open.state === "opened") return advance(ctx, open, campaign, afterOpening(campaign, person(open)), "reply instead of tap");
       return emailStep(ctx, open, campaign, text);
     }
     // Link plus optional email: an email is saved; anything else needs no answer,
@@ -73,8 +77,11 @@ export async function handleInbound(ctx: Ctx, ev: InboundEvent): Promise<void> {
   return dmKeyword(ctx, keywordCampaign, ev);
 }
 
-async function handleTap(ctx: Ctx, ev: InboundEvent): Promise<void> {
-  const campaignId = Number(ev.postbackPayload!.slice(OPEN_PAYLOAD_PREFIX.length));
+const FOLLOW_STATES: ConversationState[] = ["awaiting_follow", "follow_reasked"];
+
+/** A tap on the opening button, or on "I'm following". */
+async function handleTap(ctx: Ctx, ev: InboundEvent, prefix: string): Promise<void> {
+  const campaignId = Number(ev.postbackPayload!.slice(prefix.length));
   const campaign = Number.isInteger(campaignId) ? await getCampaign(ctx.db, campaignId) : null;
   const conversation = campaign ? await getConversation(ctx.db, campaign.id, ev.senderId) : null;
   if (!campaign || !conversation) {
@@ -83,13 +90,70 @@ async function handleTap(ctx: Ctx, ev: InboundEvent): Promise<void> {
   }
   await touch(ctx, conversation, ev.timestamp);
   const who = { campaignId: campaign.id, igUserId: ev.senderId, username: conversation.username };
-  if (conversation.state !== "opened") {
+  const follow = prefix === FOLLOW_PAYLOAD_PREFIX;
+  if (follow ? !FOLLOW_STATES.includes(conversation.state) : conversation.state !== "opened") {
     await log(ctx, { kind: "tap", outcome: "skipped", reason: "button already tapped", ...who });
     return;
   }
-  await log(ctx, { kind: "tap", outcome: "received", ...who });
+  await log(ctx, { kind: "tap", outcome: "received", ...(follow ? { reason: "follow button" } : {}), ...who });
+  if (follow) return followStep(ctx, conversation, campaign, "after the follow tap");
+  await pastOpening(ctx, conversation, campaign, "after the tap");
+}
+
+/** The opening button was tapped (or answered): the follow check if the campaign has one, then the link or the email step. */
+async function pastOpening(ctx: Ctx, conversation: Conversation, campaign: Campaign, reason: string): Promise<void> {
+  if (campaign.followCheck) return followStep(ctx, conversation, campaign, reason);
   await learnProfile(ctx, conversation);
-  await advance(ctx, conversation, campaign, afterOpening(campaign, person(conversation)), "after the tap");
+  return advance(ctx, conversation, campaign, afterOpening(campaign, person(conversation)), reason);
+}
+
+/**
+ * Checks whether the person follows. Following, or when Meta's check fails: on to
+ * the link or the email step, since our own error must never block anyone. Not
+ * following: "follow me first", then once more, then the link either way.
+ */
+async function followStep(ctx: Ctx, conversation: Conversation, campaign: Campaign, reason: string): Promise<void> {
+  const follows = await checkFollow(ctx, conversation, campaign);
+  const asked = conversation.state === "awaiting_follow" ? 1 : conversation.state === "follow_reasked" ? 2 : 0;
+  if (follows === false && asked < 2) {
+    const next = followAsk(campaign, person(conversation), asked === 1);
+    const ok = await send(ctx, conversation, campaign, next.message, next.state, asked === 1 ? "asked to follow again" : "asked to follow", "message");
+    if (ok) await ctx.db.prepare("UPDATE conversations SET follow_asked = ? WHERE id = ?").bind(asked + 1, conversation.id).run();
+    return;
+  }
+  const why = follows ? reason : follows === null ? "follow check failed" : "link without a follow";
+  return advance(ctx, conversation, campaign, afterOpening(campaign, person(conversation)), why);
+}
+
+/**
+ * Asks Meta whether the person follows, and learns their name on the way. Allowed
+ * now that they have tapped or written. Null when Meta didn't answer.
+ */
+async function checkFollow(ctx: Ctx, conversation: Conversation, campaign: Campaign): Promise<boolean | null> {
+  const who = { campaignId: campaign.id, igUserId: conversation.ig_user_id, username: conversation.username };
+  if (!ctx.budget.take()) {
+    await log(ctx, { kind: "follow", outcome: "failed", reason: "too many requests in one run", ...who });
+    return null;
+  }
+  let status: { follows: boolean | null; name: string | null; username: string | null };
+  try {
+    status = await ctx.meta!.getFollowStatus(conversation.ig_user_id);
+  } catch (err) {
+    const { reason, detail } = explainError(err);
+    await log(ctx, { kind: "follow", outcome: "failed", reason, ...who, detail });
+    return null;
+  }
+  conversation.name ??= status.name ?? "";
+  conversation.username ??= status.username;
+  await ctx.db.batch([
+    ctx.db
+      .prepare("UPDATE conversations SET follows = ?, name = COALESCE(name, ?), username = COALESCE(username, ?) WHERE id = ?")
+      .bind(status.follows === null ? null : status.follows ? 1 : 0, conversation.name, status.username, conversation.id),
+    status.follows === null
+      ? logStatement(ctx, { kind: "follow", outcome: "failed", reason: "Meta did not say whether they follow", ...who })
+      : logStatement(ctx, { kind: "follow", outcome: "received", reason: status.follows ? "follows" : "not following", ...who }),
+  ]);
+  return status.follows;
 }
 
 async function saveLead(ctx: Ctx, conversation: Conversation, campaign: Campaign, email: string): Promise<void> {
@@ -141,9 +205,18 @@ async function dmKeyword(ctx: Ctx, campaign: Campaign, ev: InboundEvent): Promis
     }
     return;
   }
+  // They wrote first, so Meta already answers whether they follow: the check needs no button here.
   let profile: Person = {};
-  if (ctx.budget.take()) profile = await ctx.meta!.getProfile(ev.senderId).catch(() => ({}));
-  const first = firstMessage(campaign, "dm", profile);
+  let follows: boolean | null = null;
+  if (ctx.budget.take()) {
+    if (campaign.followCheck) {
+      const status = await ctx.meta!.getFollowStatus(ev.senderId).catch(() => null);
+      if (status) ({ follows, ...profile } = status);
+    } else {
+      profile = await ctx.meta!.getProfile(ev.senderId).catch(() => ({}));
+    }
+  }
+  const first = firstMessage(campaign, "dm", profile, follows);
   const claimed = await claimConversation(ctx.db, {
     campaignId: campaign.id,
     igUserId: ev.senderId,
@@ -168,12 +241,19 @@ async function dmKeyword(ctx: Ctx, campaign: Campaign, ev: InboundEvent): Promis
     state: first.state,
     first_sent_at: null,
     last_inbound_at: ev.timestamp,
+    follow_asked: 0,
+    follows: null,
     created_at: ctx.now(),
     updated_at: ctx.now(),
   };
   if (profile.name) await ctx.db.prepare("UPDATE conversations SET name = ? WHERE id = ?").bind(profile.name, claimed).run();
-  const ok = await send(ctx, conversation, campaign, first.message, first.state, "DM keyword", first.state === "done" || first.state === "optional_email" ? "link" : "message", { firstSent: true });
-  if (!ok) await releaseClaim(ctx.db, conversation.id);
+  const asked = first.state === "awaiting_follow";
+  const reason = asked ? "DM keyword, asked to follow" : "DM keyword";
+  const ok = await send(ctx, conversation, campaign, first.message, first.state, reason, first.state === "done" || first.state === "optional_email" ? "link" : "message", { firstSent: true });
+  if (!ok) return releaseClaim(ctx.db, conversation.id);
+  if (follows !== null) {
+    await ctx.db.prepare("UPDATE conversations SET follows = ?, follow_asked = ? WHERE id = ?").bind(follows ? 1 : 0, asked ? 1 : 0, claimed).run();
+  }
 }
 
 /**

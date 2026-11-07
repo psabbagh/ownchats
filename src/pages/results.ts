@@ -24,6 +24,8 @@ const MISSED_SHOWN = 50;
 /** How far the DM went, for an answered comment. */
 const PROGRESS: Record<string, string> = {
   opened: "DM sent, no tap yet",
+  awaiting_follow: "asked to follow",
+  follow_reasked: "asked to follow again",
   awaiting_email: "asked for their email",
   reasked: "asked for their email again",
   optional_email: "link sent",
@@ -237,6 +239,7 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
   const { fromComments: fc, fromDms: fd, lastDay } = results;
   const dmColumn = campaign.dmKeyword || fd.dmsSent > 0;
   const emailRow = campaign.emailMode !== "none" || fc.emails > 0 || fd.emails > 0;
+  const followRows = campaign.followCheck || fc.askedToFollow + fd.askedToFollow + fc.alreadyFollowed + fd.alreadyFollowed > 0;
   const cell = (n: number, of?: number) => html`<td class="num">${n}${of === undefined ? "" : share(n, of)}</td>`;
   const tab = (key: CommentFilter, label: string) =>
     key === show ? html`<b>${label}</b>` : html`<a href="${base}?show=${key}#comments">${label}</a>`;
@@ -282,6 +285,11 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
       <table class="figures"><thead><tr><th></th><th class="num">From comments</th>${dmColumn ? html`<th class="num">From DMs</th>` : ""}</tr></thead><tbody>
         <tr><td>First DM sent</td>${cell(fc.dmsSent)}${dmColumn ? cell(fd.dmsSent) : ""}</tr>
         ${campaign.openingButton ? html`<tr><td>Tapped the button or replied</td>${cell(fc.opened, fc.dmsSent)}${dmColumn ? html`<td></td>` : ""}</tr>` : ""}
+        ${followRows
+          ? html`<tr><td>Already followed you</td>${cell(fc.alreadyFollowed, fc.opened)}${dmColumn ? cell(fd.alreadyFollowed, fd.dmsSent) : ""}</tr>
+              <tr><td>Asked to follow</td>${cell(fc.askedToFollow, fc.opened)}${dmColumn ? cell(fd.askedToFollow, fd.dmsSent) : ""}</tr>
+              <tr><td>Followed after the ask</td>${cell(fc.followedAfterAsk, fc.askedToFollow)}${dmColumn ? cell(fd.followedAfterAsk, fd.askedToFollow) : ""}</tr>`
+          : ""}
         ${emailRow ? html`<tr><td>Gave their email</td>${cell(fc.emails, fc.dmsSent)}${dmColumn ? cell(fd.emails, fd.dmsSent) : ""}</tr>` : ""}
         <tr><td>Got the link</td>${cell(fc.links, fc.dmsSent)}${dmColumn ? cell(fd.links, fd.dmsSent) : ""}</tr>
       </tbody></table>
