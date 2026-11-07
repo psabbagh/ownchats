@@ -199,8 +199,12 @@ As of 2026-11-05, on one account, with a published app on Standard Access, witho
 - Typed DMs from an account with no role arrive, so DM keywords and the email question work.
 - The email chain works end to end: DM, email question, email saved, link, Leads page, Google Sheet.
 
+On 2026-11-07, from a second account with no role on the app that didn't follow the author:
+
+- The first DM landed in that account's message requests, as expected for someone who doesn't follow.
+- **A tap on the opening button reaches OwnChats** (`messaging_postbacks`) with no other tool on the account, and the next message went out within 3 seconds of it arriving. So does a tap on "I'm following".
+- **Meta answers `is_user_follow_business` and the name after such a tap.** It said "not following" twice while the account hadn't followed, and "follows" on the next tap, about half a minute after the account followed. Each check and its answer is in Activity under Follow check.
+
 Not proven yet:
 
-- **A tap on the opening button** reaching OwnChats from an account with no role. The only test ran while ManyChat still owned that DM thread, and the tap never arrived. A campaign without the button, which sends the link in the first DM, doesn't depend on it.
-- **The follow check**, which rests on the tap above and on Meta answering `is_user_follow_business` after it. If Meta doesn't answer, everyone gets the link as if there were no check, and Activity shows "Follow check" failures.
 - **The token's "Never" expiry over months.** OwnChats checks the token daily and warns on `/setup` and the dashboard.
