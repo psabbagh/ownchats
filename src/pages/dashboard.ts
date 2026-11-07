@@ -36,7 +36,8 @@ import { MISSING_PERMISSION, readMediaStats } from "../insights";
 import { missedComments } from "../missed";
 import { deleteSettings, saveSettings } from "../settings";
 import { campaignCounts, deletePerson, findPersonByUsername, listActivity, storedAboutPeople, type ActivityRow } from "../stats";
-import { copyField, fmtCount, fmtTime, html, page, plural, redirect, type Html } from "./html";
+import { copyField, fmtCount, fmtDate, fmtTime, html, page, plural, redirect, type Html } from "./html";
+import { isTimeZone, timeZoneOf } from "../time";
 
 /** Which post a campaign watches, in a few words. */
 export function postWords(c: Campaign): string {
@@ -63,11 +64,12 @@ export async function dashboardHome(ctx: Ctx): Promise<Response> {
   const stats = await readMediaStats(ctx, campaigns.flatMap((c) => (c.mediaId ? [c.mediaId] : [])));
   const noPermission = campaigns.some((c) => c.active && c.mediaId && stats.get(c.mediaId)?.problem === MISSING_PERMISSION);
   const s = ctx.settings;
+  const tz = timeZoneOf(s);
   return page(
     "OwnChats",
     html`${healthBanner(ctx)}
       <div class="row"><h1 style="flex:1">Campaigns</h1><a class="button" href="/dashboard/campaigns/new">New campaign</a></div>
-      ${s.ig_username ? html`<p class="muted">Connected to @${s.ig_username}. Last webhook: ${fmtTime(Number(s.last_webhook_at)) || "none yet"}. Last check for missed comments: ${fmtTime(Number(s.last_poll_at)) || "none yet"}.</p>` : ""}
+      ${s.ig_username ? html`<p class="muted">Connected to @${s.ig_username}. Last webhook: ${fmtTime(Number(s.last_webhook_at), tz) || "none yet"}. Last check for missed comments: ${fmtTime(Number(s.last_poll_at), tz) || "none yet"}.${s.time_zone ? "" : html` Times are in UTC: <a href="/dashboard/settings#time-zone">choose your time zone</a>.`}</p>` : ""}
       ${noPermission ? html`<p class="warn small">Instagram shares each post's views once your Meta login configuration includes <code>instagram_manage_insights</code>. <a href="/setup#step-3">Add it in setup</a>, then reconnect.</p>` : ""}
       ${campaigns.length === 0 ? html`<div class="card"><p>No campaigns yet. Create one: a keyword, the post it watches, and the link to send.</p></div>` : ""}
       ${campaigns.map((c) => {
@@ -78,7 +80,7 @@ export async function dashboardHome(ctx: Ctx): Promise<Response> {
         return html`<div class="card row campaign">
           <a class="cover" href="/dashboard/campaigns/${c.id}" aria-hidden="true" tabindex="-1">${cover ? html`<img src="${cover}" alt="" loading="lazy" onerror="this.remove()">` : ""}</a>
           <div class="body">
-          <div class="row"><h3 style="flex:1 1 auto"><a href="/dashboard/campaigns/${c.id}">${c.name}</a></h3><span class="muted small">Started ${fmtTime(c.createdAt).slice(0, 10)}</span>
+          <div class="row"><h3 style="flex:1 1 auto"><a href="/dashboard/campaigns/${c.id}">${c.name}</a></h3><span class="muted small">Started ${fmtDate(c.createdAt, tz)}</span>
             <span class="pill ${c.active ? "sent" : "skipped"}">${c.active ? "on" : "off"}</span></div>
           <p class="muted small">${c.anyComment ? "Any comment" : `Keyword: ${c.keywords.join(", ")}`} on ${postWords(c)}, ${EMAIL_MODE_LABEL[c.emailMode]}</p>
           ${missed.get(c.id)?.length
@@ -96,7 +98,7 @@ export async function dashboardHome(ctx: Ctx): Promise<Response> {
   );
 }
 
-function mediaPicker(media: Media[], current: Campaign | null, input?: CampaignInput): Html {
+function mediaPicker(media: Media[], current: Campaign | null, tz: string, input?: CampaignInput): Html {
   const v = input ?? current;
   const selected = !v ? "all" : v.nextPostAfter !== null ? NEXT_POST : v.mediaId ?? "all";
   const options = [...media];
@@ -107,11 +109,11 @@ function mediaPicker(media: Media[], current: Campaign | null, input?: CampaignI
   return html`<label>Which post?</label>
     <label class="inline"><input type="radio" name="media_id" value="all" ${selected === "all" ? "checked" : ""}> All posts, including ones you haven't posted yet</label>
     <label class="inline"><input type="radio" name="media_id" value="${NEXT_POST}" ${selected === NEXT_POST ? "checked" : ""} data-label="">
-      <span>The next post you publish ${waitingSince !== null ? html`<span class="muted small">waiting since ${fmtTime(waitingSince)}</span>` : ""}</span></label>
+      <span>The next post you publish ${waitingSince !== null ? html`<span class="muted small">waiting since ${fmtTime(waitingSince, tz)}</span>` : ""}</span></label>
     ${options.map(
       (m) => html`<label class="inline"><input type="radio" name="media_id" value="${m.id}" ${selected === m.id ? "checked" : ""} data-label="${postLabel(m)}">
         ${m.thumbnailUrl ? html`<img src="${m.thumbnailUrl}" alt="" width="40" height="40" style="object-fit:cover;border-radius:4px">` : ""}
-        <span>${postLabel(m)} <span class="muted small">${m.timestamp ? fmtTime(m.timestamp) : ""}</span></span></label>`,
+        <span>${postLabel(m)} <span class="muted small">${m.timestamp ? fmtTime(m.timestamp, tz) : ""}</span></span></label>`,
     )}
     <input type="hidden" name="media_label" value="${input?.mediaLabel ?? current?.mediaLabel ?? ""}">
     <p class="hint">With all posts, use a keyword you don't use for anything else. With the next post, set the campaign up before you post: within a minute of posting, OwnChats attaches it to the first post you publish after saving whose caption asks for the keyword ("Comment AGENTS"), and answers the comments that came in before that. Already posted? Pick the post from the list instead.</p>
@@ -145,7 +147,7 @@ async function campaignForm(ctx: Ctx, current: Campaign | null, input?: Campaign
           <p class="hint">Separate extra spellings with commas. Matching ignores case and needs the whole word: AGENTS matches "agents!" but not "agentsmith". A space also matches a hyphen, so SET UP matches "set-up" but not "setup".</p>
           <label class="inline"><input type="checkbox" name="any_comment" ${checked(v.anyComment)}> Any comment: answer every comment on the chosen post, keyword or not</label>
           ${mediaProblem ? html`<p class="warn small">Could not load your posts: ${mediaProblem}</p>` : ""}
-          ${mediaPicker(media, current, input)}
+          ${mediaPicker(media, current, timeZoneOf(ctx.settings), input)}
         </div>
         <div class="card">
           <h3>Public reply under the comment</h3>
@@ -244,11 +246,11 @@ export const KIND_LABEL: Record<string, string> = {
   token: "Token",
 };
 
-export function activityTable(rows: ActivityRow[], names: Map<number, string>): Html {
+export function activityTable(rows: ActivityRow[], names: Map<number, string>, tz: string): Html {
   if (!rows.length) return html`<p class="muted">Nothing yet.</p>`;
   return html`<table><thead><tr><th>When</th><th>What</th><th>Result</th><th>Who</th><th>Why</th></tr></thead><tbody>
     ${rows.map(
-      (r) => html`<tr><td class="small">${fmtTime(r.at)}</td>
+      (r) => html`<tr><td class="small">${fmtTime(r.at, tz)}</td>
         <td>${KIND_LABEL[r.kind] ?? r.kind}${r.campaign_id ? html`<br><span class="muted small">${names.get(r.campaign_id) ?? `campaign ${r.campaign_id}`}</span>` : ""}</td>
         <td><span class="pill ${r.outcome}">${r.outcome}</span></td>
         <td>${r.username ? `@${r.username}` : ""}</td>
@@ -273,7 +275,7 @@ export async function activityPage(ctx: Ctx, url: URL): Promise<Response> {
     "Activity",
     html`${healthBanner(ctx)}<h1>Activity</h1>
       <p class="row">${tab("matched", "Campaign activity")} ${tab("failed", "Failures")} ${tab("all", "Everything, including comments with no keyword")}</p>
-      ${activityTable(rows, names)}
+      ${activityTable(rows, names, timeZoneOf(ctx.settings))}
       ${rows.length === 100 && last ? html`<p><a href="/dashboard/activity?show=${filter}&before=${last.id}">Older</a></p>` : ""}`,
     { nav: true },
   );
@@ -281,6 +283,7 @@ export async function activityPage(ctx: Ctx, url: URL): Promise<Response> {
 
 export async function leadsPage(ctx: Ctx, message = ""): Promise<Response> {
   const leads = await listLeads(ctx, { limit: 500 });
+  const tz = timeZoneOf(ctx.settings);
   return page(
     "Leads",
     html`<div class="row"><h1 style="flex:1">Leads</h1><a class="button secondary" href="/dashboard/leads.csv">Download CSV</a></div>
@@ -291,7 +294,7 @@ export async function leadsPage(ctx: Ctx, message = ""): Promise<Response> {
         : html`<table><thead><tr><th>Email</th><th>Instagram</th><th>Campaign</th><th>When</th><th></th></tr></thead><tbody>
           ${leads.map(
             (l) => html`<tr><td>${l.email}</td><td>${l.username ? `@${l.username}` : ""}</td><td>${l.campaign_name ?? "deleted campaign"}</td>
-              <td class="small">${fmtTime(l.consented_at)}</td>
+              <td class="small">${fmtTime(l.consented_at, tz)}</td>
               <td><form method="post" action="/dashboard/people/delete" onsubmit="return confirm('Delete everything stored about this person?')">
                 <input type="hidden" name="ig_user_id" value="${l.ig_user_id}"><button class="secondary small">Delete</button></form></td></tr>`,
           )}</tbody></table>`}
@@ -352,6 +355,25 @@ async function confirmDeletePage(ctx: Ctx, username: string, ids: string[]): Pro
   );
 }
 
+/** Every zone Intl knows, for the Settings list. */
+function timeZones(): string[] {
+  const zones = Intl.supportedValuesOf("timeZone");
+  return zones.includes("UTC") ? zones : ["UTC", ...zones];
+}
+
+function timeZoneCard(saved: string | undefined): Html {
+  const current = saved && isTimeZone(saved) ? saved : "UTC";
+  return html`<div class="card" id="time-zone">
+    <h3>Time zone</h3>
+    <form method="post" action="/dashboard/settings/time-zone">
+      <select name="time_zone" aria-label="Time zone">${timeZones().map((z) => html`<option${z === current ? " selected" : ""}>${z}</option>`)}</select>
+      <p class="hint">Times on these pages show in this zone. ${saved ? "" : "None is saved yet, so they show in UTC; the list starts on your browser's zone. "}The API, the CSV and the database keep UTC.</p>
+      <p><button>Save</button></p>
+    </form>
+    ${saved ? "" : html`<script>(()=>{const z=Intl.DateTimeFormat().resolvedOptions().timeZone,s=document.querySelector('[name=time_zone]');if([...s.options].some(o=>o.value===z))s.value=z})()</script>`}
+  </div>`;
+}
+
 export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string } = {}): Promise<Response> {
   const s = ctx.settings;
   const exportUrl = s.export_key ? `${s.base_url}/export/leads.csv?key=${s.export_key}` : "";
@@ -377,6 +399,7 @@ export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string } = {}):
         <form method="post" action="/dashboard/settings/api-token" class="row"><button name="do" value="new">${s.api_token_hash ? "Replace token" : "Create token"}</button>
           ${s.api_token_hash ? html`<button class="danger" name="do" value="revoke">Revoke</button>` : ""}</form>
       </div>
+      ${timeZoneCard(s.time_zone)}
       <div class="card">
         <h3>Contact for the privacy page</h3>
         <form method="post" action="/dashboard/settings/contact">
@@ -408,6 +431,11 @@ export async function settingsAction(ctx: Ctx, request: Request, what: string): 
     await saveSettings(ctx.db, pw, { api_token_hash: hash });
     ctx.settings.api_token_hash = hash;
     return settingsPage(ctx, { apiToken: token });
+  }
+  if (what === "time-zone") {
+    const tz = String(form.get("time_zone") ?? "").trim();
+    if (isTimeZone(tz)) await saveSettings(ctx.db, pw, { time_zone: tz });
+    return redirect("/dashboard/settings");
   }
   if (what === "contact") {
     await saveSettings(ctx.db, pw, { contact: String(form.get("contact") ?? "").trim().slice(0, 200) });

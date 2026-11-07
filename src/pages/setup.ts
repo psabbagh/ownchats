@@ -6,7 +6,7 @@ import { checkApp, exchangeCode, findInstagramAccount, graphBase, GraphMetaClien
 import { refreshMediaStatsSoon } from "../insights";
 import { deleteSettings, saveSettings } from "../settings";
 import { listActivity } from "../stats";
-import { MINUTE } from "../time";
+import { MINUTE, timeZoneOf } from "../time";
 import { activityTable } from "./dashboard";
 import { copyField, fmtTime, html, page, redirect, type Html } from "./html";
 
@@ -36,6 +36,7 @@ export async function rememberBaseUrl(ctx: Ctx, url: URL): Promise<void> {
 export async function setupPage(ctx: Ctx, url: URL, message = ""): Promise<Response> {
   await rememberBaseUrl(ctx, url);
   const s = ctx.settings;
+  const tz = timeZoneOf(s);
   const base = s.base_url!;
   const appEntered = !!(s.meta_app_id && s.meta_app_secret && s.meta_config_id);
   const connected = !!(s.access_token && s.ig_user_id);
@@ -112,9 +113,9 @@ export async function setupPage(ctx: Ctx, url: URL, message = ""): Promise<Respo
       <p class="small"><b>Verify token</b></p>${copyField(s.verify_token ?? "")}
       <p>Click <b>Verify and save</b>, then subscribe to the fields <code>comments</code>, <code>messages</code> and <code>messaging_postbacks</code>.</p>
       <ul class="small">
-        <li class="${verified ? "ok" : "warn"}">${verified ? `Meta verified the callback on ${fmtTime(Number(s.webhook_verified_at))}.` : "Waiting for Meta to verify the callback URL."}</li>
+        <li class="${verified ? "ok" : "warn"}">${verified ? `Meta verified the callback on ${fmtTime(Number(s.webhook_verified_at), tz)}.` : "Waiting for Meta to verify the callback URL."}</li>
         <li class="${allSubscribed ? "ok" : "warn"}">${allSubscribed ? "Your Instagram account is subscribed to the app's webhooks." : connected ? "Your Instagram account is not subscribed yet." : "Connect Instagram first."}</li>
-        <li class="${webhookProblem ? "bad" : "muted"}">${webhookProblem ? `Last webhook was refused: ${webhookProblem}. Check the app secret in step 3.` : s.last_webhook_at ? `Last webhook received ${fmtTime(Number(s.last_webhook_at))}.` : "No webhook received yet."}</li>
+        <li class="${webhookProblem ? "bad" : "muted"}">${webhookProblem ? `Last webhook was refused: ${webhookProblem}. Check the app secret in step 3.` : s.last_webhook_at ? `Last webhook received ${fmtTime(Number(s.last_webhook_at), tz)}.` : "No webhook received yet."}</li>
       </ul>
       ${connected ? html`<form method="post" action="/setup/subscribe"><button class="secondary">Subscribe the account again</button></form>` : ""}`)}
 
@@ -128,7 +129,7 @@ export async function setupPage(ctx: Ctx, url: URL, message = ""): Promise<Respo
         <p>In Development mode, comments from an <b>Instagram tester</b> do arrive. In the app, open <b>App roles</b>, then <b>Roles</b>, and add your second account as an Instagram tester. Accept the invite from that account at instagram.com: Settings, then Website permissions, then Apps and websites, then Tester invites. The real proof is still a comment from an account with no role, after publishing.</p>
       </details>
       ${published
-        ? html`<p class="ok">You marked the app as published on ${fmtTime(Number(s.published_confirmed_at))}.</p>`
+        ? html`<p class="ok">You marked the app as published on ${fmtTime(Number(s.published_confirmed_at), tz)}.</p>`
         : html`<form method="post" action="/setup/published"><button class="secondary">I published it</button></form>`}`)}
 
     ${step(7, testDone ? "done" : connected ? "todo" : "info", "Test with a second account", html`
@@ -150,7 +151,7 @@ export async function setupPage(ctx: Ctx, url: URL, message = ""): Promise<Respo
             ].map(([label, ok]) => html`<li class="${ok ? "ok" : "muted"}">${ok ? "✓" : "○"} ${label}</li>`)}
           </ul>
           ${testDone ? html`<p class="ok"><b>Everything works.</b> Turn the test campaign off and create your first real one.</p>` : html`<p class="muted small">This page refreshes itself every 10 seconds while it waits.</p>`}
-          ${testRows.length ? activityTable(testRows, new Map([[test.id, test.name]])) : ""}
+          ${testRows.length ? activityTable(testRows, new Map([[test.id, test.name]]), tz) : ""}
           ${troubleshooting(testRows.length > 0, verified, published)}
           <form method="post" action="/setup/test" class="row"><button class="secondary" name="do" value="${test.active ? "off" : "on"}">${test.active ? "Turn the test campaign off" : "Turn the test campaign on"}</button></form>`}`)}
 

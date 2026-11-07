@@ -97,7 +97,36 @@ export function redirect(location: string, headers: Record<string, string> = {})
   return new Response(null, { status: 303, headers: { location, ...headers } });
 }
 
-export function fmtTime(ms: number | null | undefined): string {
+const formats = new Map<string, Intl.DateTimeFormat>();
+
+function partsIn(ms: number, tz: string): Record<string, string> {
+  let f = formats.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+      timeZoneName: "short",
+    });
+    formats.set(tz, f);
+  }
+  return Object.fromEntries(f.formatToParts(ms).map((p) => [p.type, p.value]));
+}
+
+/** A time in the owner's zone (timeZoneOf): "2026-11-06 09:03 EST". */
+export function fmtTime(ms: number | null | undefined, tz: string): string {
   if (!ms) return "";
-  return new Date(ms).toISOString().replace("T", " ").slice(0, 16) + " UTC";
+  const p = partsIn(ms, tz);
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute} ${p.timeZoneName}`;
+}
+
+/** The day in the owner's zone: "2026-11-06". */
+export function fmtDate(ms: number | null | undefined, tz: string): string {
+  if (!ms) return "";
+  const p = partsIn(ms, tz);
+  return `${p.year}-${p.month}-${p.day}`;
 }
