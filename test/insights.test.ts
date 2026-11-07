@@ -122,6 +122,33 @@ describe("post numbers", () => {
   });
 });
 
+describe("the campaigns page", () => {
+  it("lists the newest campaign first, each with its post's cover image", async () => {
+    // Invented posts: the Reel has a cover image, the other post none.
+    w.meta.media.push(
+      { id: REEL, caption: "Invented reel", permalink: "https://example.com/p/1", timestamp: w.clock.now() - 2 * DAY, mediaType: "REELS", thumbnailUrl: "https://cdn.example.com/reel-cover.jpg" },
+      { id: OTHER_POST, caption: "Invented post", permalink: "https://example.com/p/2", timestamp: w.clock.now() - DAY, mediaType: "FEED" },
+    );
+    await w.campaign({ name: "Oldest campaign" });
+    w.clock.advance(DAY);
+    await w.campaign({ name: "All posts campaign", mediaId: null, keywords: ["GUIDE"] });
+    w.clock.advance(DAY);
+    await w.campaign({ name: "Newest campaign", mediaId: OTHER_POST, keywords: ["SETUP"] });
+    await w.cron();
+
+    const page = await pageText("/dashboard");
+    const at = (name: string) => page.indexOf(`>${name}</a>`);
+    expect(at("Newest campaign")).toBeGreaterThan(-1);
+    expect(at("Newest campaign")).toBeLessThan(at("All posts campaign"));
+    expect(at("All posts campaign")).toBeLessThan(at("Oldest campaign"));
+    expect(page).toContain("Started 2026-11-04");
+    // Only the Reel has an image; the other two rows keep an empty frame.
+    expect(page.match(/<img /g)).toEqual(['<img ']);
+    expect(page).toContain('<img src="https://cdn.example.com/reel-cover.jpg"');
+    expect(page.match(/class="cover"/g)).toHaveLength(3);
+  });
+});
+
 describe("every recent post and the account", () => {
   async function api(path: string): Promise<any> {
     const cookie = await w.signIn();

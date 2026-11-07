@@ -56,7 +56,7 @@ Any text can use `{name}` (the person's Instagram name when Meta shares it, othe
 - Routes:
   - `/webhook`: Meta's verification handshake and incoming events.
   - `/setup`: the setup checklist (below).
-  - `/dashboard`: campaigns, leads and the activity log. A campaign opens on its results: Instagram's numbers for its post, every comment on the post and what happened to it, why comments were skipped, the DMs from comments and from the DM keyword, and Meta's refusals. The form is behind Edit.
+  - `/dashboard`: campaigns, leads and the activity log. Campaigns are listed newest first, each with its post's cover image from the hourly post list. A campaign opens on its results: Instagram's numbers for its post, every comment on the post and what happened to it, why comments were skipped, the DMs from comments and from the DM keyword, and Meta's refusals. The form is behind Edit.
   - `/api`: token-protected JSON for integrations.
   - `/privacy` and `/data-deletion`: the pages Meta requires, served by the app itself.
   - `/export/leads.csv`: a revocable secret link for Google Sheets.

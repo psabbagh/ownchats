@@ -62,6 +62,8 @@ table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;p
 .errors{border-color:var(--bad)}.notice{border-color:var(--warn)}
 .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
 td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}table.figures{max-width:480px}
+.campaign{align-items:flex-start;flex-wrap:nowrap}.campaign>.body{flex:1;min-width:0}
+.cover{flex:none;width:64px;height:114px;border-radius:6px;overflow:hidden;border:1px solid var(--line);background:var(--bg)}.cover img{display:block;width:100%;height:100%;object-fit:cover}
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px}.stats div{border:1px solid var(--line);border-radius:8px;padding:8px}.stats b{display:block;font-size:22px}
 `;
 
