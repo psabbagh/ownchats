@@ -115,7 +115,7 @@ async function saveLead(ctx: Ctx, conversation: Conversation, campaign: Campaign
   return queueLeadCreated(
     ctx,
     { id: leadId, email, name: conversation.name || null, createdAt: now, campaign, consentText: consent },
-    { igUserId: conversation.ig_user_id, username: conversation.username },
+    { conversationId: conversation.id, igUserId: conversation.ig_user_id, username: conversation.username },
   );
 }
 

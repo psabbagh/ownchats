@@ -41,6 +41,7 @@ function campaignJson(c: Campaign) {
     email_tag: c.emailTag || null,
     opening_button: c.openingButton || null,
     links: c.links,
+    link_title: c.linkTitle || null,
     dm_keyword: c.dmKeyword,
     active: c.active,
     created_at: iso(c.createdAt),

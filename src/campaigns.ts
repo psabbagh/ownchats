@@ -43,6 +43,8 @@ export interface Campaign {
   emailTag: string;
   linkText: string;
   links: Link[];
+  /** What the first link leads to, in words, for the lead webhook's email. Empty: none. */
+  linkTitle: string;
   dmKeyword: boolean;
   active: boolean;
   createdAt: number;
@@ -71,6 +73,7 @@ interface CampaignRow {
   email_tag: string;
   link_text: string;
   links: string;
+  link_title: string;
   dm_keyword: number;
   active: number;
   created_at: number;
@@ -100,6 +103,7 @@ function fromRow(r: CampaignRow): Campaign {
     emailTag: r.email_tag,
     linkText: r.link_text,
     links: JSON.parse(r.links) as Link[],
+    linkTitle: r.link_title,
     dmKeyword: !!r.dm_keyword,
     active: !!r.active,
     createdAt: r.created_at,
@@ -183,6 +187,7 @@ const MAX_TEXT = 1000;
 const MAX_BUTTON = 20;
 const MAX_LINKS = 3;
 const MAX_EMAIL_TAG = 100;
+const MAX_LINK_TITLE = 200;
 /**
  * Room kept for each link in a text message: with click counting on, the link goes
  * out as the Worker's own /go/ address, which may be longer than the link itself.
@@ -231,6 +236,7 @@ export function campaignFromForm(form: FormData, now: number): { input: Campaign
     emailTag: text("email_tag"),
     linkText: text("link_text"),
     links,
+    linkTitle: text("link_title"),
     dmKeyword: form.get("dm_keyword") === "on",
     active: form.get("active") === "on",
   };
@@ -279,6 +285,7 @@ export function validateCampaign(c: CampaignInput): string[] {
   }
   if (c.publicReplies.some((r) => r.length > 300)) errors.push("Keep each public reply under 300 characters.");
   if (c.emailTag.length > MAX_EMAIL_TAG) errors.push(`Keep the email tag under ${MAX_EMAIL_TAG} characters.`);
+  if (c.linkTitle.length > MAX_LINK_TITLE) errors.push(`Keep the link's title under ${MAX_LINK_TITLE} characters.`);
   return errors;
 }
 
@@ -302,11 +309,12 @@ export async function saveCampaign(db: D1Database, c: CampaignInput, id: number 
     c.emailTag,
     c.linkText,
     JSON.stringify(c.links),
+    c.linkTitle,
     c.dmKeyword ? 1 : 0,
     c.active ? 1 : 0,
   ];
   const columns = `name, keywords, any_comment, media_id, media_label, public_replies, opening_text, opening_button, email_mode,
-    email_prompt, email_reask, email_thanks, optional_prompt, optional_thanks, consent_text, email_tag, link_text, links, dm_keyword, active`;
+    email_prompt, email_reask, email_thanks, optional_prompt, optional_thanks, consent_text, email_tag, link_text, links, link_title, dm_keyword, active`;
   if (id === null) {
     const row = await db
       // reply_cursor -1: no public reply used yet, so any variant can come first.

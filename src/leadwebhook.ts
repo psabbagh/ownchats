@@ -1,4 +1,5 @@
 import type { Campaign } from "./campaigns";
+import { personalLink } from "./clicks";
 import { logStatement, type Ctx } from "./context";
 import { hmacSha256Hex } from "./crypto";
 import { DAY, HOUR, iso, MINUTE, SECOND } from "./time";
@@ -62,14 +63,19 @@ export interface NewLead {
   /** The Instagram name when Meta shared one. Never the username or "there". */
   name: string | null;
   createdAt: number;
-  campaign: Pick<Campaign, "id" | "name" | "emailTag">;
+  campaign: Pick<Campaign, "id" | "name" | "emailTag" | "linkTitle">;
+  /** The link the DM sends this person: their own /go/ link when clicks are counted (see personalLink). */
+  link: string | null;
   consentText: string;
 }
+
+/** The campaign fields a new lead needs, the links included for personalLink. */
+export type LeadCampaign = Pick<Campaign, "id" | "name" | "emailTag" | "linkTitle" | "links">;
 
 export function leadCreatedPayload(l: NewLead): Record<string, unknown> {
   return {
     lead: { id: l.id, email: l.email, name: l.name || null, created_at: iso(l.createdAt) },
-    campaign: { id: l.campaign.id, name: l.campaign.name, email_tag: l.campaign.emailTag || null },
+    campaign: { id: l.campaign.id, name: l.campaign.name, email_tag: l.campaign.emailTag || null, link: l.link, link_title: l.campaign.linkTitle || null },
     consent: { wording: l.consentText, given_at: iso(l.createdAt), channel: "instagram_dm" },
   };
 }
@@ -91,11 +97,16 @@ export function queueStatement(
 }
 
 /** Queues a new lead for the webhook. Returns the delivery id, or null when no webhook is set up. */
-export async function queueLeadCreated(ctx: Ctx, lead: NewLead, who: { igUserId: string; username: string | null }): Promise<string | null> {
+export async function queueLeadCreated(
+  ctx: Ctx,
+  lead: Omit<NewLead, "link" | "campaign"> & { campaign: LeadCampaign },
+  who: { conversationId: number; igUserId: string; username: string | null },
+): Promise<string | null> {
   if (!webhookConfig(ctx)) return null;
+  const link = await personalLink(ctx, who.conversationId, lead.campaign);
   const { id, statement } = queueStatement(ctx, {
     event: "lead.created",
-    payload: leadCreatedPayload(lead),
+    payload: leadCreatedPayload({ ...lead, link }),
     campaignId: lead.campaign.id,
     igUserId: who.igUserId,
     username: who.username,
@@ -258,12 +269,16 @@ export async function deliverDue(ctx: Ctx): Promise<void> {
   for (const row of await claim(ctx, room)) await attempt(ctx, row);
 }
 
-/** Sends a lead marked as a test, built exactly as a real one, and returns its delivery id. */
-export async function sendTestLead(ctx: Ctx, t: { email: string; name: string | null; campaign: Pick<Campaign, "id" | "name" | "emailTag">; consentText: string }): Promise<string> {
+/**
+ * Sends a lead marked as a test, built exactly as a real one, and returns its
+ * delivery id. Its /go/ link leads where the campaign's does and counts nowhere.
+ */
+export async function sendTestLead(ctx: Ctx, t: { email: string; name: string | null; campaign: LeadCampaign; consentText: string }): Promise<string> {
+  const link = await personalLink(ctx, null, t.campaign);
   const { id, statement } = queueStatement(ctx, {
     event: "lead.created",
     test: true,
-    payload: leadCreatedPayload({ id: 0, email: t.email, name: t.name, createdAt: ctx.now(), campaign: t.campaign, consentText: t.consentText }),
+    payload: leadCreatedPayload({ id: 0, email: t.email, name: t.name, createdAt: ctx.now(), campaign: t.campaign, link, consentText: t.consentText }),
   });
   await statement.run();
   await deliverNow(ctx, id);

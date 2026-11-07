@@ -287,6 +287,7 @@ export async function testCampaign(ctx: Ctx, request: Request): Promise<Response
       emailTag: "",
       linkText: "Test complete. Here is the link:",
       links: [{ label: DEFAULTS.linkLabel, url: "https://github.com/psabbagh/ownchats" }],
+      linkTitle: "",
       dmKeyword: false,
       active: true,
     },

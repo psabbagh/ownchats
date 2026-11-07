@@ -109,6 +109,7 @@ export async function setupWorld(opts: { connected?: boolean } = {}) {
         emailTag: "",
         linkText: DEFAULTS.linkText,
         links: [{ label: DEFAULTS.linkLabel, url: "https://example.com/library" }],
+        linkTitle: "",
         dmKeyword: true,
         active: true,
         ...overrides,

@@ -3,6 +3,9 @@
 -- Optional free text per campaign, sent to the lead webhook as campaign.email_tag so the
 -- owner's email tool can start the right sequence. Empty: sent as null.
 ALTER TABLE campaigns ADD COLUMN email_tag TEXT NOT NULL DEFAULT '';
+-- Optional title of what the link leads to ("Turn YouTube videos into Claude skills"),
+-- sent to the lead webhook as campaign.link_title for the email that delivers it.
+ALTER TABLE campaigns ADD COLUMN link_title TEXT NOT NULL DEFAULT '';
 
 -- One row per event sent to the lead webhook, kept while it is retried.
 CREATE TABLE deliveries (

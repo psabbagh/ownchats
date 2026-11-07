@@ -40,6 +40,7 @@ function newCampaignDefaults(settings: Settings): CampaignInput {
     emailTag: "",
     linkText: DEFAULTS.linkText,
     links: [{ label: DEFAULTS.linkLabel, url: "" }],
+    linkTitle: "",
     // Off by default: a keyword that is a common word ("traffic") would answer ordinary DMs.
     dmKeyword: false,
     active: true,
@@ -197,6 +198,8 @@ async function campaignForm(ctx: Ctx, current: Campaign | null, input?: Campaign
                 <input id="link_label_${i}" name="link_label_${i}" type="text" value="${l.label}" maxlength="20" placeholder="${i === 0 ? DEFAULTS.linkLabel : ""}"></div></div>`,
           )}
           <p class="hint">Up to three links. With button labels they show as buttons under the message; leave every label empty to put the links in the message instead.</p>
+          <label for="link_title">What the first link leads to (optional)</label><input id="link_title" name="link_title" type="text" value="${v.linkTitle}" maxlength="200" placeholder="Turn YouTube videos into Claude skills">
+          <p class="hint">Its title, as written on it. Sent with each new email to your <a href="/dashboard/settings#webhook">lead webhook</a> as <code>campaign.link_title</code>, with the person's link as <code>campaign.link</code>, so an email can deliver it by name.</p>
         </div>
         <div class="card">
           <h3>Email</h3>
@@ -591,7 +594,7 @@ export async function settingsAction(ctx: Ctx, request: Request, what: string): 
     const name = String(form.get("name") ?? "").trim().slice(0, 100) || null;
     const chosen = await getCampaign(ctx.db, Number(form.get("campaign_id")) || 0);
     // With no campaign yet, a stand-in, so the webhook can be checked before the first campaign exists.
-    const campaign = chosen ?? { id: 0, name: "Test", emailTag: "" };
+    const campaign = chosen ?? { id: 0, name: "Test", emailTag: "", linkTitle: "", links: [] };
     const consentText = chosen ? fill(consentFor(chosen), { name }) : emailLines(senderOf(ctx.settings)).optionalPrompt;
     const id = await sendTestLead(ctx, { email, name, campaign, consentText });
     return redirect(`/dashboard/settings?test=${encodeURIComponent(id)}#webhook`);

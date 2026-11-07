@@ -47,9 +47,12 @@ async function webhookLog() {
 describe("lead webhook", () => {
   it("POSTs each new email once, signed over the timestamp and body, in the agreed format", async () => {
     await w.lead_webhook();
-    const id = await w.campaign({ name: "SETUP", emailMode: "optional", emailTag: "setupGuide", consentText: "" });
+    const id = await w.campaign({ name: "SETUP", emailMode: "optional", emailTag: "setupGuide", consentText: "", linkTitle: "Turn YouTube videos into Claude skills" });
     w.meta.names.set(FAN.id, "Sam");
     await giveEmail(w, id);
+    // The link the DM sent this person: their own /go/ link.
+    const dmLink = (w.meta.sentTo(FAN.id)[0]!.message as { buttons: Array<{ url: string }> }).buttons[0]!.url;
+    expect(dmLink).toMatch(/^https:\/\/ownchats\.example\.workers\.dev\/go\/[A-Za-z0-9_-]{16}$/);
 
     expect(w.receiver.received).toHaveLength(1);
     const [req] = w.receiver.received as [Received];
@@ -72,7 +75,7 @@ describe("lead webhook", () => {
       sent_at: new Date(w.clock.now()).toISOString(),
       test: false,
       lead: { id: lead!.id, email: "fan@example.com", name: "Sam", created_at: at },
-      campaign: { id, name: "SETUP", email_tag: "setupGuide" },
+      campaign: { id, name: "SETUP", email_tag: "setupGuide", link: dmLink, link_title: "Turn YouTube videos into Claude skills" },
       consent: { wording: lead!.consent_text, given_at: at, channel: "instagram_dm" },
     });
     // The consent wording is the line the person answered, which names the sender and links to the address page.
@@ -87,14 +90,41 @@ describe("lead webhook", () => {
     expect(delivery).toEqual({ status: "delivered", attempts: 1, payload: "{}" });
   });
 
-  it("sends name as null when Meta shared none, never the username, and email_tag as null when empty", async () => {
+  it("sends name as null when Meta shared none, never the username, and email_tag and link_title as null when empty", async () => {
     await w.lead_webhook();
     const id = await w.campaign({ emailMode: "first" });
     await giveEmail(w, id);
     const body = w.receiver.bodies()[0]!;
     expect(body.lead.name).toBeNull();
     expect(body.campaign.email_tag).toBeNull();
+    expect(body.campaign.link_title).toBeNull();
     expect(JSON.stringify(body)).not.toContain(FAN.username);
+  });
+
+  it("sends the person's own /go/ link even when the email comes before the link, and the DM then carries the same one", async () => {
+    await w.lead_webhook();
+    const id = await w.campaign({ emailMode: "first" });
+    await giveEmail(w, id);
+    // Email first: the email was saved, and the webhook queued, before the link DM went out.
+    const { link } = w.receiver.bodies()[0]!.campaign;
+    const dm = w.meta.sentTo(FAN.id).at(-1)!.message as { buttons: Array<{ url: string }> };
+    expect(dm.buttons[0]!.url).toBe(link);
+    expect(await w.realUrl(link)).toBe("https://example.com/library");
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM tracked_links").first()).toEqual({ n: 1 });
+
+    // A click from the email counts as the person's click, like one from the DM.
+    const res = await w.fetch(new URL(link).pathname, { headers: { "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Version/18.1 Safari/605.1.15" }, redirect: "manual" });
+    expect(res.headers.get("location")).toBe("https://example.com/library");
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM activity WHERE kind = 'click' AND ig_user_id = ?").bind(FAN.id).first()).toEqual({ n: 1 });
+  });
+
+  it("sends the link itself when click counting is off", async () => {
+    await w.lead_webhook();
+    const cookie = await w.signIn();
+    await w.fetch("/dashboard/settings/clicks", form(cookie, { do: "off" }));
+    const id = await w.campaign({ emailMode: "optional", linkTitle: "The library" });
+    await giveEmail(w, id);
+    expect(w.receiver.bodies()[0]!.campaign).toMatchObject({ link: "https://example.com/library", link_title: "The library" });
   });
 
   it("sends nothing, and queues nothing, until a webhook is set up", async () => {
@@ -257,16 +287,17 @@ describe("lead webhook settings", () => {
     expect(webhookConfig(await w.ctx())).toBeNull();
   });
 
-  it("put the email tag on the campaign form, and in the API", async () => {
+  it("put the email tag and the link's title on the campaign form", async () => {
     const cookie = await w.signIn();
     const res = await w.fetch(
       "/dashboard/campaigns/new",
-      form(cookie, { name: "Setup", keywords: "SETUP", media_id: "all", link_text: "Here:", link_url_0: "https://example.com/s", email_mode: "optional", optional_prompt: "Reply with your email.", email_tag: "setupGuide", active: "on" }),
+      form(cookie, { name: "Setup", keywords: "SETUP", media_id: "all", link_text: "Here:", link_url_0: "https://example.com/s", email_mode: "optional", optional_prompt: "Reply with your email.", email_tag: "setupGuide", link_title: "The setup guide", active: "on" }),
     );
     expect(res.status).toBe(303);
-    expect(await env.DB.prepare("SELECT email_tag FROM campaigns").first()).toEqual({ email_tag: "setupGuide" });
+    expect(await env.DB.prepare("SELECT email_tag, link_title FROM campaigns").first()).toEqual({ email_tag: "setupGuide", link_title: "The setup guide" });
     const edit = await (await w.fetch(`${res.headers.get("location")}/edit`, { headers: { cookie } })).text();
     expect(edit).toContain('name="email_tag" type="text" value="setupGuide"');
+    expect(edit).toContain('name="link_title" type="text" value="The setup guide"');
   });
 
   it("start new campaigns with email lines that name the sender, link to the privacy page, and say people can unsubscribe", async () => {
@@ -287,7 +318,13 @@ describe("lead webhook settings", () => {
 describe("Send a test lead", () => {
   it("posts a lead marked as a test, built exactly like a real one, to the address the owner types, and logs it", async () => {
     await w.lead_webhook();
-    const id = await w.campaign({ name: "SETUP", emailMode: "optional", emailTag: "setupGuide", consentText: "Guide by email from Invented Creator" });
+    const id = await w.campaign({
+      name: "SETUP",
+      emailMode: "optional",
+      emailTag: "setupGuide",
+      consentText: "Guide by email from Invented Creator",
+      linkTitle: "Turn YouTube videos into Claude skills",
+    });
     const cookie = await w.signIn();
     const res = await w.fetch("/dashboard/settings/test-lead", form(cookie, { email: "owner@example.org", name: "", campaign_id: String(id) }));
     expect(res.status).toBe(303);
@@ -302,9 +339,14 @@ describe("Send a test lead", () => {
       event: "lead.created",
       test: true,
       lead: { id: 0, email: "owner@example.org", name: null },
-      campaign: { id, name: "SETUP", email_tag: "setupGuide" },
+      campaign: { id, name: "SETUP", email_tag: "setupGuide", link_title: "Turn YouTube videos into Claude skills" },
       consent: { wording: "Guide by email from Invented Creator", channel: "instagram_dm" },
     });
+    // Its link works like a person's /go/ link, and a click on it counts nowhere.
+    expect(test.campaign.link).toMatch(/^https:\/\/ownchats\.example\.workers\.dev\/go\/[A-Za-z0-9_-]{16}$/);
+    const opened = await w.fetch(new URL(test.campaign.link).pathname, { headers: { "user-agent": "Mozilla/5.0 (iPhone) Mobile/15E148" }, redirect: "manual" });
+    expect(opened.headers.get("location")).toBe("https://example.com/library");
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM activity WHERE kind = 'click'").first()).toEqual({ n: 0 });
     // Not a lead: nothing is saved.
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM leads").first()).toEqual({ n: 0 });
     expect(await webhookLog()).toEqual([expect.objectContaining({ outcome: "sent", reason: "Test lead.created delivered (HTTP 200)", campaign_id: null })]);
@@ -312,6 +354,7 @@ describe("Send a test lead", () => {
     // A real lead has exactly the same shape.
     await giveEmail(w, id);
     const real = w.receiver.bodies()[1]!;
+    expect(real.campaign.link).not.toBe(test.campaign.link);
     const shape = (o: Record<string, any>) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, v && typeof v === "object" ? Object.keys(v) : typeof v]));
     expect(shape(real)).toEqual(shape(test));
     expect(real.test).toBe(false);
@@ -341,6 +384,6 @@ describe("Send a test lead", () => {
     await w.lead_webhook();
     expect(await (await w.fetch("/dashboard/settings/test-lead", form(cookie, { email: "not an email" }))).text()).toContain("Enter one email address");
     expect((await w.fetch("/dashboard/settings/test-lead", form(cookie, { email: "owner@example.org", name: "Sam" }))).status).toBe(303);
-    expect(w.receiver.bodies()[0]).toMatchObject({ test: true, lead: { name: "Sam" }, campaign: { id: 0, name: "Test", email_tag: null } });
+    expect(w.receiver.bodies()[0]).toMatchObject({ test: true, lead: { name: "Sam" }, campaign: { id: 0, name: "Test", email_tag: null, link: null, link_title: null } });
   });
 });

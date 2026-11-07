@@ -45,6 +45,25 @@ function swap(m: OutMessage, go: Map<string, string>): OutMessage {
 }
 
 /**
+ * The /go/ ids for some of a campaign's links, by link index. For a conversation,
+ * the same id every time; without one (a test lead), a fresh id that leads to the
+ * link and counts nowhere.
+ */
+async function goIds(ctx: Ctx, conversationId: number | null, campaignId: number, links: Array<{ url: string; index: number }>): Promise<Array<string | undefined>> {
+  const rows = await ctx.db.batch<{ id: string }>(
+    links.map((l) =>
+      ctx.db
+        .prepare(
+          `INSERT INTO tracked_links (id, conversation_id, campaign_id, link_index, url, created_at) VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT (conversation_id, link_index) DO UPDATE SET url = excluded.url RETURNING id`,
+        )
+        .bind(randomToken(12), conversationId, campaignId, l.index, l.url, ctx.now()),
+    ),
+  );
+  return links.map((_, i) => rows[i]?.results[0]?.id);
+}
+
+/**
  * Puts the campaign's links in a message behind /go/ links, the same id for the
  * same conversation and link every time it is sent. Links are buttons or lines of
  * their own in the text (see linkMessage), so only those are replaced.
@@ -54,22 +73,28 @@ export async function trackLinks(ctx: Ctx, conversationId: number, campaign: Pic
   if (!base) return message;
   const used = campaign.links.map((l, index) => ({ url: l.url, index })).filter((l) => carries(message, l.url));
   if (!used.length) return message;
-  const rows = await ctx.db.batch<{ id: string }>(
-    used.map((l) =>
-      ctx.db
-        .prepare(
-          `INSERT INTO tracked_links (id, conversation_id, campaign_id, link_index, url, created_at) VALUES (?, ?, ?, ?, ?, ?)
-           ON CONFLICT (conversation_id, link_index) DO UPDATE SET url = excluded.url RETURNING id`,
-        )
-        .bind(randomToken(12), conversationId, campaign.id, l.index, l.url, ctx.now()),
-    ),
-  );
+  const ids = await goIds(ctx, conversationId, campaign.id, used);
   const go = new Map<string, string>();
   used.forEach((l, i) => {
-    const id = rows[i]?.results[0]?.id;
+    const id = ids[i];
     if (id && !go.has(l.url)) go.set(l.url, `${base}/go/${id}`);
   });
   return swap(message, go);
+}
+
+/**
+ * The campaign's first link as the DM sends it to this person: their own /go/
+ * link when clicks are counted, so a click from elsewhere (the email the lead
+ * webhook leads to) counts like one from the DM; otherwise the link itself. It is
+ * the same /go/ link the DM carries, or will carry once sent. Null without a link.
+ */
+export async function personalLink(ctx: Ctx, conversationId: number | null, campaign: Pick<Campaign, "id" | "links">): Promise<string | null> {
+  const first = campaign.links[0];
+  if (!first) return null;
+  const base = trackingBase(ctx);
+  if (!base || !campaign.id) return first.url;
+  const [id] = await goIds(ctx, conversationId, campaign.id, [{ url: first.url, index: 0 }]);
+  return id ? `${base}/go/${id}` : first.url;
 }
 
 /**

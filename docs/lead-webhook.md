@@ -40,7 +40,9 @@ A new lead:
   "campaign": {
     "id": 3,
     "name": "SETUP",
-    "email_tag": "setupGuide"
+    "email_tag": "setupGuide",
+    "link": "https://ownchats.example.workers.dev/go/Xq3bT0vN8kLmR2sA",
+    "link_title": "Turn YouTube videos into Claude skills"
   },
   "consent": {
     "wording": "Want more like this? Reply with your email and I'll add you to my newsletter. From Sam Lee, unsubscribe anytime. Who I am and my address: https://ownchats.example.workers.dev/privacy",
@@ -66,9 +68,11 @@ The fields:
 
 - `delivery_id`: new for each event, and the same on every retry of it. Use it to ignore a repeat, for example as an idempotency key with your email tool.
 - `sent_at`, `created_at`, `given_at`: ISO 8601 times in UTC.
-- `test`: `true` only for leads sent with **Send a test lead**. Those have `lead.id` 0 and aren't saved in OwnChats; otherwise they are built exactly like a real lead, with the chosen campaign's name, email tag and consent wording. Treat them as real if you want to see the email arrive.
+- `test`: `true` only for leads sent with **Send a test lead**. Those have `lead.id` 0 and aren't saved in OwnChats; otherwise they are built exactly like a real lead, with the chosen campaign's name, email tag, link title and consent wording, and a `/go/` link of their own that leads to the campaign's link and counts no click. Treat them as real if you want to see the email arrive.
 - `lead.name`: the person's Instagram name when Meta shared one, otherwise `null`. Never their username, and never a stand-in like "there", so your email can fall back to its own greeting.
 - `campaign.email_tag`: the campaign's optional **Email tag** (campaign form, Email section), for picking which sequence or email to send. `null` when empty.
+- `campaign.link`: the campaign's first link as the DM sends it to this person. With click counting on (the default), it is their own `/go/` link on your OwnChats address, which leads to the real link, so a click from your email counts like one from the DM; with counting off, the link itself. Put it in the email as it is. Email security scanners that open links before the person does may count as their click. `null` only for a test lead with no campaign.
+- `campaign.link_title`: what that link leads to, in words, from the campaign's optional **What the first link leads to** field (campaign form, Link section), for example "Turn YouTube videos into Claude skills". `null` when empty. With `link`, it lets one email template deliver every campaign's guide by name, with nothing to configure on the receiving side.
 - `consent.wording`: the exact line the person answered (or the campaign's consent wording, if it has one), and `given_at` when they answered it. Keep both if your tool can: they are your proof of consent.
 
 New fields may be added; existing ones won't change.
