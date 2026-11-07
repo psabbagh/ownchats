@@ -51,7 +51,7 @@ Any text can use `{name}` (the person's Instagram name when Meta shares it, othe
 - The opening button is a button template sent as a private reply. Meta documents only plain text private replies, but other open-source tools send button templates this way. The first real run must confirm it; if it fails, the campaign falls back to sending the link in the first DM.
 - Access level is not settled. Meta's platform overview says an app that serves only your own account needs Standard Access and no App Review. Meta's webhook docs say `comments` webhooks need Advanced Access. So OwnChats **polls** the comments of armed Reels every minute and also accepts webhooks when they arrive. The first real run must confirm that private replies reach commenters who have no role on the app.
 - Tokens: Unified Login gives a "system-user" token. Set to expire "Never" in the app's configuration, it needs no refresh, and Meta offers no simple refresh for it anyway. OwnChats checks it once a day with `debug_token` and warns on `/setup` and the dashboard a week before any expiry Meta reports, or as soon as it stops working.
-- Follows: Meta's user profile has `is_user_follow_business`, whether the person follows the account. Like the name, it is readable only after the person has interacted in the DM. Meta's docs list a typed message, an ice breaker and the persistent menu as that interaction, and don't mention a tap on a postback button, which the follow check relies on. Other tools' follow gates work on such taps.
+- Follows: Meta's user profile has `is_user_follow_business`, whether the person follows the account. Like the name, it is readable only after the person has interacted in the DM. Meta's docs list a typed message, an ice breaker and the persistent menu as that interaction, and don't mention a tap on a postback button, which the follow check relies on. It does answer after such a tap: tested on 2026-11-07.
 - Ids: the id on a comment and the id DMs come from may differ. A private reply returns the person's messaging id, and OwnChats keys the conversation on that, while still recognising the commenter's id, so the tap finds its conversation and a second comment is still "the same person".
 
 ## Architecture
@@ -109,10 +109,12 @@ Answered by the first real run on 2026-11-04 (one account, published app, Standa
 - Typed DMs (`messages`) from an account with no role on the app arrive once no other tool holds the conversation.
 - `business_management` was not needed. Meta listed the account once the person was assigned to it in their business portfolio. The app itself was left without a portfolio.
 
-Still open:
+Answered on 2026-11-07, from a second account with no role on the app that didn't follow the author:
 
-- Whether `messaging_postbacks` (the opening button's tap) arrive from strangers. The only test ran while ManyChat still held the DM thread, and the tap never arrived.
-- Whether Meta answers `is_user_follow_business` after a tap on a postback button, and how soon a new follow shows in it. The follow check sends the link when Meta doesn't answer, and asks twice before sending it anyway, for a slow update.
+- `messaging_postbacks` arrive from strangers once no other tool holds the conversation: both the opening button's tap and the follow button's.
+- Meta answers `is_user_follow_business` (and the name) after a tap on a postback button. It said "not following" while the account hadn't followed, and "follows" on the next tap, about half a minute after it followed.
+
+Still open: none for now.
 
 ## Decisions
 
