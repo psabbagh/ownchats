@@ -56,7 +56,7 @@ async function adminRoutes(ctx: Ctx, request: Request, url: URL): Promise<Respon
   if (path === "/dashboard/people/delete" && post) return deletePersonForm(ctx, request);
   if (path === "/dashboard/activity") return activityPage(ctx, url);
   if (path === "/dashboard/settings") return settingsPage(ctx);
-  const setting = path.match(/^\/dashboard\/settings\/(export|api-token|contact)$/);
+  const setting = path.match(/^\/dashboard\/settings\/(export|api-token|contact|time-zone)$/);
   if (setting && post) return settingsAction(ctx, request, setting[1]!);
   return null;
 }

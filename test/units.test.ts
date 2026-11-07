@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { decryptText, encryptText, signValue, verifySigned } from "../src/crypto";
 import { extractEmail, matchesKeyword, parseKeywords } from "../src/match";
 import { isTemplateRejection, MetaError, plainText } from "../src/meta/client";
+import { fmtDate, fmtTime } from "../src/pages/html";
+import { timeZoneOf } from "../src/time";
 import { parsePayload } from "../src/webhook";
 
 describe("keywords", () => {
@@ -37,6 +39,30 @@ describe("keywords", () => {
 
   it("parse a typed list without duplicates", () => {
     expect(parseKeywords("AGENTS, agent,  AGENTS ,\n")).toEqual(["AGENTS", "agent"]);
+  });
+});
+
+describe("times on the pages", () => {
+  const winter = Date.parse("2026-11-04T12:00:00Z");
+  const summer = Date.parse("2026-07-01T12:00:00Z");
+  it("show in the owner's zone, with its abbreviation, daylight saving included", () => {
+    expect(fmtTime(winter, "UTC")).toBe("2026-11-04 12:00 UTC");
+    expect(fmtTime(winter, "America/Toronto")).toBe("2026-11-04 07:00 EST");
+    expect(fmtTime(summer, "America/Toronto")).toBe("2026-07-01 08:00 EDT");
+    expect(fmtTime(Date.parse("2026-11-04T05:30:00Z"), "UTC")).toBe("2026-11-04 05:30 UTC");
+    expect(fmtTime(0, "UTC")).toBe("");
+  });
+
+  it("give the day in that zone, which can differ from UTC's", () => {
+    const evening = Date.parse("2026-11-05T03:00:00Z");
+    expect(fmtDate(evening, "UTC")).toBe("2026-11-05");
+    expect(fmtDate(evening, "America/Toronto")).toBe("2026-11-04");
+  });
+
+  it("use UTC until a valid zone is saved", () => {
+    expect(timeZoneOf({})).toBe("UTC");
+    expect(timeZoneOf({ time_zone: "Mars/Olympus" })).toBe("UTC");
+    expect(timeZoneOf({ time_zone: "America/Toronto" })).toBe("America/Toronto");
   });
 });
 

@@ -23,6 +23,7 @@ export type SettingKey =
   | "last_webhook_problem"
   | "published_confirmed_at"
   | "contact"
+  | "time_zone"
   | "api_token_hash"
   | "export_key"
   | "media_cache"

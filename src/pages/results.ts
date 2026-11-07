@@ -16,7 +16,7 @@ import {
 } from "../stats";
 import { activityTable, EMAIL_MODE_LABEL, healthBanner, KIND_LABEL } from "./dashboard";
 import { fmtCount, fmtTime, html, page, plural, redirect, type Html } from "./html";
-import { DAY, HOUR } from "../time";
+import { DAY, HOUR, timeZoneOf } from "../time";
 
 const COMMENTS_PER_PAGE = 100;
 const MISSED_SHOWN = 50;
@@ -55,23 +55,24 @@ function ofViews(n: number, views: number): string {
 
 /** For a campaign waiting for the next post: what happens, and whether the checks work. */
 function waitingNotice(ctx: Ctx, campaign: Campaign): Html {
+  const tz = timeZoneOf(ctx.settings);
   if (campaign.nextPostAfter === null) return html``;
   const [at, problem] = (ctx.settings.next_post_problem ?? "").split("|");
   const checked = Number(ctx.settings.media_cache_at ?? 0);
   return html`<div class="card notice">
     <p>Waiting for your next post. OwnChats looks at your posts every minute and attaches this campaign to the first one you publish after
-      ${fmtTime(campaign.nextPostAfter)}${campaign.anyComment ? "" : html` whose caption says "Comment ${campaign.keywords[0] ?? ""}"`}.
+      ${fmtTime(campaign.nextPostAfter, tz)}${campaign.anyComment ? "" : html` whose caption says "Comment ${campaign.keywords[0] ?? ""}"`}.
       Comments that arrive before it attaches are answered once it does${campaign.active ? "" : ", if the campaign is on"}.</p>
     ${problem
-      ? html`<p class="warn small">The last check failed (${fmtTime(Number(at))}): ${problem}</p>`
+      ? html`<p class="warn small">The last check failed (${fmtTime(Number(at), tz)}): ${problem}</p>`
       : checked > campaign.nextPostAfter
-        ? html`<p class="muted small">Last check: ${fmtTime(checked)}.</p>`
+        ? html`<p class="muted small">Last check: ${fmtTime(checked, tz)}.</p>`
         : ""}
   </div>`;
 }
 
 /** Instagram's numbers for the campaign's post, and how many of its viewers this campaign reached. */
-function postNumbers(campaign: Campaign, stats: MediaStats | undefined, dmsSent: number, links: number): Html {
+function postNumbers(campaign: Campaign, stats: MediaStats | undefined, dmsSent: number, links: number, tz: string): Html {
   if (!campaign.mediaId) return html``;
   if (!stats) {
     return html`<p class="muted small">${campaign.active
@@ -100,7 +101,7 @@ function postNumbers(campaign: Campaign, stats: MediaStats | undefined, dmsSent:
     ${stats.updatedAt
       ? html`<p class="muted small">${views > 0 && dmsSent > 0
           ? `${ofViews(dmsSent, views)} of views led to a DM from this campaign, and ${ofViews(links, views)} to the link. `
-          : ""}Views count since the post went up, DMs since the campaign started. From Instagram, ${campaign.active ? "updated" : "last read"} ${fmtTime(stats.updatedAt)}.</p>`
+          : ""}Views count since the post went up, DMs since the campaign started. From Instagram, ${campaign.active ? "updated" : "last read"} ${fmtTime(stats.updatedAt, tz)}.</p>`
       : ""}`;
 }
 
@@ -142,7 +143,7 @@ function whyMissed(m: MissedComment, campaign: Campaign): string {
     : "Has the keyword now: it came in while the campaign was off, or before this spelling was added.";
 }
 
-function missedSection(campaign: Campaign, missed: MissedComment[]): Html {
+function missedSection(campaign: Campaign, missed: MissedComment[], tz: string): Html {
   if (!missed.length) return html``;
   const action = `/dashboard/campaigns/${campaign.id}/answer`;
   return html`<h2>To check (${missed.length})</h2>
@@ -153,7 +154,7 @@ function missedSection(campaign: Campaign, missed: MissedComment[]): Html {
       const who = m.fromUsername ? `@${m.fromUsername}` : "this person";
       const ask = `Send this campaign's DM to ${who}?`;
       return html`<div class="card">
-        <p style="margin:0"><b>${m.fromUsername ? `@${m.fromUsername}` : "Someone"}</b> <span class="muted small">${fmtTime(m.commentedAt)}, ${timeLeft(m.left)}</span></p>
+        <p style="margin:0"><b>${m.fromUsername ? `@${m.fromUsername}` : "Someone"}</b> <span class="muted small">${fmtTime(m.commentedAt, tz)}, ${timeLeft(m.left)}</span></p>
         <p style="margin:4px 0;overflow-wrap:anywhere">${m.text.length > 280 ? `${m.text.slice(0, 280)}...` : m.text}</p>
         <p class="muted small" style="margin:0">${whyMissed(m, campaign)}</p>
         ${campaign.active
@@ -232,6 +233,7 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
   const stats = campaign.mediaId ? (await readMediaStats(ctx, [campaign.mediaId])).get(campaign.mediaId) : undefined;
 
   const base = `/dashboard/campaigns/${campaign.id}`;
+  const tz = timeZoneOf(ctx.settings);
   const { fromComments: fc, fromDms: fd, lastDay } = results;
   const dmColumn = campaign.dmKeyword || fd.dmsSent > 0;
   const emailRow = campaign.emailMode !== "none" || fc.emails > 0 || fd.emails > 0;
@@ -251,16 +253,16 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
         <div style="min-width:0">
           <p style="margin:0">${caption(media, campaign)}</p>
           <p class="muted small" style="margin:4px 0 0">${campaign.anyComment ? "Any comment" : `Keyword: ${campaign.keywords.join(", ")}`},
-            ${EMAIL_MODE_LABEL[campaign.emailMode]}. Started ${fmtTime(campaign.createdAt)}.
-            ${media?.timestamp ? html`Posted ${fmtTime(media.timestamp)}.` : ""}
+            ${EMAIL_MODE_LABEL[campaign.emailMode]}. Started ${fmtTime(campaign.createdAt, tz)}.
+            ${media?.timestamp ? html`Posted ${fmtTime(media.timestamp, tz)}.` : ""}
             ${media?.permalink ? html`<a href="${media.permalink}" rel="noopener noreferrer" target="_blank">Open on Instagram</a>` : ""}</p>
         </div>
       </div>
 
       ${waitingNotice(ctx, campaign)}
-      ${postNumbers(campaign, stats, fc.dmsSent, fc.links)}
+      ${postNumbers(campaign, stats, fc.dmsSent, fc.links, tz)}
 
-      <div id="to-check">${notice}${missedSection(campaign, missed)}</div>
+      <div id="to-check">${notice}${missedSection(campaign, missed, tz)}</div>
 
       <h2>Comments</h2>
       <p class="muted small">${campaign.mediaId
@@ -292,7 +294,7 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
         ? html`<h2>Failures</h2>
             <p class="muted small">From the last 90 days of the log.</p>
             <ul class="small">${results.failures.map(
-              (f) => html`<li>${KIND_LABEL[f.kind] ?? f.kind}: ${f.reason}. ${plural(f.n, "time")}, last ${fmtTime(f.last)}.</li>`,
+              (f) => html`<li>${KIND_LABEL[f.kind] ?? f.kind}: ${f.reason}. ${plural(f.n, "time")}, last ${fmtTime(f.last, tz)}.</li>`,
             )}</ul>`
         : ""}
 
@@ -302,7 +304,7 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
         ? html`<p class="muted">${show === "all" ? "No comments yet." : "None."}</p>`
         : html`<table><thead><tr><th>Who, when</th><th>Comment</th><th>What happened</th></tr></thead><tbody>
             ${comments.map(
-              (line) => html`<tr><td>${line.from_username ? `@${line.from_username}` : ""}<br><span class="muted small">${fmtTime(line.commented_at)}</span></td>
+              (line) => html`<tr><td>${line.from_username ? `@${line.from_username}` : ""}<br><span class="muted small">${fmtTime(line.commented_at, tz)}</span></td>
                 <td style="overflow-wrap:anywhere">${commentText(line)}</td>
                 <td>${outcome(line, campaign, names)}</td></tr>`,
             )}</tbody></table>`}
@@ -311,7 +313,7 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
         : ""}
 
       <details style="margin-top:28px"><summary>Activity log for this campaign</summary>
-        <div style="overflow-x:auto">${activityTable(activity, new Map([[campaign.id, campaign.name]]))}</div></details>`,
+        <div style="overflow-x:auto">${activityTable(activity, new Map([[campaign.id, campaign.name]]), tz)}</div></details>`,
     { nav: true },
   );
 }

@@ -243,6 +243,33 @@ describe("Google Sheets link", () => {
   });
 });
 
+describe("time zone", () => {
+  it("shows UTC until the owner picks a zone in Settings, then shows every page's times in it", async () => {
+    await w.campaign();
+    await w.sendComment(w.comment("agents", FAN));
+    const cookie = await w.signIn();
+    const text = async (path: string) => (await w.fetch(path, { headers: { cookie } })).text();
+
+    expect(await text("/dashboard")).toContain("Times are in UTC");
+    expect(await text("/dashboard/activity")).toContain("2026-11-04 12:00 UTC");
+    const settings = await text("/dashboard/settings");
+    expect(settings).toContain("<option selected>UTC</option>");
+    expect(settings).toContain("<option>America/Toronto</option>");
+
+    // A name Intl doesn't know is not saved.
+    await w.fetch("/dashboard/settings/time-zone", form(cookie, { time_zone: "Mars/Olympus" }));
+    expect(await text("/dashboard/activity")).toContain("2026-11-04 12:00 UTC");
+
+    await w.fetch("/dashboard/settings/time-zone", form(cookie, { time_zone: "America/Toronto" }));
+    expect(await text("/dashboard/settings")).toContain("<option selected>America/Toronto</option>");
+    const home = await text("/dashboard");
+    expect(home).not.toContain("Times are in UTC");
+    expect(home).toContain("Started 2026-11-04");
+    expect(home).toContain("Last webhook: 2026-11-04 07:00 EST");
+    expect(await text("/dashboard/activity")).toContain("2026-11-04 07:00 EST");
+  });
+});
+
 describe("API", () => {
   it("needs the token, which is shown once and can be revoked", async () => {
     await w.campaign();
