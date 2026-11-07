@@ -1,18 +1,31 @@
 import { listCampaigns, matchComment, postLabel, type Campaign } from "./campaigns";
 import type { Ctx } from "./context";
 import { listedStatement } from "./insights";
+import { captionAsksFor } from "./match";
 import { explainError, type Media } from "./meta/client";
 import { recentMedia } from "./pipeline/poll";
 import { saveSettings } from "./settings";
 import { PRIVATE_REPLY_WINDOW } from "./time";
 
 /**
+ * The post a waiting campaign belongs to: the first one published after it started
+ * waiting whose caption asks for its keyword ("Comment AGENTS"). The caption is what
+ * tells two waiting campaigns apart, and what keeps a keyword used on an old Reel
+ * from mattering: only posts published since the campaign was armed count. An
+ * any-comment campaign has no keyword to look for, so it takes the first new post.
+ */
+export function postFor(campaign: Campaign, oldestFirst: Media[]): Media | undefined {
+  return oldestFirst.find(
+    (m) => m.timestamp > campaign.nextPostAfter! && (campaign.anyComment || captionAsksFor(m.caption ?? "", campaign.keywords)),
+  );
+}
+
+/**
  * Called by the Cron every minute, before waiting comments are handled: attaches
- * each campaign that waits for the next post to the first post published after it
- * started waiting. Comments on that post that came in before, and that the
- * campaign would have answered, go back through the pipeline in the same run, so
- * the minute between posting and attaching misses nobody. Costs one Meta call a
- * run, and only while a campaign waits.
+ * each campaign that waits for the next post to its post (postFor). Comments on
+ * that post that came in before, and that the campaign would have answered, go
+ * back through the pipeline in the same run, so the minute between posting and
+ * attaching misses nobody. Costs one Meta call a run, and only while a campaign waits.
  */
 export async function attachNextPosts(ctx: Ctx): Promise<void> {
   if (!ctx.meta) return;
@@ -29,7 +42,7 @@ export async function attachNextPosts(ctx: Ctx): Promise<void> {
 
   const oldestFirst = [...media].filter((m) => m.timestamp).sort((a, b) => a.timestamp - b.timestamp);
   for (const campaign of waiting) {
-    const post = oldestFirst.find((m) => m.timestamp > campaign.nextPostAfter!);
+    const post = postFor(campaign, oldestFirst);
     if (post) await attach(ctx, campaign, post);
   }
 }

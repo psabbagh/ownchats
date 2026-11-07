@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { listCampaigns } from "../src/campaigns";
+import { captionAsksFor } from "../src/match";
 import { MetaError, type Media } from "../src/meta/client";
 import { missedComments } from "../src/missed";
 import { DAY, MINUTE } from "../src/time";
@@ -17,7 +18,7 @@ beforeEach(async () => {
 const NEW_POST = "18000000000000010";
 const NEWER_POST = "18000000000000011";
 const OLD_POST = "18000000000000009";
-const media = (id: string, timestamp: number, caption = `Invented caption for ${id}`): Media => ({
+const media = (id: string, timestamp: number, caption = "An invented reel. Comment AGENTS and I'll send the list"): Media => ({
   id,
   caption,
   permalink: `https://www.instagram.com/reel/${id}/`,
@@ -49,6 +50,18 @@ const fields = {
   link_label_0: "Open",
   active: "on",
 };
+
+describe("a caption that asks for the keyword", () => {
+  it("is \"comment\" then the keyword, with only punctuation, spaces or emoji between", () => {
+    for (const caption of ["Comment AGENTS", "comment 'agents' 👇", "Comment: AGENTS and I'll DM you", "COMMENT “AGENTS”!", "Want it? Comment agents.", "Commente AGENTS", "Comment 👇👇 AGENTS", "Comment the word AGENTS", 'comment word "agents"']) {
+      expect(captionAsksFor(caption, ["AGENTS"]), caption).toBe(true);
+    }
+    expect(captionAsksFor("Comment SET-UP for the checklist", ["SETUP", "SET UP"])).toBe(true);
+    for (const caption of ["My agents bring traffic. Comment TRAFFIC", "comment below if you use agents", "Comment AGENTSMITH", "agents", "", "Comment your favourite AGENTS", "Comment the wordAGENTS"]) {
+      expect(captionAsksFor(caption, ["AGENTS"]), caption).toBe(false);
+    }
+  });
+});
 
 describe("a campaign on the next post", () => {
   it("is chosen in the form, and keeps the time it started waiting when saved again", async () => {
@@ -90,16 +103,70 @@ describe("a campaign on the next post", () => {
   it("attaches to the first post published after it started waiting", async () => {
     const id = await waiting(10 * MINUTE);
     const now = w.clock.now();
-    w.meta.media = [media(NEWER_POST, now - MINUTE), media(NEW_POST, now - 5 * MINUTE, "Five agents\nthat run my week"), media(OLD_POST, now - 2 * DAY)];
+    w.meta.media = [media(NEWER_POST, now - MINUTE), media(NEW_POST, now - 5 * MINUTE, "Five agents\nthat run my week. Comment AGENTS"), media(OLD_POST, now - 2 * DAY)];
     await w.cron();
-    expect(await campaignRow(id)).toEqual({ media_id: NEW_POST, media_label: "Five agents that run my week", next_post_after: null });
+    expect(await campaignRow(id)).toEqual({ media_id: NEW_POST, media_label: "Five agents that run my week. Comment AGENTS", next_post_after: null });
     // The post is listed at once, so the API and the numbers don't wait for the hourly listing.
     const listed = await env.DB.prepare("SELECT posted_at, caption FROM media_stats WHERE media_id = ?").bind(NEW_POST).first();
-    expect(listed).toEqual({ posted_at: now - 5 * MINUTE, caption: "Five agents\nthat run my week" });
+    expect(listed).toEqual({ posted_at: now - 5 * MINUTE, caption: "Five agents\nthat run my week. Comment AGENTS" });
 
     const cookie = await w.signIn();
     const home = await (await w.fetch("/dashboard", { headers: { cookie } })).text();
     expect(home).toContain("on Five agents that run my week");
+  });
+
+  it("takes the post whose caption asks for its keyword, so two can wait at once", async () => {
+    const agents = await waiting();
+    const memory = await waiting(10 * MINUTE, { name: "Memory guide", keywords: ["MEMORY"] });
+    const now = w.clock.now();
+    // A Reel that mentions agents in passing, posted first, belongs to neither.
+    w.meta.media = [media("18000000000000020", now - 3 * MINUTE, "My agents bring the traffic. Comment TRAFFIC for the playbook")];
+    await w.cron();
+    expect((await campaignRow(agents))!.next_post_after).not.toBeNull();
+    expect((await campaignRow(memory))!.next_post_after).not.toBeNull();
+
+    w.clock.advance(MINUTE);
+    w.meta.media = [media("18000000000000021", w.clock.now(), "How my agents remember. Comment MEMORY 👇"), ...w.meta.media];
+    await w.cron();
+    expect(await campaignRow(memory)).toMatchObject({ media_id: "18000000000000021", next_post_after: null });
+    expect((await campaignRow(agents))!.media_id).toBeNull();
+
+    w.clock.advance(DAY);
+    w.meta.media = [media("18000000000000022", w.clock.now(), "Five agents that run my week.\n\nComment “AGENTS” and I'll send them"), ...w.meta.media];
+    await w.cron();
+    expect(await campaignRow(agents)).toMatchObject({ media_id: "18000000000000022", next_post_after: null });
+  });
+
+  it("reuses a keyword from an old Reel without touching the old campaign", async () => {
+    const old = await w.campaign({ mediaId: OLD_POST, links: [{ label: "Open", url: "https://example.com/old-list" }] });
+    w.clock.advance(30 * DAY);
+    const fresh = await waiting(10 * MINUTE, { links: [{ label: "Open", url: "https://example.com/new-list" }] });
+    w.meta.media = [media(OLD_POST, w.clock.now() - 30 * DAY)];
+    await w.cron();
+    expect((await campaignRow(fresh))!.media_id).toBeNull();
+
+    w.meta.media = [media(NEW_POST, w.clock.now()), ...w.meta.media];
+    await w.cron();
+    expect((await campaignRow(fresh))!.media_id).toBe(NEW_POST);
+    expect((await campaignRow(old))!.media_id).toBe(OLD_POST);
+
+    // Each Reel's comments go to its own campaign, and someone who got the old list gets the new one too.
+    const onOld = w.comment("AGENTS", FAN, { media: OLD_POST });
+    await w.sendComment(onOld);
+    const onNew = w.comment("agents please", FAN, { media: NEW_POST });
+    await w.sendComment(onNew);
+    const campaignOf = async (commentId: string) =>
+      (await env.DB.prepare("SELECT campaign_id FROM comments WHERE id = ?").bind(commentId).first<{ campaign_id: number }>())!.campaign_id;
+    expect(await campaignOf(onOld.id)).toBe(old);
+    expect(await campaignOf(onNew.id)).toBe(fresh);
+    expect(privateReplies().map((s) => s.to)).toEqual([onOld.id, onNew.id]);
+  });
+
+  it("with any comment, takes the first new post whatever its caption", async () => {
+    const id = await waiting(10 * MINUTE, { anyComment: true, keywords: [] });
+    w.meta.media = [media(NEW_POST, w.clock.now(), "No call to action here")];
+    await w.cron();
+    expect((await campaignRow(id))!.media_id).toBe(NEW_POST);
   });
 
   it("keeps waiting while there is no new post, and only reads the post list while a campaign waits", async () => {

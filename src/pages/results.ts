@@ -60,7 +60,8 @@ function waitingNotice(ctx: Ctx, campaign: Campaign): Html {
   const checked = Number(ctx.settings.media_cache_at ?? 0);
   return html`<div class="card notice">
     <p>Waiting for your next post. OwnChats looks at your posts every minute and attaches this campaign to the first one you publish after
-      ${fmtTime(campaign.nextPostAfter)}. Comments that arrive before it attaches are answered once it does${campaign.active ? "" : ", if the campaign is on"}.</p>
+      ${fmtTime(campaign.nextPostAfter)}${campaign.anyComment ? "" : html` whose caption says "Comment ${campaign.keywords[0] ?? ""}"`}.
+      Comments that arrive before it attaches are answered once it does${campaign.active ? "" : ", if the campaign is on"}.</p>
     ${problem
       ? html`<p class="warn small">The last check failed (${fmtTime(Number(at))}): ${problem}</p>`
       : checked > campaign.nextPostAfter

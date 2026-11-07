@@ -109,7 +109,7 @@ function mediaPicker(media: Media[], current: Campaign | null, input?: CampaignI
         <span>${postLabel(m)} <span class="muted small">${m.timestamp ? fmtTime(m.timestamp) : ""}</span></span></label>`,
     )}
     <input type="hidden" name="media_label" value="${input?.mediaLabel ?? current?.mediaLabel ?? ""}">
-    <p class="hint">With all posts, use a keyword you don't use for anything else. With the next post, set the campaign up before you post: within a minute of posting, OwnChats attaches it to the first post you publish after saving, and answers the comments that came in before that. Already posted? Pick the post from the list instead.</p>
+    <p class="hint">With all posts, use a keyword you don't use for anything else. With the next post, set the campaign up before you post: within a minute of posting, OwnChats attaches it to the first post you publish after saving whose caption asks for the keyword ("Comment AGENTS"), and answers the comments that came in before that. Already posted? Pick the post from the list instead.</p>
     <script>document.addEventListener('change',e=>{if(e.target.name==='media_id'){document.querySelector('[name=media_label]').value=e.target.dataset.label||''}})</script>`;
 }
 
