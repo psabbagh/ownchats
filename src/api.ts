@@ -40,6 +40,7 @@ function campaignJson(c: Campaign) {
     email_mode: c.emailMode,
     opening_button: c.openingButton || null,
     links: c.links,
+    follow_check: c.followCheck,
     dm_keyword: c.dmKeyword,
     active: c.active,
     created_at: iso(c.createdAt),

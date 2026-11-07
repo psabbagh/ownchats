@@ -29,6 +29,8 @@ export class FakeMeta implements MetaClient {
   token: TokenInfo = { valid: true, expiresAt: null, dataAccessExpiresAt: null, scopes: [] };
   usernames = new Map<string, string>();
   names = new Map<string, string>();
+  /** People who follow the account, by messaging id. Meta answers only after they tapped or wrote. */
+  followers = new Set<string>();
   accountStats: AccountStats = { followers: 1200, follows: 150, mediaCount: 40 };
   /** Each post's lifetime numbers, as Meta's insights report them. */
   insights = new Map<string, MediaInsights>();
@@ -126,6 +128,12 @@ export class FakeMeta implements MetaClient {
   async getProfile(igUserId: string) {
     this.call("getProfile");
     return { name: this.names.get(igUserId) ?? null, username: this.usernames.get(igUserId) ?? null };
+  }
+  async getFollowStatus(igUserId: string) {
+    this.call("getFollowStatus");
+    // Meta's user profile needs the person to have messaged or tapped first.
+    if (!this.lastInbound.has(igUserId)) throw new MetaError("User consent is required to access user profile", 400, 230);
+    return { follows: this.followers.has(igUserId), name: this.names.get(igUserId) ?? null, username: this.usernames.get(igUserId) ?? null };
   }
   async mediaInsights(mediaId: string) {
     this.call("mediaInsights");

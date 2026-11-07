@@ -263,6 +263,14 @@ export class GraphMetaClient implements MetaClient {
     return { name: res.name ?? null, username: res.username ?? null };
   }
 
+  async getFollowStatus(igUserId: string) {
+    const res = await this.get<{ name?: string; username?: string; is_user_follow_business?: unknown }>(igUserId, {
+      fields: "name,username,is_user_follow_business",
+    });
+    const follows = typeof res.is_user_follow_business === "boolean" ? res.is_user_follow_business : null;
+    return { follows, name: res.name ?? null, username: res.username ?? null };
+  }
+
   async mediaInsights(mediaId: string): Promise<MediaInsights> {
     type Row = { name?: string; values?: Array<{ value?: unknown }>; total_value?: { value?: unknown } };
     let res: { data?: Row[] };

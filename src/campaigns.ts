@@ -41,6 +41,17 @@ export interface Campaign {
   consentText: string;
   linkText: string;
   links: Link[];
+  /**
+   * Before the link (and the email step), ask Meta whether the person follows the
+   * account, and ask them to follow first if not. Needs the opening button: Meta
+   * only answers once the person has tapped or written.
+   */
+  followCheck: boolean;
+  /** Sent with the follow button when they don't follow. */
+  followPrompt: string;
+  /** Sent once more when they tap the follow button but still don't follow. */
+  followReask: string;
+  followButton: string;
   dmKeyword: boolean;
   active: boolean;
   createdAt: number;
@@ -68,6 +79,10 @@ interface CampaignRow {
   consent_text: string;
   link_text: string;
   links: string;
+  follow_check: number;
+  follow_prompt: string;
+  follow_reask: string;
+  follow_button: string;
   dm_keyword: number;
   active: number;
   created_at: number;
@@ -96,6 +111,10 @@ function fromRow(r: CampaignRow): Campaign {
     consentText: r.consent_text,
     linkText: r.link_text,
     links: JSON.parse(r.links) as Link[],
+    followCheck: !!r.follow_check,
+    followPrompt: r.follow_prompt,
+    followReask: r.follow_reask,
+    followButton: r.follow_button,
     dmKeyword: !!r.dm_keyword,
     active: !!r.active,
     createdAt: r.created_at,
@@ -144,6 +163,9 @@ export const DEFAULTS = {
   optionalThanks: "Thanks, you're on the list!",
   linkText: "Here you go:",
   linkLabel: "Open",
+  followPrompt: "Almost there, {name}! Follow me first, then tap the button and I'll send it over.",
+  followReask: "I can't see your follow yet. It can take a moment to show up. Follow me, then tap the button again.",
+  followButton: "I'm following",
 };
 
 // Meta's limits: 640 characters of text in a button template, 1000 in a text
@@ -194,6 +216,10 @@ export function campaignFromForm(form: FormData, now: number): { input: Campaign
     consentText: text("consent_text"),
     linkText: text("link_text"),
     links,
+    followCheck: form.get("follow_check") === "on",
+    followPrompt: text("follow_prompt"),
+    followReask: text("follow_reask"),
+    followButton: text("follow_button"),
     dmKeyword: form.get("dm_keyword") === "on",
     active: form.get("active") === "on",
   };
@@ -240,6 +266,15 @@ export function validateCampaign(c: CampaignInput): string[] {
     if (!c.optionalPrompt) errors.push("Write the optional email line, and say what people will receive.");
     if (longest(c.optionalThanks) > MAX_TEXT) errors.push(`The thank-you must be ${MAX_TEXT} characters or fewer.`);
   }
+  if (c.followCheck) {
+    if (!c.openingButton) {
+      errors.push("The follow check needs the first DM's button: Meta only says whether someone follows you after they tap or write.");
+    }
+    if (!c.followPrompt || !c.followReask) errors.push("Write both follow messages: the ask, and the one for a tap without a follow.");
+    if (longest(c.followPrompt, c.followReask) > MAX_TEMPLATE_TEXT) errors.push(`Follow messages must be ${MAX_TEMPLATE_TEXT} characters or fewer.`);
+    if (!c.followButton) errors.push("Give the follow button a label.");
+    if (c.followButton.length > MAX_BUTTON) errors.push(`The follow button label must be ${MAX_BUTTON} characters or fewer.`);
+  }
   if (c.publicReplies.some((r) => r.length > 300)) errors.push("Keep each public reply under 300 characters.");
   return errors;
 }
@@ -263,11 +298,16 @@ export async function saveCampaign(db: D1Database, c: CampaignInput, id: number 
     c.consentText,
     c.linkText,
     JSON.stringify(c.links),
+    c.followCheck ? 1 : 0,
+    c.followPrompt,
+    c.followReask,
+    c.followButton,
     c.dmKeyword ? 1 : 0,
     c.active ? 1 : 0,
   ];
   const columns = `name, keywords, any_comment, media_id, media_label, public_replies, opening_text, opening_button, email_mode,
-    email_prompt, email_reask, email_thanks, optional_prompt, optional_thanks, consent_text, link_text, links, dm_keyword, active`;
+    email_prompt, email_reask, email_thanks, optional_prompt, optional_thanks, consent_text, link_text, links,
+    follow_check, follow_prompt, follow_reask, follow_button, dm_keyword, active`;
   if (id === null) {
     const row = await db
       // reply_cursor -1: no public reply used yet, so any variant can come first.
@@ -326,7 +366,12 @@ export function fill(text: string, p: Person): string {
   return text.replace(/\{\s*name\s*\}/gi, name).replace(/\{\s*username\s*\}/gi, username || "there");
 }
 
-export type ConversationState = "opened" | "awaiting_email" | "reasked" | "optional_email" | "done";
+/**
+ * opened: first DM with the button sent. awaiting_follow, follow_reasked: asked to
+ * follow, once or twice. awaiting_email, reasked: email first. optional_email: link
+ * sent, an email reply still welcome. done: link sent.
+ */
+export type ConversationState = "opened" | "awaiting_follow" | "follow_reasked" | "awaiting_email" | "reasked" | "optional_email" | "done";
 
 function usesButtons(links: Link[]): boolean {
   return links.length > 0 && links.length <= MAX_LINKS && links.every((l) => l.label);
@@ -352,9 +397,18 @@ function linkStep(c: Campaign, p: Person): { message: OutMessage; state: Convers
 }
 
 export const OPEN_PAYLOAD_PREFIX = "OWNCHATS_OPEN:";
+export const FOLLOW_PAYLOAD_PREFIX = "OWNCHATS_FOLLOW:";
 
-/** The first DM, and the state it leaves the conversation in. */
-export function firstMessage(c: Campaign, trigger: "comment" | "dm", p: Person): { message: OutMessage; state: ConversationState } {
+/**
+ * The first DM, and the state it leaves the conversation in. `follows` is what Meta
+ * said when the person started by DM; a comment's first DM comes before any check.
+ */
+export function firstMessage(
+  c: Campaign,
+  trigger: "comment" | "dm",
+  p: Person,
+  follows: boolean | null = null,
+): { message: OutMessage; state: ConversationState } {
   if (trigger === "comment" && c.openingButton) {
     return {
       message: {
@@ -365,7 +419,20 @@ export function firstMessage(c: Campaign, trigger: "comment" | "dm", p: Person):
       state: "opened",
     };
   }
+  if (c.followCheck && follows === false) return followAsk(c, p, false);
   return afterOpening(c, p);
+}
+
+/** "Follow me first", with the button that checks again; `again` for the second ask. */
+export function followAsk(c: Campaign, p: Person, again: boolean): { message: OutMessage; state: ConversationState } {
+  return {
+    message: {
+      kind: "buttons",
+      text: fill(again ? c.followReask : c.followPrompt, p),
+      buttons: [{ type: "postback", title: fill(c.followButton, p), payload: `${FOLLOW_PAYLOAD_PREFIX}${c.id}` }],
+    },
+    state: again ? "follow_reasked" : "awaiting_follow",
+  };
 }
 
 /** What follows the tap (or the first DM when there is no button). */
