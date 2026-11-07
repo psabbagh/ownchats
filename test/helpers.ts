@@ -59,6 +59,7 @@ export async function setupWorld(opts: { connected?: boolean } = {}) {
         anyComment: false,
         mediaId: REEL,
         mediaLabel: "Test reel",
+        nextPostAfter: null,
         publicReplies: DEFAULTS.publicReplies,
         openingText: DEFAULTS.openingText,
         openingButton: DEFAULTS.openingButton,

@@ -1,5 +1,5 @@
 import { apiAuthorized } from "./auth";
-import { listCampaigns, type Campaign } from "./campaigns";
+import { listCampaigns, onAllPosts, type Campaign } from "./campaigns";
 import type { Ctx } from "./context";
 import { listLeads } from "./export";
 import { listPosts, readMediaStats, type MediaStats } from "./insights";
@@ -35,7 +35,8 @@ function campaignJson(c: Campaign) {
     any_comment: c.anyComment,
     media_id: c.mediaId,
     media_label: c.mediaLabel,
-    all_posts: c.mediaId === null,
+    all_posts: onAllPosts(c),
+    waits_for_next_post: c.nextPostAfter !== null,
     email_mode: c.emailMode,
     opening_button: c.openingButton || null,
     links: c.links,

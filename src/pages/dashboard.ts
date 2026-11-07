@@ -1,4 +1,4 @@
-import { campaignFromForm, DEFAULTS, getCampaign, listCampaigns, saveCampaign, type Campaign, type CampaignInput, type EmailMode } from "../campaigns";
+import { campaignFromForm, DEFAULTS, getCampaign, listCampaigns, NEXT_POST, postLabel, saveCampaign, type Campaign, type CampaignInput, type EmailMode } from "../campaigns";
 
 export const EMAIL_MODE_LABEL: Record<EmailMode, string> = { none: "link only", optional: "link plus optional email", first: "email first" };
 
@@ -9,6 +9,7 @@ function newCampaignDefaults(): CampaignInput {
     anyComment: false,
     mediaId: null,
     mediaLabel: null,
+    nextPostAfter: null,
     publicReplies: DEFAULTS.publicReplies,
     openingText: DEFAULTS.openingText,
     openingButton: DEFAULTS.openingButton,
@@ -36,6 +37,12 @@ import { missedComments } from "../missed";
 import { deleteSettings, saveSettings } from "../settings";
 import { campaignCounts, deletePerson, findPersonByUsername, listActivity, storedAboutPeople, type ActivityRow } from "../stats";
 import { copyField, fmtCount, fmtTime, html, page, plural, redirect, type Html } from "./html";
+
+/** Which post a campaign watches, in a few words. */
+export function postWords(c: Campaign): string {
+  if (c.mediaId) return c.mediaLabel || `post ${c.mediaId}`;
+  return c.nextPostAfter !== null ? "your next post (waiting for it)" : "all posts";
+}
 
 export function healthBanner(ctx: Ctx): Html {
   const s = ctx.settings;
@@ -68,7 +75,7 @@ export async function dashboardHome(ctx: Ctx): Promise<Response> {
         return html`<div class="card">
           <div class="row"><h3 style="flex:1"><a href="/dashboard/campaigns/${c.id}">${c.name}</a></h3>
             <span class="pill ${c.active ? "sent" : "skipped"}">${c.active ? "on" : "off"}</span></div>
-          <p class="muted small">${c.anyComment ? "Any comment" : `Keyword: ${c.keywords.join(", ")}`} on ${c.mediaId ? c.mediaLabel || `post ${c.mediaId}` : "all posts"}, ${EMAIL_MODE_LABEL[c.emailMode]}</p>
+          <p class="muted small">${c.anyComment ? "Any comment" : `Keyword: ${c.keywords.join(", ")}`} on ${postWords(c)}, ${EMAIL_MODE_LABEL[c.emailMode]}</p>
           ${missed.get(c.id)?.length
             ? html`<p class="small"><a class="warn" href="/dashboard/campaigns/${c.id}#to-check">${missed.get(c.id)!.length === 1 ? "1 comment" : `${missed.get(c.id)!.length} comments`} to check</a></p>`
             : ""}
@@ -85,33 +92,33 @@ export async function dashboardHome(ctx: Ctx): Promise<Response> {
 }
 
 function mediaPicker(media: Media[], current: Campaign | null, input?: CampaignInput): Html {
-  const selected = input ? input.mediaId ?? "all" : current ? current.mediaId ?? "all" : "all";
+  const v = input ?? current;
+  const selected = !v ? "all" : v.nextPostAfter !== null ? NEXT_POST : v.mediaId ?? "all";
   const options = [...media];
-  if (selected !== "all" && !options.some((m) => m.id === selected)) {
+  if (selected !== "all" && selected !== NEXT_POST && !options.some((m) => m.id === selected)) {
     options.unshift({ id: selected, caption: input?.mediaLabel ?? current?.mediaLabel ?? "", permalink: "", timestamp: 0, mediaType: "" });
   }
+  const waitingSince = current?.nextPostAfter ?? null;
   return html`<label>Which post?</label>
     <label class="inline"><input type="radio" name="media_id" value="all" ${selected === "all" ? "checked" : ""}> All posts, including ones you haven't posted yet</label>
+    <label class="inline"><input type="radio" name="media_id" value="${NEXT_POST}" ${selected === NEXT_POST ? "checked" : ""} data-label="">
+      <span>The next post you publish ${waitingSince !== null ? html`<span class="muted small">waiting since ${fmtTime(waitingSince)}</span>` : ""}</span></label>
     ${options.map(
-      (m) => html`<label class="inline"><input type="radio" name="media_id" value="${m.id}" ${selected === m.id ? "checked" : ""} data-label="${caption(m)}">
+      (m) => html`<label class="inline"><input type="radio" name="media_id" value="${m.id}" ${selected === m.id ? "checked" : ""} data-label="${postLabel(m)}">
         ${m.thumbnailUrl ? html`<img src="${m.thumbnailUrl}" alt="" width="40" height="40" style="object-fit:cover;border-radius:4px">` : ""}
-        <span>${caption(m)} <span class="muted small">${m.timestamp ? fmtTime(m.timestamp) : ""}</span></span></label>`,
+        <span>${postLabel(m)} <span class="muted small">${m.timestamp ? fmtTime(m.timestamp) : ""}</span></span></label>`,
     )}
     <input type="hidden" name="media_label" value="${input?.mediaLabel ?? current?.mediaLabel ?? ""}">
-    <p class="hint">With all posts, use a keyword you don't use for anything else.</p>
+    <p class="hint">With all posts, use a keyword you don't use for anything else. With the next post, set the campaign up before you post: within a minute of posting, OwnChats attaches it to the first post you publish after saving whose caption asks for the keyword ("Comment AGENTS"), and answers the comments that came in before that. Already posted? Pick the post from the list instead.</p>
     <script>document.addEventListener('change',e=>{if(e.target.name==='media_id'){document.querySelector('[name=media_label]').value=e.target.dataset.label||''}})</script>`;
-}
-
-function caption(m: Media): string {
-  const c = (m.caption || "").replace(/\s+/g, " ").trim();
-  return c ? (c.length > 70 ? `${c.slice(0, 70)}...` : c) : `Post ${m.id}`;
 }
 
 async function campaignForm(ctx: Ctx, current: Campaign | null, input?: CampaignInput, errors: string[] = []): Promise<Response> {
   let media: Media[] = [];
   let mediaProblem = "";
   try {
-    media = await recentMedia(ctx);
+    // Read fresh, so a post published a minute ago is listed and isn't mistaken for "the next post".
+    media = await recentMedia(ctx, true);
   } catch (e) {
     mediaProblem = e instanceof Error ? e.message : String(e);
   }
@@ -206,7 +213,7 @@ export async function editCampaignPage(ctx: Ctx, id: number): Promise<Response> 
 export async function saveCampaignForm(ctx: Ctx, request: Request, id: number | null): Promise<Response> {
   const current = id === null ? null : await getCampaign(ctx.db, id);
   if (id !== null && !current) return new Response("No such campaign", { status: 404 });
-  const { input, errors } = campaignFromForm(await request.formData());
+  const { input, errors } = campaignFromForm(await request.formData(), ctx.now());
   if (errors.length) return campaignForm(ctx, current, input, errors);
   const saved = await saveCampaign(ctx.db, input, id, ctx.now());
   return redirect(`/dashboard/campaigns/${saved}`);

@@ -40,6 +40,24 @@ function matchesNormalised(haystack: string, keywords: string[]): boolean {
   return keywords.some((raw) => keywordPattern(raw)?.test(haystack) ?? false);
 }
 
+/**
+ * Whether a caption asks people to comment one of these keywords: "Comment AGENTS",
+ * "comment 'agents' 👇", "Comment: SET-UP", "Comment the word AGENTS". Only spaces,
+ * punctuation, emoji and "the word" may sit between "comment" and the keyword, so a
+ * caption that merely mentions the word ("my agents bring traffic") doesn't count.
+ */
+export function captionAsksFor(caption: string, keywords: string[]): boolean {
+  const text = normalise(caption);
+  for (const m of text.matchAll(/(?<![\p{L}\p{N}_])comment\p{L}*/gu)) {
+    const rest = text.slice(m.index + m[0].length, m.index + m[0].length + 100);
+    const gap = /^[^\p{L}\p{N}]{1,8}(?:(?:the\s+)?word[^\p{L}\p{N}]{1,8})?/u.exec(rest);
+    if (!gap) continue;
+    const after = rest.slice(gap[0].length);
+    if (keywords.some((k) => keywordPattern(k)?.exec(after)?.index === 0)) return true;
+  }
+  return false;
+}
+
 /** Splits a keyword field typed as "AGENTS, AGENT" into a clean list. */
 export function parseKeywords(input: string): string[] {
   const seen = new Set<string>();

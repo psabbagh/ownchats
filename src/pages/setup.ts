@@ -272,6 +272,7 @@ export async function testCampaign(ctx: Ctx, request: Request): Promise<Response
       anyComment: false,
       mediaId: null,
       mediaLabel: null,
+      nextPostAfter: null,
       publicReplies: DEFAULTS.publicReplies,
       openingText: "This is the OwnChats setup test. Tap the button to continue.",
       openingButton: "Continue",

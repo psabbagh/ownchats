@@ -30,6 +30,7 @@ export type SettingKey =
   | "poll_cursor"
   | "last_poll_at"
   | "last_poll_problem"
+  | "next_post_problem"
   | "daily_at"
   | "posts_listed_at"
   | "posts_problem"
