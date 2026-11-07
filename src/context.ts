@@ -16,6 +16,8 @@ export interface Ctx {
   /** For picking public reply variants; tests make it predictable. */
   random(): number;
   budget: Budget;
+  /** Outgoing requests other than Meta's: the lead webhook. Tests stand in a fake receiver. */
+  fetch: typeof fetch;
   /** Private replies sent in the last hour, counted once per invocation. */
   sentLastHour?: number;
 }
@@ -26,6 +28,7 @@ export interface AppOptions {
   meta: MetaFactory;
   now?: () => number;
   random?: () => number;
+  fetch?: typeof fetch;
 }
 
 /**
@@ -108,6 +111,7 @@ export async function buildCtx(env: Env, options: AppOptions): Promise<Ctx> {
     now: options.now ?? Date.now,
     random: options.random ?? Math.random,
     budget,
+    fetch: options.fetch ?? ((input, init) => fetch(input, init)),
   };
 }
 

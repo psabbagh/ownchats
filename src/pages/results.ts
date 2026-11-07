@@ -1,4 +1,5 @@
 import { getCampaign, listCampaigns, type Campaign } from "../campaigns";
+import { trackingBase } from "../clicks";
 import type { Ctx } from "../context";
 import type { Media } from "../meta/client";
 import { MISSING_PERMISSION, readMediaStats, type MediaStats } from "../insights";
@@ -237,6 +238,7 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
   const { fromComments: fc, fromDms: fd, lastDay } = results;
   const dmColumn = campaign.dmKeyword || fd.dmsSent > 0;
   const emailRow = campaign.emailMode !== "none" || fc.emails > 0 || fd.emails > 0;
+  const clickRow = trackingBase(ctx) !== null || fc.clicks > 0 || fd.clicks > 0;
   const cell = (n: number, of?: number) => html`<td class="num">${n}${of === undefined ? "" : share(n, of)}</td>`;
   const tab = (key: CommentFilter, label: string) =>
     key === show ? html`<b>${label}</b>` : html`<a href="${base}?show=${key}#comments">${label}</a>`;
@@ -284,9 +286,11 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
         ${campaign.openingButton ? html`<tr><td>Tapped the button or replied</td>${cell(fc.opened, fc.dmsSent)}${dmColumn ? html`<td></td>` : ""}</tr>` : ""}
         ${emailRow ? html`<tr><td>Gave their email</td>${cell(fc.emails, fc.dmsSent)}${dmColumn ? cell(fd.emails, fd.dmsSent) : ""}</tr>` : ""}
         <tr><td>Got the link</td>${cell(fc.links, fc.dmsSent)}${dmColumn ? cell(fd.links, fd.dmsSent) : ""}</tr>
+        ${clickRow ? html`<tr><td>Clicked a link</td>${cell(fc.clicks, fc.links)}${dmColumn ? cell(fd.clicks, fd.links) : ""}</tr>` : ""}
       </tbody></table>
+      ${clickRow ? html`<p class="muted small">Each person's first click counts once, whichever link and however often; link previews don't count. The share is of the people who got the link.</p>` : ""}
       <p class="muted small">Last 24 hours: ${plural(lastDay.dmsSent, "first DM")}, ${plural(lastDay.taps, "tap")}, ${plural(lastDay.emails, "email")},
-        ${plural(lastDay.links, "link")} sent.${results.resent
+        ${plural(lastDay.links, "link")} sent${clickRow ? `, ${plural(lastDay.clicks, "person", "people")} clicked for the first time` : ""}.${results.resent
           ? ` ${plural(results.resent, "link was", "links were")} sent again because someone sent the keyword by DM (last 90 days).`
           : ""}</p>
 

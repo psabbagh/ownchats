@@ -17,8 +17,9 @@ I built this for my own Instagram account and I'm sharing it as-is. Take it, cha
 - **DM keyword.** Someone sends AGENTS by DM (for example, their comment is older than a week) and gets the same flow. Off by default; switch it on per campaign.
 - **One post, the next post, or all posts.** Arm a campaign on one Reel, or on the next post you publish: set it up before you post, and within a minute of posting it attaches itself to the new Reel whose caption says "Comment" and your keyword, and answers the comments that came in first. Or arm it on all your posts. A campaign on one post can also answer every comment, keyword or not.
 - **Varied public replies**, picked at random and never the same twice in a row, so identical replies on a busy post don't get your comments limited.
-- **A dashboard** with your campaigns, your leads and an activity log. Each campaign shows every comment on its post and why it did or didn't get a DM, and how many people tapped, gave their email and got the link. It also shows the post's views, reach, likes, shares and saves from Instagram, and what share of the views led to a DM.
-- **Your leads where you work:** CSV download, a live Google Sheet with one formula, and a read-only JSON API for your own tools.
+- **A dashboard** with your campaigns, your leads and an activity log. Each campaign shows every comment on its post and why it did or didn't get a DM, and how many people tapped, gave their email, got the link and clicked it. It also shows the post's views, reach, likes, shares and saves from Instagram, and what share of the views led to a DM.
+- **Link clicks:** each person gets their own link through your OwnChats address, which sends them on to yours, so each campaign counts who clicked. Only a person's first click counts, link previews don't, and the link names nobody.
+- **Your leads where you work:** CSV download, a live Google Sheet with one formula, a read-only JSON API for your own tools, and a signed webhook that sends each new email to your email tool (directly, or through Zapier, Make or a small script), with a button to send a test lead.
 
 ## What you need
 
@@ -76,9 +77,12 @@ At the end, help me run the test with my second account.
 - **Campaigns:** in the dashboard, New campaign. Pick the keyword (add extra spellings with commas), the post (one post, the next post you publish, or all posts), and the link. Then adjust any of the wording if you like: the public replies, the first DM and its button, the email mode and its messages.
 - **Only one tool per Reel.** Instagram allows one private reply per comment. If ManyChat or another tool also answers a Reel, the second one fails. Move a Reel to OwnChats by turning it off in the other tool first. While the other tool's Instagram channel stays connected, it can keep the DM threads to itself, so button taps and DMs may not reach OwnChats; the [guide](docs/guide-for-ai-agents.md#moving-from-manychat-or-another-tool) explains how to switch it off.
 - **Leads:** the Leads page lists every email with the wording the person agreed to and when. Download a CSV there.
+- **The email question's wording:** the default lines say what people get, name you (Settings, "You, on the privacy page": your name and a mailing address, which a PO box can be), link to your privacy page, which shows them, and say people can unsubscribe. That follows Canada's anti-spam law (CASL). **Check the rules where you and your audience live, and adjust the wording to fit**: the EU's GDPR, the UK's PECR, the US CAN-SPAM Act and others differ.
+- **Sending emails to your email tool:** Settings, Lead webhook. Enter the address your tool (or Zapier, Make, or your own script) receives webhooks at and a signing secret, then **Send a test lead** to your own address and check the email arrives. Each new email is sent with the campaign's optional **email tag** (campaign form, Email section), so your tool can start the right sequence; failed deliveries are retried for about a day, and deleting someone's data tells your tool too. The format and how to check the signature are in [docs/lead-webhook.md](docs/lead-webhook.md).
+- **Link clicks:** on by default; switch them off under Settings, Link clicks, to send links as they are.
 - **Time zone:** Settings, Time zone. Pages show times in UTC until you pick yours.
 - **Google Sheets:** Settings, Create link, then paste the `=IMPORTDATA("...")` formula it shows into cell A1 of a sheet. It refreshes about once an hour. Anyone with the link can read your leads, so you can regenerate or turn it off at any time.
-- **API:** Settings, Create token. Then `GET /api/campaigns`, `/api/leads`, `/api/activity`, `/api/posts` (your posts from the last 90 days with Instagram's numbers), `/api/account` (your follower count) and `/api/stats` with `Authorization: Bearer <token>`. `GET /api` lists them. It's read-only.
+- **API:** Settings, Create token. Then `GET /api/campaigns` (with each campaign's counts, clicks included), `/api/leads`, `/api/activity`, `/api/posts` (your posts from the last 90 days with Instagram's numbers), `/api/account` (your follower count) and `/api/stats` with `Authorization: Bearer <token>`. `GET /api` lists them. It's read-only.
 - **Someone asks for their data to be deleted:** Leads, "Delete someone's data", enter their username, then Find their data. It shows what OwnChats stores about them; Delete their data removes it.
 
 ## Instagram's rules, which OwnChats follows
@@ -109,11 +113,13 @@ Your copy on GitHub is yours, and Cloudflare redeploys it each time it changes. 
 
 Database changes apply themselves on the next deploy.
 
+Set up before the 2026-11-07 update? Your campaigns keep their email wording. To name yourself and link to your address as the new defaults do, add your name and mailing address under Settings, then edit each campaign's email lines; a new campaign's form shows the new defaults to copy from.
+
 Set up before 2026-11-06? To see views on each campaign, add `instagram_manage_insights` to your Meta login configuration, then click Reconnect on `/setup`. The [guide](docs/guide-for-ai-agents.md#views-on-each-campaign) says where.
 
 ## Costs and privacy
 
-OwnChats fits Cloudflare's free plan: one small Worker, one database, a check every minute. Your leads, comments and messages stay in your own Cloudflare database. Nothing is sent anywhere except to Meta, to reply and send DMs. The activity log keeps 90 days; leads stay until you delete them.
+OwnChats fits Cloudflare's free plan: one small Worker, one database, a check every minute. Your leads, comments and messages stay in your own Cloudflare database. Nothing is sent anywhere except to Meta, to reply and send DMs, and to your lead webhook if you set one up. The activity log keeps 90 days; leads stay until you delete them.
 
 ## For developers
 

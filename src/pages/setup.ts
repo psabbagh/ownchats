@@ -1,4 +1,4 @@
-import { DEFAULTS, listCampaigns, saveCampaign } from "../campaigns";
+import { DEFAULTS, emailLines, listCampaigns, saveCampaign, senderOf } from "../campaigns";
 import { log, type Ctx } from "../context";
 import { randomToken, signValue, verifySigned } from "../crypto";
 import { explainError } from "../meta/client";
@@ -281,9 +281,10 @@ export async function testCampaign(ctx: Ctx, request: Request): Promise<Response
       emailPrompt: "Test: reply with any email address. It is saved in your OwnChats leads.",
       emailReask: DEFAULTS.emailReask,
       emailThanks: "Thanks {name}, test complete. Here is the link:",
-      optionalPrompt: DEFAULTS.optionalPrompt,
+      optionalPrompt: emailLines(senderOf(ctx.settings)).optionalPrompt,
       optionalThanks: DEFAULTS.optionalThanks,
       consentText: "OwnChats setup test",
+      emailTag: "",
       linkText: "Test complete. Here is the link:",
       links: [{ label: DEFAULTS.linkLabel, url: "https://github.com/psabbagh/ownchats" }],
       dmKeyword: false,

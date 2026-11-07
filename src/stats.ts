@@ -1,4 +1,5 @@
 import type { Ctx } from "./context";
+import { deletionStatements, deliverNow } from "./leadwebhook";
 import { DAY } from "./time";
 
 export interface CampaignCounts {
@@ -8,12 +9,18 @@ export interface CampaignCounts {
   taps: number;
   emails: number;
   linksSent: number;
+  /** People who clicked one of the campaign's links at least once; previews don't count. */
+  clicks: number;
   failed: number;
 }
 
-/** The funnel per campaign: people matched, first DMs sent, taps, emails, links. */
+/** People who clicked a link, per campaign: the first click per person counts, however many links or clicks. */
+const CLICKED = `SELECT campaign_id, COUNT(DISTINCT conversation_id) AS n FROM tracked_links
+  WHERE first_clicked_at IS NOT NULL AND conversation_id IS NOT NULL GROUP BY campaign_id`;
+
+/** The funnel per campaign: people matched, first DMs sent, taps, emails, links, clicks. */
 export async function campaignCounts(ctx: Ctx): Promise<Map<number, CampaignCounts>> {
-  const [conv, taps, leads, failed] = await ctx.db.batch<Record<string, number>>([
+  const [conv, taps, leads, failed, clicks] = await ctx.db.batch<Record<string, number>>([
     ctx.db.prepare(
       `SELECT campaign_id, COUNT(*) AS people, COUNT(first_sent_at) AS dms, SUM(state IN ('done', 'optional_email')) AS links
        FROM conversations GROUP BY campaign_id`,
@@ -21,12 +28,13 @@ export async function campaignCounts(ctx: Ctx): Promise<Map<number, CampaignCoun
     ctx.db.prepare("SELECT campaign_id, COUNT(*) AS n FROM activity WHERE kind = 'tap' AND outcome = 'received' GROUP BY campaign_id"),
     ctx.db.prepare("SELECT campaign_id, COUNT(*) AS n FROM leads GROUP BY campaign_id"),
     ctx.db.prepare("SELECT campaign_id, COUNT(*) AS n FROM activity WHERE outcome = 'failed' AND campaign_id IS NOT NULL GROUP BY campaign_id"),
+    ctx.db.prepare(CLICKED),
   ]);
   const out = new Map<number, CampaignCounts>();
   const get = (id: number) => {
     let c = out.get(id);
     if (!c) {
-      c = { campaignId: id, people: 0, dmsSent: 0, taps: 0, emails: 0, linksSent: 0, failed: 0 };
+      c = { campaignId: id, people: 0, dmsSent: 0, taps: 0, emails: 0, linksSent: 0, clicks: 0, failed: 0 };
       out.set(id, c);
     }
     return c;
@@ -35,6 +43,7 @@ export async function campaignCounts(ctx: Ctx): Promise<Map<number, CampaignCoun
   for (const r of taps!.results) get(r.campaign_id!).taps = r.n!;
   for (const r of leads!.results) get(r.campaign_id!).emails = r.n!;
   for (const r of failed!.results) get(r.campaign_id!).failed = r.n!;
+  for (const r of clicks!.results) get(r.campaign_id!).clicks = r.n!;
   return out;
 }
 
@@ -58,6 +67,8 @@ export interface Funnel {
   opened: number;
   emails: number;
   links: number;
+  /** Clicked one of the links at least once. */
+  clicks: number;
 }
 
 export interface CampaignResults {
@@ -70,7 +81,7 @@ export interface CampaignResults {
   fromComments: Funnel;
   fromDms: Funnel;
   /** The last 24 hours of the funnel, counted from the log. */
-  lastDay: { dmsSent: number; taps: number; emails: number; links: number };
+  lastDay: { dmsSent: number; taps: number; emails: number; links: number; clicks: number };
   /** Links sent again because the person sent the keyword by DM, from the log. */
   resent: number;
   /** Failures from the log, by kind and reason, latest first. */
@@ -117,7 +128,8 @@ export async function campaignResults(ctx: Ctx, campaign: { id: number; mediaId:
         `SELECT v.trigger, COUNT(v.first_sent_at) AS dms,
            SUM(v.first_sent_at IS NOT NULL AND v.state <> 'opened') AS opened,
            SUM(v.first_sent_at IS NOT NULL AND v.state IN ('done', 'optional_email')) AS links,
-           COUNT(l.id) AS emails
+           COUNT(l.id) AS emails,
+           SUM(EXISTS (SELECT 1 FROM tracked_links t WHERE t.conversation_id = v.id AND t.first_clicked_at IS NOT NULL)) AS clicks
          FROM conversations v LEFT JOIN leads l ON l.campaign_id = v.campaign_id AND l.ig_user_id = v.ig_user_id
          WHERE v.campaign_id = ? GROUP BY v.trigger`,
       )
@@ -129,6 +141,8 @@ export async function campaignResults(ctx: Ctx, campaign: { id: number; mediaId:
            (SELECT COUNT(*) FROM activity WHERE campaign_id = ?1 AND kind = 'tap' AND outcome = 'received' AND at > ?2) AS taps,
            (SELECT COUNT(*) FROM leads WHERE campaign_id = ?1 AND consented_at > ?2) AS emails,
            (SELECT COUNT(*) FROM activity WHERE campaign_id = ?1 AND at > ?2 AND ${LINK_SENT}) AS links,
+           (SELECT COUNT(*) FROM (SELECT MIN(first_clicked_at) AS first FROM tracked_links
+              WHERE campaign_id = ?1 AND conversation_id IS NOT NULL AND first_clicked_at IS NOT NULL GROUP BY conversation_id) WHERE first > ?2) AS clicks,
            (SELECT COUNT(*) FROM activity WHERE campaign_id = ?1 AND kind = 'link' AND outcome = 'sent' AND reason = 'link sent again on request') AS resent`,
       )
       .bind(campaign.id, day),
@@ -149,7 +163,7 @@ export async function campaignResults(ctx: Ctx, campaign: { id: number; mediaId:
   });
   const toFunnel = (trigger: string): Funnel => {
     const r = funnel!.results.find((f) => f.trigger === trigger);
-    return { dmsSent: num(r?.dms), opened: num(r?.opened), emails: num(r?.emails), links: num(r?.links) };
+    return { dmsSent: num(r?.dms), opened: num(r?.opened), emails: num(r?.emails), links: num(r?.links), clicks: num(r?.clicks) };
   };
   const last = recent!.results[0] ?? {};
   return {
@@ -158,7 +172,7 @@ export async function campaignResults(ctx: Ctx, campaign: { id: number; mediaId:
     skipReasons: reasons!.results.map((r) => ({ reason: String(r.reason ?? "no reason given"), n: num(r.n) })),
     fromComments: toFunnel("comment"),
     fromDms: toFunnel("dm"),
-    lastDay: { dmsSent: num(last.dms), taps: num(last.taps), emails: num(last.emails), links: num(last.links) },
+    lastDay: { dmsSent: num(last.dms), taps: num(last.taps), emails: num(last.emails), links: num(last.links), clicks: num(last.clicks) },
     resent: num(last.resent),
     failures: failures!.results.map((r) => ({ kind: String(r.kind), reason: String(r.reason), n: num(r.n), last: num(r.last) })),
   };
@@ -264,7 +278,15 @@ export async function listActivity(
 export async function deletePerson(ctx: Ctx, igUserId: string): Promise<void> {
   const ids = await withCommenterIds(ctx, [igUserId]);
   const marks = ids.map(() => "?").join(", ");
+  const { results: leads } = await ctx.db
+    .prepare("SELECT id, email, campaign_id FROM leads WHERE ig_user_id = ?")
+    .bind(igUserId)
+    .all<{ id: number; email: string; campaign_id: number }>();
+  // Their deliveries still waiting are cancelled, and each of their emails is sent as lead.deleted.
+  const webhook = deletionStatements(ctx, ids, leads);
   await ctx.db.batch([
+    ...webhook.statements,
+    ctx.db.prepare("DELETE FROM tracked_links WHERE conversation_id IN (SELECT id FROM conversations WHERE ig_user_id = ?)").bind(igUserId),
     ctx.db.prepare("DELETE FROM leads WHERE ig_user_id = ?").bind(igUserId),
     ctx.db.prepare("DELETE FROM conversations WHERE ig_user_id = ?").bind(igUserId),
     ctx.db
@@ -275,6 +297,7 @@ export async function deletePerson(ctx: Ctx, igUserId: string): Promise<void> {
       .bind(...ids),
     ctx.db.prepare(`DELETE FROM activity WHERE ig_user_id IN (${marks})`).bind(...ids),
   ]);
+  for (const id of webhook.deliveries) await deliverNow(ctx, id);
 }
 
 /** The messaging ids plus the ids on these people's comments: a comment can carry a different id, and their conversations know both. */

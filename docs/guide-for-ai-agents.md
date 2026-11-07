@@ -70,6 +70,18 @@ The `/setup` checklist in the app is the main path. Its wording was written befo
 - **Arming a Reel before it's posted.** Pick "The next post you publish" in the campaign form and leave the campaign on. Within a minute of posting, the Cron attaches it to the first post published after the campaign was saved whose caption asks for its keyword ("Comment AGENTS", "Comment the word AGENTS"), and the comments that reached the post before that are answered then. Check the caption has that line, with the same spelling as the campaign: a caption that only mentions the word doesn't count, and the campaign keeps waiting. The campaign page says it is waiting, and when the last check ran. If the Reel is already up, pick it from the list instead: the form reads the post list fresh, so a post published a minute ago is there. An agent arming campaigns from the database does the same with `UPDATE campaigns SET media_id = NULL, media_label = NULL, next_post_after = CAST(strftime('%s','now') AS INTEGER) * 1000 WHERE id = <id>`; no session needs to be running when the Reel goes up. Several upcoming Reels can be armed at once, as long as their keywords differ. A keyword used on an older Reel is fine: only posts published after arming count, and the old campaign stays on its old Reel. Comments written before a campaign was created are ignored, and comments that arrive while it is off are skipped and not retried; both show under the campaign's To check for 7 days, where the owner can answer them one by one.
 - **Google Sheets** shows `#REF!` until someone clicks Allow access in the sheet.
 - **The export link and the API token** are stored encrypted. Get them from Settings in the dashboard; the values in the database are not usable.
+- **The email question's wording.** Since the 2026-11-07 update, new campaigns' email lines name the sender, link to `/privacy` (which shows the name and mailing address from Settings, "You, on the privacy page") and say people can unsubscribe. Campaigns created before it keep their wording: help the person add their name and address in Settings, then edit each campaign's lines, with their OK on the wording. Point out that rules differ by country.
+- **Link clicks.** Campaign links go out as `<their OwnChats address>/go/<id>`, so a DM you see in Instagram shows that address, not the destination. That is expected. A person's first click counts; previews don't. If DMs with these links seem to stop arriving, switch counting off under Settings, Link clicks, and tell the person what you saw.
+
+## The lead webhook
+
+It sends each new email to the person's email tool, signed. The format is in [lead-webhook.md](lead-webhook.md). To set it up with the person:
+
+1. They choose where it goes: their email tool's incoming webhook if it has one, Zapier or Make, or a small script of their own (for example another Worker) that checks the signature and calls their tool's API.
+2. They make the signing secret with their password manager and type it into Settings, Lead webhook, with the URL, or set it as a Worker secret named `LEAD_WEBHOOK_SECRET` (`npx wrangler secret put LEAD_WEBHOOK_SECRET`, which prompts for it). The receiver needs the same secret, typed by them too. Never see, type or print it; to check two copies match, compare truncated SHA-256 hashes.
+3. They click **Send a test lead** with their own email address and pick a campaign. The page says what the receiver answered. Check the email arrives in their inbox.
+
+A failed delivery is retried for about a day (see lead-webhook.md). Every attempt is in Activity as "Lead webhook", and Settings lists the recent deliveries. Only emails saved after the webhook was set up are sent; earlier ones are in the CSV.
 
 ## Diagnosing with the database
 
@@ -96,6 +108,15 @@ FROM activity ORDER BY id DESC LIMIT 30;
 -- The DM state per person and campaign
 SELECT campaign_id, state, first_sent_at IS NOT NULL AS dm_sent, datetime(updated_at/1000, 'unixepoch') AS updated_utc
 FROM conversations ORDER BY id DESC LIMIT 30;
+
+-- The lead webhook: what is waiting and what happened (the payload holds emails while pending; leave it out)
+SELECT event, test, status, attempts, last_result, datetime(next_attempt_at/1000, 'unixepoch') AS next_utc,
+  datetime(created_at/1000, 'unixepoch') AS created_utc
+FROM deliveries ORDER BY created_at DESC LIMIT 20;
+
+-- Link clicks: people who clicked at least once, per campaign
+SELECT campaign_id, COUNT(DISTINCT conversation_id) AS people FROM tracked_links
+WHERE first_clicked_at IS NOT NULL AND conversation_id IS NOT NULL GROUP BY campaign_id;
 ```
 
 What a comment's status and reason mean:

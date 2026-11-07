@@ -39,6 +39,8 @@ export interface Campaign {
   optionalPrompt: string;
   optionalThanks: string;
   consentText: string;
+  /** Sent to the lead webhook as campaign.email_tag, so the owner's email tool can pick the sequence. Empty: none. */
+  emailTag: string;
   linkText: string;
   links: Link[];
   dmKeyword: boolean;
@@ -66,6 +68,7 @@ interface CampaignRow {
   optional_prompt: string;
   optional_thanks: string;
   consent_text: string;
+  email_tag: string;
   link_text: string;
   links: string;
   dm_keyword: number;
@@ -94,6 +97,7 @@ function fromRow(r: CampaignRow): Campaign {
     optionalPrompt: r.optional_prompt,
     optionalThanks: r.optional_thanks,
     consentText: r.consent_text,
+    emailTag: r.email_tag,
     linkText: r.link_text,
     links: JSON.parse(r.links) as Link[],
     dmKeyword: !!r.dm_keyword,
@@ -137,14 +141,40 @@ export const DEFAULTS = {
   ],
   openingText: "Hey {name}! Thanks for your comment. Tap the button and I'll send it over.",
   openingButton: "Send me the link",
-  emailPrompt: "What's your email? I'll send you the link here, and you'll also get my newsletter. You can unsubscribe anytime.",
   emailReask: "Hmm, that doesn't look like an email address. Could you type it again? (Or reply anything and I'll just send the link.)",
   emailThanks: "Thanks! Here it is:",
-  optionalPrompt: "Want more like this? Reply with your email and I'll add you to my newsletter. You can unsubscribe anytime.",
   optionalThanks: "Thanks, you're on the list!",
   linkText: "Here you go:",
   linkLabel: "Open",
 };
+
+/** Who the email lines name, and a page with their mailing address. */
+export interface Sender {
+  name: string;
+  aboutUrl: string;
+}
+
+/**
+ * The sender a new campaign's email lines name: the name chosen in Settings, else
+ * the Instagram handle. The page is OwnChats' own privacy page, which shows the
+ * name and mailing address from Settings.
+ */
+export function senderOf(s: { sender_name?: string; ig_username?: string; base_url?: string }): Sender {
+  return { name: s.sender_name || (s.ig_username ? `@${s.ig_username}` : "me"), aboutUrl: `${s.base_url ?? ""}/privacy` };
+}
+
+/**
+ * The default email questions. Anti-spam laws such as Canada's CASL ask the line
+ * people answer to say what they will get, who is asking, where to find a mailing
+ * address, and that they can unsubscribe, so the defaults say all four.
+ */
+export function emailLines(s: Sender): { emailPrompt: string; optionalPrompt: string } {
+  const who = `From ${s.name}, unsubscribe anytime. Who I am and my address: ${s.aboutUrl}`;
+  return {
+    emailPrompt: `What's your email? I'll send you the link here, and you'll also get my newsletter. ${who}`,
+    optionalPrompt: `Want more like this? Reply with your email and I'll add you to my newsletter. ${who}`,
+  };
+}
 
 // Meta's limits: 640 characters of text in a button template, 1000 in a text
 // message, up to 3 buttons, and 20 characters per button label.
@@ -152,6 +182,12 @@ const MAX_TEMPLATE_TEXT = 640;
 const MAX_TEXT = 1000;
 const MAX_BUTTON = 20;
 const MAX_LINKS = 3;
+const MAX_EMAIL_TAG = 100;
+/**
+ * Room kept for each link in a text message: with click counting on, the link goes
+ * out as the Worker's own /go/ address, which may be longer than the link itself.
+ */
+const TRACKED_URL_ROOM = 100;
 
 export type CampaignInput = Omit<Campaign, "id" | "replyCursor" | "createdAt" | "updatedAt">;
 
@@ -192,6 +228,7 @@ export function campaignFromForm(form: FormData, now: number): { input: Campaign
     optionalPrompt: text("optional_prompt"),
     optionalThanks: text("optional_thanks"),
     consentText: text("consent_text"),
+    emailTag: text("email_tag"),
     linkText: text("link_text"),
     links,
     dmKeyword: form.get("dm_keyword") === "on",
@@ -220,7 +257,7 @@ export function validateCampaign(c: CampaignInput): string[] {
   const buttons = usesButtons(c.links);
   if (c.links.some((l) => l.label) && !buttons) errors.push("Give every link a button label, or none of them (then the links go in the text).");
   if (buttons && !c.linkText) errors.push("Write the message that goes with the link buttons.");
-  const linkLimit = buttons ? MAX_TEMPLATE_TEXT : MAX_TEXT - c.links.reduce((n, l) => n + l.url.length + 1, 0);
+  const linkLimit = buttons ? MAX_TEMPLATE_TEXT : MAX_TEXT - c.links.reduce((n, l) => n + Math.max(l.url.length, TRACKED_URL_ROOM) + 1, 0);
   const withAsk = c.emailMode === "optional" ? `${c.linkText}\n\n${c.optionalPrompt}` : c.linkText;
   if (longest(withAsk, c.emailMode === "first" ? c.emailThanks : "") > linkLimit) {
     errors.push(`The message with the link must be ${linkLimit} characters or fewer${c.emailMode === "optional" ? ", including the email line" : ""}.`);
@@ -241,6 +278,7 @@ export function validateCampaign(c: CampaignInput): string[] {
     if (longest(c.optionalThanks) > MAX_TEXT) errors.push(`The thank-you must be ${MAX_TEXT} characters or fewer.`);
   }
   if (c.publicReplies.some((r) => r.length > 300)) errors.push("Keep each public reply under 300 characters.");
+  if (c.emailTag.length > MAX_EMAIL_TAG) errors.push(`Keep the email tag under ${MAX_EMAIL_TAG} characters.`);
   return errors;
 }
 
@@ -261,13 +299,14 @@ export async function saveCampaign(db: D1Database, c: CampaignInput, id: number 
     c.optionalPrompt,
     c.optionalThanks,
     c.consentText,
+    c.emailTag,
     c.linkText,
     JSON.stringify(c.links),
     c.dmKeyword ? 1 : 0,
     c.active ? 1 : 0,
   ];
   const columns = `name, keywords, any_comment, media_id, media_label, public_replies, opening_text, opening_button, email_mode,
-    email_prompt, email_reask, email_thanks, optional_prompt, optional_thanks, consent_text, link_text, links, dm_keyword, active`;
+    email_prompt, email_reask, email_thanks, optional_prompt, optional_thanks, consent_text, email_tag, link_text, links, dm_keyword, active`;
   if (id === null) {
     const row = await db
       // reply_cursor -1: no public reply used yet, so any variant can come first.

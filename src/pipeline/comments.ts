@@ -1,4 +1,5 @@
 import { fill, firstMessage, listCampaigns, matchComment, pickPublicReply, plainFirstMessage, type Campaign, type ConversationState } from "../campaigns";
+import { trackLinks } from "../clicks";
 import { logStatement, type ActivityEntry, type Ctx } from "../context";
 import { explainError, isTemplateRejection, MetaError, type IgComment } from "../meta/client";
 import { HOUR, MINUTE, PRIVATE_REPLIES_PER_HOUR, PRIVATE_REPLY_WINDOW } from "../time";
@@ -31,7 +32,7 @@ const FIRST_DM_REASON: Record<ConversationState, string> = {
 };
 const STALE_LOCK = 2 * MINUTE;
 /** D1 queries one comment can take, worst case; handling stops when fewer are left. */
-export const QUERIES_PER_COMMENT = 6;
+export const QUERIES_PER_COMMENT = 8;
 
 function insertStatement(ctx: Ctx, c: IgComment, source: "webhook" | "poll"): D1PreparedStatement {
   return ctx.db
@@ -239,12 +240,13 @@ export async function handleComment(ctx: Ctx, id: string, campaigns?: Campaign[]
   let recipientId: string | undefined;
   try {
     try {
-      recipientId = (await ctx.meta.sendPrivateReply(row.id, first.message)).recipientId;
+      // When the first DM carries the link, it goes out as a /go/ link, so a click can be counted.
+      recipientId = (await ctx.meta.sendPrivateReply(row.id, await trackLinks(ctx, conversationId, campaign, first.message))).recipientId;
     } catch (err) {
       // Meta documents only text private replies. If it refuses the button, send the next step as text.
       if (first.message.kind !== "buttons" || !isTemplateRejection(err)) throw err;
       sent = plainFirstMessage(campaign, person);
-      recipientId = (await ctx.meta.sendPrivateReply(row.id, sent.message)).recipientId;
+      recipientId = (await ctx.meta.sendPrivateReply(row.id, await trackLinks(ctx, conversationId, campaign, sent.message))).recipientId;
     }
   } catch (err) {
     await releaseClaim(ctx.db, conversationId);

@@ -70,7 +70,13 @@ export async function claimConversation(
   return row?.id ?? null;
 }
 
-/** Undoes a claim whose first DM never went out, so a later comment can try again. */
+/**
+ * Undoes a claim whose first DM never went out, so a later comment can try again.
+ * Its /go/ links go too: a later conversation may be given the same id.
+ */
 export async function releaseClaim(db: D1Database, id: number): Promise<void> {
-  await db.prepare("DELETE FROM conversations WHERE id = ? AND first_sent_at IS NULL").bind(id).run();
+  await db.batch([
+    db.prepare("DELETE FROM tracked_links WHERE conversation_id = ?1 AND EXISTS (SELECT 1 FROM conversations WHERE id = ?1 AND first_sent_at IS NULL)").bind(id),
+    db.prepare("DELETE FROM conversations WHERE id = ? AND first_sent_at IS NULL").bind(id),
+  ]);
 }

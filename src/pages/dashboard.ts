@@ -1,8 +1,25 @@
-import { campaignFromForm, DEFAULTS, getCampaign, listCampaigns, NEXT_POST, postLabel, saveCampaign, type Campaign, type CampaignInput, type EmailMode } from "../campaigns";
+import {
+  campaignFromForm,
+  consentFor,
+  DEFAULTS,
+  fill,
+  emailLines,
+  getCampaign,
+  listCampaigns,
+  NEXT_POST,
+  postLabel,
+  saveCampaign,
+  senderOf,
+  type Campaign,
+  type CampaignInput,
+  type EmailMode,
+} from "../campaigns";
 
 export const EMAIL_MODE_LABEL: Record<EmailMode, string> = { none: "link only", optional: "link plus optional email", first: "email first" };
 
-function newCampaignDefaults(): CampaignInput {
+function newCampaignDefaults(settings: Settings): CampaignInput {
+  // The email lines name the sender and link to the privacy page, which shows their mailing address.
+  const lines = emailLines(senderOf(settings));
   return {
     name: "",
     keywords: [],
@@ -14,12 +31,13 @@ function newCampaignDefaults(): CampaignInput {
     openingText: DEFAULTS.openingText,
     openingButton: DEFAULTS.openingButton,
     emailMode: "none",
-    emailPrompt: DEFAULTS.emailPrompt,
+    emailPrompt: lines.emailPrompt,
     emailReask: DEFAULTS.emailReask,
     emailThanks: DEFAULTS.emailThanks,
-    optionalPrompt: DEFAULTS.optionalPrompt,
+    optionalPrompt: lines.optionalPrompt,
     optionalThanks: DEFAULTS.optionalThanks,
     consentText: "",
+    emailTag: "",
     linkText: DEFAULTS.linkText,
     links: [{ label: DEFAULTS.linkLabel, url: "" }],
     // Off by default: a keyword that is a common word ("traffic") would answer ordinary DMs.
@@ -28,13 +46,16 @@ function newCampaignDefaults(): CampaignInput {
   };
 }
 import type { Ctx } from "../context";
+import { trackingBase } from "../clicks";
 import { randomToken, sha256Hex } from "../crypto";
 import { leadsCsv, listLeads } from "../export";
+import { getDelivery, MIN_SECRET_LENGTH, recentDeliveries, sendTestLead, webhookConfig, type DeliveryRow } from "../leadwebhook";
+import { extractEmail } from "../match";
 import type { Media } from "../meta/client";
 import { recentMedia } from "../pipeline/poll";
 import { MISSING_PERMISSION, readMediaStats } from "../insights";
 import { missedComments } from "../missed";
-import { deleteSettings, saveSettings } from "../settings";
+import { deleteSettings, saveSettings, type Settings } from "../settings";
 import { campaignCounts, deletePerson, findPersonByUsername, listActivity, storedAboutPeople, type ActivityRow } from "../stats";
 import { copyField, fmtCount, fmtDate, fmtTime, html, page, plural, redirect, type Html } from "./html";
 import { isTimeZone, timeZoneOf } from "../time";
@@ -65,6 +86,7 @@ export async function dashboardHome(ctx: Ctx): Promise<Response> {
   const noPermission = campaigns.some((c) => c.active && c.mediaId && stats.get(c.mediaId)?.problem === MISSING_PERMISSION);
   const s = ctx.settings;
   const tz = timeZoneOf(s);
+  const clicksOn = trackingBase(ctx) !== null;
   return page(
     "OwnChats",
     html`${healthBanner(ctx)}
@@ -91,7 +113,9 @@ export async function dashboardHome(ctx: Ctx): Promise<Response> {
             <div><b>${n?.people ?? 0}</b>people</div><div><b>${n?.dmsSent ?? 0}</b>DMs sent</div>
             ${c.openingButton ? html`<div><b>${n?.taps ?? 0}</b>taps</div>` : ""}
             ${c.emailMode !== "none" ? html`<div><b>${n?.emails ?? 0}</b>emails</div>` : ""}
-            <div><b>${n?.linksSent ?? 0}</b>links sent</div><div><b>${n?.failed ?? 0}</b>failed</div>
+            <div><b>${n?.linksSent ?? 0}</b>links sent</div>
+            ${clicksOn || n?.clicks ? html`<div><b>${n?.clicks ?? 0}</b>clicked</div>` : ""}
+            <div><b>${n?.failed ?? 0}</b>failed</div>
           </div></div></div>`;
       })}`,
     { nav: true },
@@ -129,7 +153,8 @@ async function campaignForm(ctx: Ctx, current: Campaign | null, input?: Campaign
   } catch (e) {
     mediaProblem = e instanceof Error ? e.message : String(e);
   }
-  const v: CampaignInput = input ?? current ?? newCampaignDefaults();
+  const v: CampaignInput = input ?? current ?? newCampaignDefaults(ctx.settings);
+  const s = ctx.settings;
   const action = current ? `/dashboard/campaigns/${current.id}` : "/dashboard/campaigns/new";
   const checked = (b: boolean) => (b ? "checked" : "");
   const mode = (m: EmailMode, label: string, hint: string) =>
@@ -189,9 +214,15 @@ async function campaignForm(ctx: Ctx, current: Campaign | null, input?: Campaign
           <label for="email_reask">Reply when the answer isn't an email (sent once)</label><textarea id="email_reask" name="email_reask">${v.emailReask}</textarea>
           <label for="email_thanks">Message with the link once the email is saved</label><textarea id="email_thanks" name="email_thanks">${v.emailThanks}</textarea>
           <p class="hint">Leave empty to use the link message above. After a second answer that isn't an email, the link is sent anyway with the link message.</p>
+          <p class="hint">Anti-spam laws ask the line people answer to say what they'll get, who you are, where to find your mailing address,
+            and that they can unsubscribe. The defaults say all four, and link to your <a href="/privacy">privacy page</a>, which shows your name and address
+            ${s.sender_name && s.sender_address ? "from Settings" : html`once you add them under <a href="/dashboard/settings#sender">Settings</a>`}.
+            Check the rules where you and your audience live.</p>
           <h3 style="margin-top:16px">Consent</h3>
           <label for="consent_text">Wording saved with each email</label><textarea id="consent_text" name="consent_text" placeholder="Leave empty to save the question they answered">${v.consentText}</textarea>
           <p class="hint">Stored with every lead, with the date, as the record of what they agreed to.</p>
+          <label for="email_tag">Email tag (optional)</label><input id="email_tag" name="email_tag" type="text" value="${v.emailTag}" maxlength="100" placeholder="setupGuide">
+          <p class="hint">Sent with each new email to your <a href="/dashboard/settings#webhook">lead webhook</a> as <code>campaign.email_tag</code>, so your email tool can start the right sequence. Leave empty for none.</p>
         </div>
         <div class="card">
           <label class="inline"><input type="checkbox" name="dm_keyword" ${checked(v.dmKeyword)}> Also answer the keyword when someone sends it by DM</label>
@@ -228,6 +259,8 @@ export async function saveCampaignForm(ctx: Ctx, request: Request, id: number | 
 
 export async function deleteCampaign(ctx: Ctx, id: number): Promise<Response> {
   await ctx.db.batch([
+    // Links already sent keep working; they just count nowhere now.
+    ctx.db.prepare("UPDATE tracked_links SET conversation_id = NULL WHERE campaign_id = ?").bind(id),
     ctx.db.prepare("DELETE FROM campaigns WHERE id = ?").bind(id),
     ctx.db.prepare("DELETE FROM conversations WHERE campaign_id = ?").bind(id),
   ]);
@@ -243,6 +276,8 @@ export const KIND_LABEL: Record<string, string> = {
   message: "DM",
   email: "Email",
   link: "Link",
+  click: "Link click",
+  lead_webhook: "Lead webhook",
   token: "Token",
 };
 
@@ -343,7 +378,9 @@ async function confirmDeletePage(ctx: Ctx, username: string, ids: string[]): Pro
           <li>${plural(s.comments, "comment")}</li>
           <li>${plural(s.logEntries, "log entry", "log entries")}</li>
         </ul>
-        <p class="hint">Each comment keeps only its id, so OwnChats never answers it again. The rest is gone for good.</p>
+        <p class="hint">Each comment keeps only its id, so OwnChats never answers it again. The rest is gone for good.${s.leads && webhookConfig(ctx)
+          ? " Your lead webhook is sent each email as deleted, so your email tool can delete its copy."
+          : ""}</p>
         <form method="post" action="/dashboard/people/delete" class="row">
           <input type="hidden" name="username" value="${username}">
           ${ids.map((id) => html`<input type="hidden" name="ig_user_id" value="${id}">`)}
@@ -374,9 +411,79 @@ function timeZoneCard(saved: string | undefined): Html {
   </div>`;
 }
 
-export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string } = {}): Promise<Response> {
+/** Where the lead webhook's format is documented. */
+const WEBHOOK_DOCS = "https://github.com/psabbagh/ownchats/blob/main/docs/lead-webhook.md";
+
+const DELIVERY_PILL: Record<DeliveryRow["status"], string> = { delivered: "sent", pending: "queued", failed: "failed" };
+
+/** What happened to the test lead just sent, in words. */
+function testNotice(d: DeliveryRow | null, tz: string): Html {
+  if (!d) return html``;
+  if (d.status === "delivered") return html`<div class="card"><p class="ok">Test lead delivered (${d.last_result}).</p></div>`;
+  if (d.status === "failed") {
+    return html`<div class="card errors"><p>The test lead was refused (${d.last_result}) and won't be retried. Check the URL, and that the receiver checks the signature with the same secret.</p></div>`;
+  }
+  if (!d.attempts) return html`<div class="card notice"><p>The test lead is queued and goes out within a minute. Reload to see what happened.</p></div>`;
+  return html`<div class="card notice"><p>The test lead didn't get through yet (${d.last_result}). OwnChats tries again at ${fmtTime(d.next_attempt_at, tz)}, as it would for a real lead.</p></div>`;
+}
+
+function webhookCard(ctx: Ctx, campaigns: Campaign[], deliveries: DeliveryRow[], notes: { error?: string; test?: DeliveryRow | null }): Html {
+  const s = ctx.settings;
+  const tz = timeZoneOf(s);
+  const config = webhookConfig(ctx);
+  const workerSecret = !!ctx.env.LEAD_WEBHOOK_SECRET;
+  const emailCampaigns = campaigns.filter((c) => c.emailMode !== "none");
+  const choices = emailCampaigns.length ? emailCampaigns : campaigns;
+  return html`<div class="card" id="webhook">
+    <h3>Lead webhook</h3>
+    <p>Sends each new email to a web address you choose, signed with a secret, so your email tool (directly, through Zapier or Make, or a small script of your own) can send what the person asked for.
+      When you delete someone's data, it sends that too, so their copy goes as well. The format and how to check the signature: <a href="${WEBHOOK_DOCS}" rel="noopener noreferrer" target="_blank">docs/lead-webhook.md</a>.</p>
+    ${notes.error ? html`<div class="card errors"><p>${notes.error}</p></div>` : ""}
+    <form method="post" action="/dashboard/settings/webhook">
+      <label for="webhook_url">URL</label><input id="webhook_url" name="url" type="url" value="${s.lead_webhook_url ?? ""}" placeholder="https://">
+      <label for="webhook_secret">Signing secret</label>
+      ${workerSecret
+        ? html`<p class="muted small">Using the <code>LEAD_WEBHOOK_SECRET</code> Worker secret.</p>`
+        : html`<input id="webhook_secret" name="secret" type="password" autocomplete="new-password" placeholder="${s.lead_webhook_secret ? "Saved. Type a new one to replace it." : `At least ${MIN_SECRET_LENGTH} characters`}">`}
+      <p class="hint">The receiver uses the same secret to check each request came from you. Make a long random one with your password manager and keep it there.
+        ${workerSecret ? "" : html`It's stored encrypted. You can set it as a Worker secret named <code>LEAD_WEBHOOK_SECRET</code> instead.`}
+        A failed delivery is retried for about a day, and every attempt is in the <a href="/dashboard/activity">activity log</a>.</p>
+      <p class="row"><button name="do" value="save">Save</button>${s.lead_webhook_url ? html`<button class="danger" name="do" value="off">Turn off</button>` : ""}</p>
+    </form>
+    ${config
+      ? html`<h3 style="margin-top:16px">Send a test lead</h3>
+          ${testNotice(notes.test ?? null, tz)}
+          <form method="post" action="/dashboard/settings/test-lead">
+            <label for="test_email">Email</label><input id="test_email" name="email" type="email" required placeholder="Your own address, to see the email arrive">
+            <label for="test_name">Name (optional)</label><input id="test_name" name="name" type="text" placeholder="Leave empty to send no name, as when Instagram shares none">
+            ${choices.length
+              ? html`<label for="test_campaign">As if from</label><select id="test_campaign" name="campaign_id">${choices.map(
+                  (c) => html`<option value="${c.id}">${c.name}${c.emailTag ? ` (tag: ${c.emailTag})` : ""}</option>`,
+                )}</select>`
+              : ""}
+            <p class="hint">Sent exactly as a real new lead, with <code>"test": true</code>, the campaign's email tag and consent wording, and lead id 0. It isn't saved in Leads. Delivered and retried like a real one, and logged the same way.</p>
+            <p><button>Send a test lead</button></p>
+          </form>`
+      : ""}
+    ${deliveries.length
+      ? html`<h3 style="margin-top:16px">Recent deliveries</h3>
+          <div style="overflow-x:auto"><table><thead><tr><th>When</th><th>Event</th><th>Result</th><th class="num">Attempts</th><th>Last reply</th></tr></thead><tbody>
+            ${deliveries.map(
+              (d) => html`<tr><td class="small">${fmtTime(d.created_at, tz)}</td><td>${d.test ? "Test " : ""}${d.event}</td>
+                <td><span class="pill ${DELIVERY_PILL[d.status]}">${d.status}</span>${d.status === "pending" && d.next_attempt_at ? html`<br><span class="muted small">next try ${fmtTime(d.next_attempt_at, tz)}</span>` : ""}</td>
+                <td class="num">${d.attempts}</td><td class="small">${d.last_result ?? ""}</td></tr>`,
+            )}</tbody></table></div>`
+      : ""}
+  </div>`;
+}
+
+export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string; webhookError?: string; testId?: string | null } = {}): Promise<Response> {
   const s = ctx.settings;
   const exportUrl = s.export_key ? `${s.base_url}/export/leads.csv?key=${s.export_key}` : "";
+  const campaigns = await listCampaigns(ctx.db);
+  const deliveries = await recentDeliveries(ctx);
+  const test = fresh.testId ? await getDelivery(ctx, fresh.testId) : null;
+  const clicksOn = s.click_tracking !== "off";
   return page(
     "Settings",
     html`<h1>Settings</h1>
@@ -390,6 +497,7 @@ export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string } = {}):
           : html`<p>Create a secret link that Google Sheets can read with IMPORTDATA.</p>
               <form method="post" action="/dashboard/settings/export"><button name="do" value="new">Create link</button></form>`}
       </div>
+      ${webhookCard(ctx, campaigns, deliveries, { error: fresh.webhookError, test })}
       <div class="card">
         <h3>API token</h3>
         <p>For tools that read your campaigns and leads. See <code>GET ${s.base_url ?? ""}/api</code>.</p>
@@ -399,17 +507,50 @@ export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string } = {}):
         <form method="post" action="/dashboard/settings/api-token" class="row"><button name="do" value="new">${s.api_token_hash ? "Replace token" : "Create token"}</button>
           ${s.api_token_hash ? html`<button class="danger" name="do" value="revoke">Revoke</button>` : ""}</form>
       </div>
+      <div class="card" id="clicks">
+        <h3>Link clicks</h3>
+        <p>${clicksOn
+          ? "On. Campaign links go out as links to your OwnChats address, which sends people on to the real link, so each campaign can count who clicked."
+          : "Off. Campaign links go out as they are, and clicks aren't counted."}</p>
+        <p class="hint">Each person gets their own random link: it names nobody. Only a person's first click counts, and link previews (Instagram's included) don't.
+          Links already sent keep working either way.</p>
+        <form method="post" action="/dashboard/settings/clicks"><button class="secondary" name="do" value="${clicksOn ? "off" : "on"}">${clicksOn ? "Stop counting clicks" : "Count clicks"}</button></form>
+      </div>
       ${timeZoneCard(s.time_zone)}
-      <div class="card">
-        <h3>Contact for the privacy page</h3>
+      <div class="card" id="sender">
+        <h3>You, on the privacy page</h3>
         <form method="post" action="/dashboard/settings/contact">
-          <input name="contact" type="text" value="${s.contact ?? ""}" placeholder="an email address, or leave empty to use a DM to your account">
-          <p class="hint">Shown on <a href="/privacy">/privacy</a> and <a href="/data-deletion">/data-deletion</a>.</p>
+          <label for="sender_name">Your name or business name</label>
+          <input id="sender_name" name="sender_name" type="text" value="${s.sender_name ?? ""}" placeholder="Leave empty to use your Instagram handle">
+          <label for="sender_address">Mailing address</label>
+          <textarea id="sender_address" name="sender_address" rows="3" placeholder="A PO box or mailbox service works">${s.sender_address ?? ""}</textarea>
+          <label for="contact">Contact</label>
+          <input id="contact" name="contact" type="text" value="${s.contact ?? ""}" placeholder="an email address, or leave empty to use a DM to your account">
+          <p class="hint">Shown on <a href="/privacy">/privacy</a>, which the default email questions link to as "who I am and my address", and on <a href="/data-deletion">/data-deletion</a>.
+            Anti-spam laws such as Canada's CASL ask for a name and a mailing address wherever you ask for an email.
+            New campaigns name you in their email questions; existing ones keep their wording until you edit it.</p>
           <p><button>Save</button></p>
         </form>
       </div>`,
     { nav: true },
   );
+}
+
+/** Checks the webhook form. Returns the values to save, or the problem in words. */
+function webhookFromForm(ctx: Ctx, form: FormData): { url: string; secret?: string } | { error: string } {
+  const url = String(form.get("url") ?? "").trim();
+  const secret = String(form.get("secret") ?? "").trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { error: "Enter the full web address the leads go to, starting with https://" };
+  }
+  if (parsed.protocol !== "https:") return { error: "The webhook address must start with https://, so the emails travel encrypted." };
+  if (url.length > 500) return { error: "That address is too long." };
+  if (secret && secret.length < MIN_SECRET_LENGTH) return { error: `The signing secret must be at least ${MIN_SECRET_LENGTH} characters. A password manager's generator makes a good one.` };
+  if (!secret && !ctx.settings.lead_webhook_secret && !ctx.env.LEAD_WEBHOOK_SECRET) return { error: "Choose a signing secret too, so the receiver can tell the leads come from you." };
+  return { url, secret: secret || undefined };
 }
 
 export async function settingsAction(ctx: Ctx, request: Request, what: string): Promise<Response> {
@@ -432,14 +573,43 @@ export async function settingsAction(ctx: Ctx, request: Request, what: string): 
     ctx.settings.api_token_hash = hash;
     return settingsPage(ctx, { apiToken: token });
   }
+  if (what === "webhook") {
+    if (action === "off") {
+      await deleteSettings(ctx.db, ["lead_webhook_url", "lead_webhook_secret"]);
+      return redirect("/dashboard/settings#webhook");
+    }
+    const values = webhookFromForm(ctx, form);
+    if ("error" in values) return settingsPage(ctx, { webhookError: values.error });
+    await saveSettings(ctx.db, pw, { lead_webhook_url: values.url, lead_webhook_secret: values.secret });
+    return redirect("/dashboard/settings#webhook");
+  }
+  if (what === "test-lead") {
+    if (!webhookConfig(ctx)) return settingsPage(ctx, { webhookError: "Set the webhook's URL and secret first." });
+    const typed = String(form.get("email") ?? "").trim();
+    const email = extractEmail(typed);
+    if (!email || email !== typed.toLowerCase()) return settingsPage(ctx, { webhookError: "Enter one email address to send the test lead to." });
+    const name = String(form.get("name") ?? "").trim().slice(0, 100) || null;
+    const chosen = await getCampaign(ctx.db, Number(form.get("campaign_id")) || 0);
+    // With no campaign yet, a stand-in, so the webhook can be checked before the first campaign exists.
+    const campaign = chosen ?? { id: 0, name: "Test", emailTag: "" };
+    const consentText = chosen ? fill(consentFor(chosen), { name }) : emailLines(senderOf(ctx.settings)).optionalPrompt;
+    const id = await sendTestLead(ctx, { email, name, campaign, consentText });
+    return redirect(`/dashboard/settings?test=${encodeURIComponent(id)}#webhook`);
+  }
+  if (what === "clicks") {
+    if (action === "off") await saveSettings(ctx.db, pw, { click_tracking: "off" });
+    else await deleteSettings(ctx.db, ["click_tracking"]);
+    return redirect("/dashboard/settings#clicks");
+  }
   if (what === "time-zone") {
     const tz = String(form.get("time_zone") ?? "").trim();
     if (isTimeZone(tz)) await saveSettings(ctx.db, pw, { time_zone: tz });
     return redirect("/dashboard/settings");
   }
   if (what === "contact") {
-    await saveSettings(ctx.db, pw, { contact: String(form.get("contact") ?? "").trim().slice(0, 200) });
-    return redirect("/dashboard/settings");
+    const field = (k: string, max: number) => String(form.get(k) ?? "").trim().slice(0, max);
+    await saveSettings(ctx.db, pw, { contact: field("contact", 200), sender_name: field("sender_name", 100), sender_address: field("sender_address", 300) });
+    return redirect("/dashboard/settings#sender");
   }
   return new Response("Not found", { status: 404 });
 }

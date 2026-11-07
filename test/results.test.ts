@@ -53,16 +53,16 @@ describe("campaign results", () => {
       { reason: "this person already got this campaign's DM", n: 1 },
       { reason: "written before the campaign started", n: 1 },
     ]);
-    expect(r.fromComments).toEqual({ dmsSent: 2, opened: 1, emails: 0, links: 1 });
-    expect(r.fromDms).toEqual({ dmsSent: 1, opened: 1, emails: 0, links: 1 });
-    expect(r.lastDay).toEqual({ dmsSent: 3, taps: 1, emails: 0, links: 2 });
+    expect(r.fromComments).toEqual({ dmsSent: 2, opened: 1, emails: 0, links: 1, clicks: 0 });
+    expect(r.fromDms).toEqual({ dmsSent: 1, opened: 1, emails: 0, links: 1, clicks: 0 });
+    expect(r.lastDay).toEqual({ dmsSent: 3, taps: 1, emails: 0, links: 2, clicks: 0 });
     expect(r.failures).toEqual([]);
 
     // Two days on, the last 24 hours are empty and the 30 days keep everything.
     w.clock.advance(2 * DAY);
     const later = await campaignResults(await w.ctx(), { id, mediaId: REEL });
     expect(later.day.total).toBe(0);
-    expect(later.lastDay).toEqual({ dmsSent: 0, taps: 0, emails: 0, links: 0 });
+    expect(later.lastDay).toEqual({ dmsSent: 0, taps: 0, emails: 0, links: 0, clicks: 0 });
     expect(later.month).toEqual(tally);
     expect(later.fromComments.dmsSent).toBe(2);
   });

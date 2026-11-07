@@ -38,6 +38,7 @@ function campaignJson(c: Campaign) {
     all_posts: onAllPosts(c),
     waits_for_next_post: c.nextPostAfter !== null,
     email_mode: c.emailMode,
+    email_tag: c.emailTag || null,
     opening_button: c.openingButton || null,
     links: c.links,
     dm_keyword: c.dmKeyword,
@@ -68,7 +69,7 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
   if (path === "/api") {
     return json({
       endpoints: {
-        "GET /api/campaigns": "campaigns with their counts and their post's views",
+        "GET /api/campaigns": "campaigns with their counts (clicks: people who clicked a link) and their post's views",
         "GET /api/leads?campaign_id=&since=ISO-8601&limit=": "emails collected, newest first",
         "GET /api/activity?campaign_id=&outcome=sent|skipped|failed&limit=": "what happened and why, newest first",
         "GET /api/posts?since=ISO-8601&limit=": "the account's posts from the last 90 days with Instagram's numbers, newest first",
@@ -159,10 +160,17 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
   }
   if (path === "/api/stats") {
     const counts = [...(await campaignCounts(ctx)).values()];
-    const total = (k: "people" | "dmsSent" | "taps" | "emails" | "linksSent") => counts.reduce((n, c) => n + c[k], 0);
+    const total = (k: "people" | "dmsSent" | "taps" | "emails" | "linksSent" | "clicks") => counts.reduce((n, c) => n + c[k], 0);
     const s = ctx.settings;
     return json({
-      totals: { people: total("people"), dms_sent: total("dmsSent"), taps: total("taps"), emails: total("emails"), links_sent: total("linksSent") },
+      totals: {
+        people: total("people"),
+        dms_sent: total("dmsSent"),
+        taps: total("taps"),
+        emails: total("emails"),
+        links_sent: total("linksSent"),
+        clicks: total("clicks"),
+      },
       health: {
         instagram_connected: !!(s.access_token && s.ig_user_id),
         instagram_username: s.ig_username ?? null,
