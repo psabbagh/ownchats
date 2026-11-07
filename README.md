@@ -13,6 +13,7 @@ I built this for my own Instagram account and I'm sharing it as-is. Take it, cha
   - **Link only.**
   - **Link plus optional email:** the link comes right away with "Reply with your email if you want more". An email reply is saved; anything else is left alone.
   - **Email first:** it asks for their email and says what they'll get. A valid email is saved and the link goes out. Anything else gets one re-ask, then the link goes out anyway, so nobody leaves empty-handed.
+- **Follow check, per campaign.** After the tap, OwnChats asks Instagram whether the person follows you. If not, they get "Follow me first" with an "I'm following" button, then one more ask, then the link either way, so nobody who commented leaves empty-handed. If Instagram doesn't answer, the link goes out. Off by default.
 - **Every word is yours.** Each campaign's public replies, DMs, button labels, links (up to three) and consent wording are editable, with defaults that work as they are. Write `{name}` to greet people by name.
 - **DM keyword.** Someone sends AGENTS by DM (for example, their comment is older than a week) and gets the same flow. Off by default; switch it on per campaign.
 - **One post, the next post, or all posts.** Arm a campaign on one Reel, or on the next post you publish: set it up before you post, and within a minute of posting it attaches itself to the new Reel whose caption says "Comment" and your keyword, and answers the comments that came in first. Or arm it on all your posts. A campaign on one post can also answer every comment, keyword or not.
@@ -103,7 +104,7 @@ The first real run, on my account on 2026-11-04, settled the question Meta's doc
 - Typed DMs arrive, so DM keywords and the email question work.
 - The email chain works end to end, through to the Leads page and Google Sheets.
 
-Still unproven: whether a tap on the "Send me the link" button reaches OwnChats from a stranger. The only test ran while ManyChat still held that DM thread. A campaign without the button sends the link in the first DM and doesn't depend on it. The [guide](docs/guide-for-ai-agents.md#whats-proven-so-far) has the details.
+Still unproven: whether a tap on the "Send me the link" button reaches OwnChats from a stranger. The only test ran while ManyChat still held that DM thread. A campaign without the button sends the link in the first DM and doesn't depend on it. The follow check needs the button, so it depends on this too, and on Instagram saying whether someone follows after a tap. The [guide](docs/guide-for-ai-agents.md#whats-proven-so-far) has the details.
 
 Meta changed how new apps connect in October 2026 ("Unified Login", which needs a business portfolio). OwnChats is built for that path; older guides for other tools are not.
 

@@ -25,6 +25,8 @@ const MAX_ATTEMPTS = 5;
 
 const FIRST_DM_REASON: Record<ConversationState, string> = {
   opened: "opening button",
+  awaiting_follow: "follow ask",
+  follow_reasked: "follow ask",
   awaiting_email: "email question",
   reasked: "email question",
   optional_email: "link with the optional email line",

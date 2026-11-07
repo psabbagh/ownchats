@@ -41,6 +41,10 @@ function newCampaignDefaults(settings: Settings): CampaignInput {
     linkText: DEFAULTS.linkText,
     links: [{ label: DEFAULTS.linkLabel, url: "" }],
     linkTitle: "",
+    followCheck: false,
+    followPrompt: DEFAULTS.followPrompt,
+    followReask: DEFAULTS.followReask,
+    followButton: DEFAULTS.followButton,
     // Off by default: a keyword that is a common word ("traffic") would answer ordinary DMs.
     dmKeyword: false,
     active: true,
@@ -188,6 +192,14 @@ async function campaignForm(ctx: Ctx, current: Campaign | null, input?: Campaign
           <p class="hint">Instagram lets you send one DM per comment until the person answers. The tap counts as an answer, so the next message can follow. Leave the label empty to send the next step (the link, or the email question) as the first DM.</p>
         </div>
         <div class="card">
+          <h3>Follow check</h3>
+          <label class="inline"><input type="checkbox" name="follow_check" ${checked(v.followCheck)}> Ask people to follow you before they get the link</label>
+          <p class="hint">After the tap, OwnChats asks Instagram whether the person follows you. If they do, the link (or the email question) comes next. If not, they get the message below with a button to tap once they follow. A tap that still shows no follow gets the second message, and the tap after that gets the link either way. If Instagram doesn't answer, the link goes out. Needs the button above: Instagram only says whether someone follows you after they tap or write.</p>
+          <label for="follow_prompt">When they don't follow</label><textarea id="follow_prompt" name="follow_prompt">${v.followPrompt}</textarea>
+          <label for="follow_reask">When they tap but still don't follow (sent once)</label><textarea id="follow_reask" name="follow_reask">${v.followReask}</textarea>
+          <label for="follow_button">Button label</label><input id="follow_button" name="follow_button" type="text" value="${v.followButton}" maxlength="20">
+        </div>
+        <div class="card">
           <h3>Link</h3>
           <label for="link_text">Message with the link</label><textarea id="link_text" name="link_text">${v.linkText}</textarea>
           ${links.map(
@@ -281,6 +293,7 @@ export const KIND_LABEL: Record<string, string> = {
   link: "Link",
   click: "Link click",
   lead_webhook: "Lead webhook",
+  follow: "Follow check",
   token: "Token",
 };
 

@@ -65,6 +65,10 @@ export interface Funnel {
   dmsSent: number;
   /** Tapped the opening button, or wrote back instead. */
   opened: number;
+  /** Follow check: already following at the first check, asked to follow, and following after being asked. */
+  alreadyFollowed: number;
+  askedToFollow: number;
+  followedAfterAsk: number;
   emails: number;
   links: number;
   /** Clicked one of the links at least once. */
@@ -128,6 +132,8 @@ export async function campaignResults(ctx: Ctx, campaign: { id: number; mediaId:
         `SELECT v.trigger, COUNT(v.first_sent_at) AS dms,
            SUM(v.first_sent_at IS NOT NULL AND v.state <> 'opened') AS opened,
            SUM(v.first_sent_at IS NOT NULL AND v.state IN ('done', 'optional_email')) AS links,
+           SUM(v.follows = 1 AND v.follow_asked = 0) AS already, SUM(v.follow_asked > 0) AS asked,
+           SUM(v.follow_asked > 0 AND v.follows = 1) AS followed,
            COUNT(l.id) AS emails,
            SUM(EXISTS (SELECT 1 FROM tracked_links t WHERE t.conversation_id = v.id AND t.first_clicked_at IS NOT NULL)) AS clicks
          FROM conversations v LEFT JOIN leads l ON l.campaign_id = v.campaign_id AND l.ig_user_id = v.ig_user_id
@@ -163,7 +169,16 @@ export async function campaignResults(ctx: Ctx, campaign: { id: number; mediaId:
   });
   const toFunnel = (trigger: string): Funnel => {
     const r = funnel!.results.find((f) => f.trigger === trigger);
-    return { dmsSent: num(r?.dms), opened: num(r?.opened), emails: num(r?.emails), links: num(r?.links), clicks: num(r?.clicks) };
+    return {
+      dmsSent: num(r?.dms),
+      opened: num(r?.opened),
+      alreadyFollowed: num(r?.already),
+      askedToFollow: num(r?.asked),
+      followedAfterAsk: num(r?.followed),
+      emails: num(r?.emails),
+      links: num(r?.links),
+      clicks: num(r?.clicks),
+    };
   };
   const last = recent!.results[0] ?? {};
   return {

@@ -53,8 +53,8 @@ describe("campaign results", () => {
       { reason: "this person already got this campaign's DM", n: 1 },
       { reason: "written before the campaign started", n: 1 },
     ]);
-    expect(r.fromComments).toEqual({ dmsSent: 2, opened: 1, emails: 0, links: 1, clicks: 0 });
-    expect(r.fromDms).toEqual({ dmsSent: 1, opened: 1, emails: 0, links: 1, clicks: 0 });
+    expect(r.fromComments).toEqual({ dmsSent: 2, opened: 1, alreadyFollowed: 0, askedToFollow: 0, followedAfterAsk: 0, emails: 0, links: 1, clicks: 0 });
+    expect(r.fromDms).toEqual({ dmsSent: 1, opened: 1, alreadyFollowed: 0, askedToFollow: 0, followedAfterAsk: 0, emails: 0, links: 1, clicks: 0 });
     expect(r.lastDay).toEqual({ dmsSent: 3, taps: 1, emails: 0, links: 2, clicks: 0 });
     expect(r.failures).toEqual([]);
 

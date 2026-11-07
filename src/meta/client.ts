@@ -31,6 +31,11 @@ export interface MetaClient {
   /** The person's name and username, readable once they have messaged or tapped. */
   getProfile(igUserId: string): Promise<{ name: string | null; username: string | null }>;
   /**
+   * The same profile with whether the person follows the account
+   * (`is_user_follow_business`). Null when Meta leaves the field out.
+   */
+  getFollowStatus(igUserId: string): Promise<{ follows: boolean | null; name: string | null; username: string | null }>;
+  /**
    * Lifetime numbers for one of the account's posts. Needs instagram_manage_insights
    * in the login configuration. A metric Meta has no number for is left out.
    */
