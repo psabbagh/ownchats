@@ -56,7 +56,8 @@ export function healthBanner(ctx: Ctx): Html {
 }
 
 export async function dashboardHome(ctx: Ctx): Promise<Response> {
-  const campaigns = await listCampaigns(ctx.db);
+  // Newest first here only: listCampaigns keeps id order, which DM keyword matching relies on.
+  const campaigns = (await listCampaigns(ctx.db)).sort((a, b) => b.createdAt - a.createdAt || b.id - a.id);
   const counts = await campaignCounts(ctx);
   const missed = await missedComments(ctx, campaigns.filter((c) => c.active));
   const stats = await readMediaStats(ctx, campaigns.flatMap((c) => (c.mediaId ? [c.mediaId] : [])));
@@ -72,8 +73,12 @@ export async function dashboardHome(ctx: Ctx): Promise<Response> {
       ${campaigns.map((c) => {
         const n = counts.get(c.id);
         const views = c.mediaId ? stats.get(c.mediaId)?.views : undefined;
-        return html`<div class="card">
-          <div class="row"><h3 style="flex:1"><a href="/dashboard/campaigns/${c.id}">${c.name}</a></h3>
+        // Instagram's cover image for the post: the Reel's first frame unless another cover was chosen. Kept fresh by the hourly post list.
+        const cover = c.mediaId ? stats.get(c.mediaId)?.thumbnailUrl : null;
+        return html`<div class="card row campaign">
+          <a class="cover" href="/dashboard/campaigns/${c.id}" aria-hidden="true" tabindex="-1">${cover ? html`<img src="${cover}" alt="" loading="lazy" onerror="this.remove()">` : ""}</a>
+          <div class="body">
+          <div class="row"><h3 style="flex:1 1 auto"><a href="/dashboard/campaigns/${c.id}">${c.name}</a></h3><span class="muted small">Started ${fmtTime(c.createdAt).slice(0, 10)}</span>
             <span class="pill ${c.active ? "sent" : "skipped"}">${c.active ? "on" : "off"}</span></div>
           <p class="muted small">${c.anyComment ? "Any comment" : `Keyword: ${c.keywords.join(", ")}`} on ${postWords(c)}, ${EMAIL_MODE_LABEL[c.emailMode]}</p>
           ${missed.get(c.id)?.length
@@ -85,7 +90,7 @@ export async function dashboardHome(ctx: Ctx): Promise<Response> {
             ${c.openingButton ? html`<div><b>${n?.taps ?? 0}</b>taps</div>` : ""}
             ${c.emailMode !== "none" ? html`<div><b>${n?.emails ?? 0}</b>emails</div>` : ""}
             <div><b>${n?.linksSent ?? 0}</b>links sent</div><div><b>${n?.failed ?? 0}</b>failed</div>
-          </div></div>`;
+          </div></div></div>`;
       })}`,
     { nav: true },
   );
