@@ -1,6 +1,6 @@
 import { listCampaigns } from "./campaigns";
 import type { Ctx } from "./context";
-import { explainError, MetaError, type MediaInsights } from "./meta/client";
+import { explainError, MetaError, type Media, type MediaInsights } from "./meta/client";
 import { MEDIA_PAGES } from "./meta/graph";
 import { saveSettings } from "./settings";
 import { DAY, HOUR, MINUTE } from "./time";
@@ -118,6 +118,18 @@ function problemText(err: unknown): string {
   return reason === "Meta refused" || reason === "error" ? detail : reason;
 }
 
+/** Stores a post from the account's post list; its numbers are due at once if it is new. */
+export function listedStatement(ctx: Ctx, m: Media, now: number): D1PreparedStatement {
+  return ctx.db
+    .prepare(
+      `INSERT INTO media_stats (media_id, fetched_at, posted_at, caption, permalink, media_type, thumbnail_url, listed_at)
+       VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7)
+       ON CONFLICT (media_id) DO UPDATE SET posted_at = ?2, caption = ?3, permalink = ?4, media_type = ?5,
+         thumbnail_url = ?6, listed_at = ?7`,
+    )
+    .bind(m.id, m.timestamp || null, m.caption || null, m.permalink || null, m.mediaType || null, m.thumbnailUrl ?? null, now);
+}
+
 /** Called by the Cron, hourly: stores the account's posts from the last POST_DAYS days. */
 export async function refreshPostList(ctx: Ctx): Promise<void> {
   const now = ctx.now();
@@ -126,20 +138,7 @@ export async function refreshPostList(ctx: Ctx): Promise<void> {
   let problem = "";
   try {
     const media = await ctx.meta.listMediaSince(now - POST_DAYS * DAY, LIST_MAX);
-    if (media.length) {
-      await ctx.db.batch(
-        media.map((m) =>
-          ctx.db
-            .prepare(
-              `INSERT INTO media_stats (media_id, fetched_at, posted_at, caption, permalink, media_type, thumbnail_url, listed_at)
-               VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7)
-               ON CONFLICT (media_id) DO UPDATE SET posted_at = ?2, caption = ?3, permalink = ?4, media_type = ?5,
-                 thumbnail_url = ?6, listed_at = ?7`,
-            )
-            .bind(m.id, m.timestamp || null, m.caption || null, m.permalink || null, m.mediaType || null, m.thumbnailUrl ?? null, now),
-        ),
-      );
-    }
+    if (media.length) await ctx.db.batch(media.map((m) => listedStatement(ctx, m, now)));
   } catch (err) {
     problem = explainError(err).detail;
   }
