@@ -4,7 +4,7 @@ Your own Instagram comment-to-DM bot. Someone comments a keyword on your Reel, a
 
 I built this for my own Instagram account and I'm sharing it as-is. Take it, change it, run it. I don't promise support.
 
-**Status: v0, built in public.** It has answered real comments and DMs on my Instagram account since 2026-11-04. It has only run on one account so far, and one part is still unproven (see [What's proven so far](#whats-proven-so-far)), so treat it as an early version.
+**Status: v0, built in public.** It has answered real comments and DMs on my Instagram account since 2026-11-04. It has only run on one account so far (see [What's proven so far](#whats-proven-so-far)), so treat it as an early version.
 
 ## What it does
 
@@ -104,7 +104,12 @@ The first real run, on my account on 2026-11-04, settled the question Meta's doc
 - Typed DMs arrive, so DM keywords and the email question work.
 - The email chain works end to end, through to the Leads page and Google Sheets.
 
-Still unproven: whether a tap on the "Send me the link" button reaches OwnChats from a stranger. The only test ran while ManyChat still held that DM thread. A campaign without the button sends the link in the first DM and doesn't depend on it. The follow check needs the button, so it depends on this too, and on Instagram saying whether someone follows after a tap. The [guide](docs/guide-for-ai-agents.md#whats-proven-so-far) has the details.
+A test on 2026-11-07, from an account that didn't follow mine, settled the rest of the DM flow:
+
+- A tap on the "Send me the link" button reaches OwnChats, and so does a tap on "I'm following".
+- The follow check works: Instagram said the account didn't follow, then, after it followed, that it did.
+
+The [guide](docs/guide-for-ai-agents.md#whats-proven-so-far) has the details.
 
 Meta changed how new apps connect in October 2026 ("Unified Login", which needs a business portfolio). OwnChats is built for that path; older guides for other tools are not.
 
