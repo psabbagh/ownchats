@@ -2,6 +2,7 @@ import type { Ctx } from "./context";
 import { POST_DAYS, refreshAccountStats, refreshMediaStats, refreshPostList } from "./insights";
 import { handleComment, pendingCommentIds, QUERIES_PER_COMMENT } from "./pipeline/comments";
 import { listCampaigns } from "./campaigns";
+import { attachNextPosts } from "./nextpost";
 import { pollComments } from "./pipeline/poll";
 import { saveSettings } from "./settings";
 import { DAY } from "./time";
@@ -12,9 +13,14 @@ const KEEP_ACTIVITY = 90 * DAY;
 /** Comment ids are kept past Meta's 7-day window, so polling never handles one twice. */
 const KEEP_COMMENTS = 30 * DAY;
 
-/** Runs every minute: retry what waited, poll for missed comments, read Instagram's numbers that are due, and once a day, upkeep. */
+/**
+ * Runs every minute: attach campaigns waiting for the next post, retry what waited,
+ * poll for missed comments, read Instagram's numbers that are due, and once a day, upkeep.
+ */
 export async function runCron(ctx: Ctx): Promise<void> {
   if (!ctx.meta) return;
+  // First, so the comments it hands back are answered in this same run.
+  await attachNextPosts(ctx);
   const pending = await pendingCommentIds(ctx);
   if (pending.length) {
     const campaigns = await listCampaigns(ctx.db, true);

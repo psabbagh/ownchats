@@ -41,7 +41,7 @@ const share = (n: number, of: number) => (of > 0 ? ` (${Math.round((100 * n) / o
 
 function caption(media: Media | undefined, c: Campaign): string {
   const text = (media?.caption || c.mediaLabel || "").replace(/\s+/g, " ").trim();
-  if (!text) return c.mediaId ? `Post ${c.mediaId}` : "All posts";
+  if (!text) return c.mediaId ? `Post ${c.mediaId}` : c.nextPostAfter !== null ? "Your next post" : "All posts";
   return text.length > 140 ? `${text.slice(0, 140)}...` : text;
 }
 
@@ -51,6 +51,22 @@ function ofViews(n: number, views: number): string {
   if (p === 0) return "0%";
   if (p < 1) return `${Number(p.toPrecision(2))}%`;
   return `${p < 10 ? p.toFixed(1) : Math.round(p)}%`;
+}
+
+/** For a campaign waiting for the next post: what happens, and whether the checks work. */
+function waitingNotice(ctx: Ctx, campaign: Campaign): Html {
+  if (campaign.nextPostAfter === null) return html``;
+  const [at, problem] = (ctx.settings.next_post_problem ?? "").split("|");
+  const checked = Number(ctx.settings.media_cache_at ?? 0);
+  return html`<div class="card notice">
+    <p>Waiting for your next post. OwnChats looks at your posts every minute and attaches this campaign to the first one you publish after
+      ${fmtTime(campaign.nextPostAfter)}. Comments that arrive before it attaches are answered once it does${campaign.active ? "" : ", if the campaign is on"}.</p>
+    ${problem
+      ? html`<p class="warn small">The last check failed (${fmtTime(Number(at))}): ${problem}</p>`
+      : checked > campaign.nextPostAfter
+        ? html`<p class="muted small">Last check: ${fmtTime(checked)}.</p>`
+        : ""}
+  </div>`;
 }
 
 /** Instagram's numbers for the campaign's post, and how many of its viewers this campaign reached. */
@@ -240,6 +256,7 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
         </div>
       </div>
 
+      ${waitingNotice(ctx, campaign)}
       ${postNumbers(campaign, stats, fc.dmsSent, fc.links)}
 
       <div id="to-check">${notice}${missedSection(campaign, missed)}</div>
@@ -247,7 +264,9 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
       <h2>Comments</h2>
       <p class="muted small">${campaign.mediaId
         ? "Every comment on this post that OwnChats saw, except its own replies."
-        : html`This campaign watches all posts, so only the comments that matched its keyword are counted here. Comments with no keyword are in <a href="/dashboard/activity?show=all">Activity</a>.`}</p>
+        : campaign.nextPostAfter !== null
+          ? "Every comment on your next post will show here."
+          : html`This campaign watches all posts, so only the comments that matched its keyword are counted here. Comments with no keyword are in <a href="/dashboard/activity?show=all">Activity</a>.`}</p>
       ${tallyTable(results.day, results.month)}
       ${results.skipReasons.length
         ? html`<p class="small" style="margin-bottom:4px">Why comments were skipped, last ${COMMENT_DAYS} days:</p>

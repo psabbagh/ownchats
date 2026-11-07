@@ -1,4 +1,4 @@
-import { getCampaign, type Campaign } from "./campaigns";
+import { getCampaign, onAllPosts, type Campaign } from "./campaigns";
 import type { Ctx } from "./context";
 import { CommentText, KeywordSet, matchesKeyword, parseKeywords } from "./match";
 import { handleComment } from "./pipeline/comments";
@@ -46,7 +46,7 @@ interface Candidate {
 }
 
 function onItsPosts(c: Candidate, campaign: Campaign): boolean {
-  return campaign.mediaId === null || c.media_id === campaign.mediaId;
+  return c.media_id === campaign.mediaId || onAllPosts(campaign);
 }
 
 /**
@@ -83,7 +83,7 @@ export async function missedComments(ctx: Ctx, campaigns: Campaign[]): Promise<M
   // Only comments these campaigns could answer: written before one of them started,
   // or matching no campaign on a post one of them watches.
   const ids = JSON.stringify(campaigns.map((c) => c.id));
-  const allPosts = campaigns.some((c) => c.mediaId === null) ? 1 : 0;
+  const allPosts = campaigns.some(onAllPosts) ? 1 : 0;
   const posts = JSON.stringify(campaigns.flatMap((c) => (c.mediaId ? [c.mediaId] : [])));
   const filter = `status = 'skipped' AND from_id IS NOT NULL AND commented_at > ?1 AND (
       (reason = 'written before the campaign started' AND campaign_id IN (SELECT value FROM json_each(?2)))

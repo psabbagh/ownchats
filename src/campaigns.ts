@@ -18,8 +18,15 @@ export interface Campaign {
   name: string;
   keywords: string[];
   anyComment: boolean;
+  /** The one post this campaign watches; null for all posts, or while it waits for the next post. */
   mediaId: string | null;
   mediaLabel: string | null;
+  /**
+   * Set while the campaign waits for the next post: it then attaches to the first
+   * post published after this time (Unix ms). Null once attached, and for every
+   * other campaign.
+   */
+  nextPostAfter: number | null;
   publicReplies: string[];
   /** Index of the public reply used last, so the next one differs. */
   replyCursor: number;
@@ -47,6 +54,7 @@ interface CampaignRow {
   any_comment: number;
   media_id: string | null;
   media_label: string | null;
+  next_post_after: number | null;
   public_replies: string;
   reply_cursor: number;
   opening_text: string;
@@ -74,6 +82,7 @@ function fromRow(r: CampaignRow): Campaign {
     anyComment: !!r.any_comment,
     mediaId: r.media_id,
     mediaLabel: r.media_label,
+    nextPostAfter: r.next_post_after,
     publicReplies: JSON.parse(r.public_replies) as string[],
     replyCursor: r.reply_cursor,
     openingText: r.opening_text,
@@ -92,6 +101,20 @@ function fromRow(r: CampaignRow): Campaign {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
+}
+
+/** The form's value for "the next post you publish". */
+export const NEXT_POST = "next";
+
+/** A campaign on every post: no post chosen, and not waiting for the next one. */
+export function onAllPosts(c: Pick<Campaign, "mediaId" | "nextPostAfter">): boolean {
+  return c.mediaId === null && c.nextPostAfter === null;
+}
+
+/** A post's caption, shortened, as the form lists it and as a campaign keeps it. */
+export function postLabel(m: { id: string; caption?: string | null }): string {
+  const c = (m.caption || "").replace(/\s+/g, " ").trim();
+  return c ? (c.length > 70 ? `${c.slice(0, 70)}...` : c) : `Post ${m.id}`;
 }
 
 export async function listCampaigns(db: D1Database, activeOnly = false): Promise<Campaign[]> {
@@ -132,15 +155,20 @@ const MAX_LINKS = 3;
 
 export type CampaignInput = Omit<Campaign, "id" | "replyCursor" | "createdAt" | "updatedAt">;
 
-/** Reads the dashboard form. Returns the input and a list of problems, in plain words. */
-export function campaignFromForm(form: FormData): { input: CampaignInput; errors: string[] } {
+/**
+ * Reads the dashboard form. Returns the input and a list of problems, in plain words.
+ * Choosing the next post sets `nextPostAfter` to `now`; saving keeps an earlier time
+ * if the campaign was already waiting.
+ */
+export function campaignFromForm(form: FormData, now: number): { input: CampaignInput; errors: string[] } {
   const text = (k: string) => String(form.get(k) ?? "").trim();
   const lines = (k: string) =>
     text(k)
       .split("\n")
       .map((s) => s.trim())
       .filter(Boolean);
-  const mediaId = text("media_id");
+  const post = text("media_id");
+  const mediaId = post && post !== "all" && post !== NEXT_POST ? post : null;
   const mode = text("email_mode");
   const links: Link[] = [];
   for (let i = 0; i < MAX_LINKS; i++) {
@@ -151,8 +179,9 @@ export function campaignFromForm(form: FormData): { input: CampaignInput; errors
     name: text("name"),
     keywords: parseKeywords(text("keywords")),
     anyComment: form.get("any_comment") === "on",
-    mediaId: mediaId && mediaId !== "all" ? mediaId : null,
-    mediaLabel: mediaId && mediaId !== "all" ? text("media_label") || null : null,
+    mediaId,
+    mediaLabel: mediaId ? text("media_label") || null : null,
+    nextPostAfter: post === NEXT_POST ? now : null,
     publicReplies: lines("public_replies"),
     openingText: text("opening_text"),
     openingButton: text("opening_button"),
@@ -176,7 +205,7 @@ export function validateCampaign(c: CampaignInput): string[] {
   const longest = (...texts: string[]) => Math.max(...texts.map((t) => fill(t, {}).length));
   if (!c.name) errors.push("Give the campaign a name.");
   if (!c.anyComment && c.keywords.length === 0) errors.push("Add at least one keyword, or turn on \"any comment\".");
-  if (c.anyComment && !c.mediaId) errors.push("\"Any comment\" needs one chosen post, not all posts.");
+  if (c.anyComment && onAllPosts(c)) errors.push("\"Any comment\" needs one chosen post, not all posts.");
 
   if (c.links.length === 0) errors.push("Add the link to send.");
   for (const l of c.links) {
@@ -242,8 +271,11 @@ export async function saveCampaign(db: D1Database, c: CampaignInput, id: number 
   if (id === null) {
     const row = await db
       // reply_cursor -1: no public reply used yet, so any variant can come first.
-      .prepare(`INSERT INTO campaigns (${columns}, reply_cursor, created_at, updated_at) VALUES (${values.map(() => "?").join(", ")}, -1, ?, ?) RETURNING id`)
-      .bind(...values, now, now)
+      .prepare(
+        `INSERT INTO campaigns (${columns}, next_post_after, reply_cursor, created_at, updated_at)
+         VALUES (${values.map(() => "?").join(", ")}, ?, -1, ?, ?) RETURNING id`,
+      )
+      .bind(...values, c.nextPostAfter, now, now)
       .first<{ id: number }>();
     return row!.id;
   }
@@ -252,8 +284,9 @@ export async function saveCampaign(db: D1Database, c: CampaignInput, id: number 
     .map((c) => `${c.trim()} = ?`)
     .join(", ");
   await db
-    .prepare(`UPDATE campaigns SET ${sets}, updated_at = ? WHERE id = ?`)
-    .bind(...values, now, id)
+    // A campaign already waiting keeps the time it started waiting, so a post published since still counts.
+    .prepare(`UPDATE campaigns SET ${sets}, next_post_after = CASE WHEN ? IS NULL THEN NULL ELSE COALESCE(next_post_after, ?) END, updated_at = ? WHERE id = ?`)
+    .bind(...values, c.nextPostAfter, c.nextPostAfter, now, id)
     .run();
   return id;
 }
@@ -261,10 +294,11 @@ export async function saveCampaign(db: D1Database, c: CampaignInput, id: number 
 /**
  * The campaign a comment belongs to. A one-post campaign wins over an all-posts
  * one, and a keyword campaign wins over an any-comment one; then the oldest wins.
+ * A campaign waiting for the next post matches nothing until it is attached.
  */
 export function matchComment(campaigns: Campaign[], mediaId: string, text: string): Campaign | null {
   const candidates = campaigns.filter(
-    (c) => c.active && (c.mediaId === null || c.mediaId === mediaId) && (c.anyComment || matchesKeyword(text, c.keywords)),
+    (c) => c.active && (c.mediaId === mediaId || onAllPosts(c)) && (c.anyComment || matchesKeyword(text, c.keywords)),
   );
   const rank = (c: Campaign) => (c.mediaId ? 0 : 2) + (c.anyComment ? 1 : 0);
   candidates.sort((a, b) => rank(a) - rank(b) || a.id - b.id);

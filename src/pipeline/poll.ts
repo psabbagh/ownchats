@@ -1,4 +1,4 @@
-import { listCampaigns } from "../campaigns";
+import { listCampaigns, onAllPosts } from "../campaigns";
 import type { Ctx } from "../context";
 import { explainError, type Media } from "../meta/client";
 import { saveSettings } from "../settings";
@@ -38,7 +38,7 @@ export async function pollComments(ctx: Ctx): Promise<void> {
   const watched = new Set<string>();
   for (const c of campaigns) if (c.mediaId) watched.add(c.mediaId);
   try {
-    if (campaigns.some((c) => c.mediaId === null)) {
+    if (campaigns.some(onAllPosts)) {
       for (const m of (await recentMedia(ctx)).slice(0, RECENT_POSTS)) watched.add(m.id);
     }
   } catch (err) {
