@@ -473,14 +473,38 @@ function timeZones(): string[] {
   return zones.includes("UTC") ? zones : ["UTC", ...zones];
 }
 
-function timeZoneCard(saved: string | undefined): Html {
+/** What each Settings form just did, by the ?saved= value its redirect carries. Any other value shows nothing. */
+const SAVED_NOTE = {
+  export: "New link made",
+  "export-off": "Turned off",
+  webhook: "Saved",
+  "webhook-off": "Turned off",
+  "api-token-off": "Revoked",
+  clicks: "Saved",
+  "time-zone": "Saved",
+  contact: "Saved",
+} as const;
+type SavedForm = keyof typeof SAVED_NOTE;
+
+/**
+ * The word beside a form's button once it has saved. It goes as soon as the form is edited, since
+ * what's on screen is then no longer what's saved, and the URL is cleaned so a reload doesn't bring it back.
+ */
+function savedNote(saved: string | null | undefined, ...forms: SavedForm[]): Html {
+  const form = forms.find((f) => f === saved);
+  if (!form) return html``;
+  return html`<span id="saved-note" class="ok small" role="status">${SAVED_NOTE[form]}</span>
+    <script>(()=>{history.replaceState(null,"",location.pathname+location.hash);const n=document.getElementById("saved-note");n.closest("form").addEventListener("input",()=>n.remove(),{once:true})})()</script>`;
+}
+
+function timeZoneCard(saved: string | undefined, note: Html): Html {
   const current = saved && isTimeZone(saved) ? saved : "UTC";
   return html`<div class="card" id="time-zone">
     <h3>Time zone</h3>
     <form method="post" action="/dashboard/settings/time-zone">
       <select name="time_zone" aria-label="Time zone">${timeZones().map((z) => html`<option${z === current ? " selected" : ""}>${z}</option>`)}</select>
       <p class="hint">Times on these pages show in this zone. ${saved ? "" : "None is saved yet, so they show in UTC; the list starts on your browser's zone. "}The API, the CSV and the database keep UTC.</p>
-      <p><button>Save</button></p>
+      <p class="row"><button>Save</button>${note}</p>
     </form>
     ${saved ? "" : html`<script>(()=>{const z=Intl.DateTimeFormat().resolvedOptions().timeZone,s=document.querySelector('[name=time_zone]');if([...s.options].some(o=>o.value===z))s.value=z})()</script>`}
   </div>`;
@@ -502,7 +526,7 @@ function testNotice(d: DeliveryRow | null, tz: string): Html {
   return html`<div class="card notice"><p>The test lead didn't get through yet (${d.last_result}). OwnChats tries again at ${fmtTime(d.next_attempt_at, tz)}, as it would for a real lead.</p></div>`;
 }
 
-function webhookCard(ctx: Ctx, campaigns: Campaign[], deliveries: DeliveryRow[], notes: { error?: string; test?: DeliveryRow | null }): Html {
+function webhookCard(ctx: Ctx, campaigns: Campaign[], deliveries: DeliveryRow[], notes: { error?: string; test?: DeliveryRow | null; saved?: string | null }): Html {
   const s = ctx.settings;
   const tz = timeZoneOf(s);
   const config = webhookConfig(ctx);
@@ -523,7 +547,7 @@ function webhookCard(ctx: Ctx, campaigns: Campaign[], deliveries: DeliveryRow[],
       <p class="hint">The receiver uses the same secret to check each request came from you. Make a long random one with your password manager and keep it there.
         ${workerSecret ? "" : html`It's stored encrypted. You can set it as a Worker secret named <code>LEAD_WEBHOOK_SECRET</code> instead.`}
         A failed delivery is retried for about a day, and every attempt is in the <a href="/dashboard/activity">activity log</a>.</p>
-      <p class="row"><button name="do" value="save">Save</button>${s.lead_webhook_url ? html`<button class="danger" name="do" value="off">Turn off</button>` : ""}</p>
+      <p class="row"><button name="do" value="save">Save</button>${s.lead_webhook_url ? html`<button class="danger" name="do" value="off">Turn off</button>` : ""}${savedNote(notes.saved, "webhook", "webhook-off")}</p>
     </form>
     ${config
       ? html`<h3 style="margin-top:16px">Send a test lead</h3>
@@ -552,7 +576,7 @@ function webhookCard(ctx: Ctx, campaigns: Campaign[], deliveries: DeliveryRow[],
   </div>`;
 }
 
-export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string; webhookError?: string; testId?: string | null } = {}): Promise<Response> {
+export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string; webhookError?: string; testId?: string | null; saved?: string | null } = {}): Promise<Response> {
   const s = ctx.settings;
   const exportUrl = s.export_key ? `${s.base_url}/export/leads.csv?key=${s.export_key}` : "";
   const campaigns = await listCampaigns(ctx.db);
@@ -562,25 +586,25 @@ export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string; webhook
   return page(
     "Settings",
     html`<h1>Settings</h1>
-      <div class="card">
+      <div class="card" id="sheets">
         <h3>Google Sheets</h3>
         ${exportUrl
           ? html`<p>Paste this into cell A1 of a Google Sheet. It refreshes about once an hour.</p>
               ${copyField(`=IMPORTDATA("${exportUrl}")`)}
               <p class="hint">Anyone with this link can read your leads. Regenerate it to cut off the old one.</p>
-              <form method="post" action="/dashboard/settings/export" class="row"><button class="secondary" name="do" value="new">Regenerate link</button><button class="danger" name="do" value="revoke">Turn off</button></form>`
+              <form method="post" action="/dashboard/settings/export" class="row"><button class="secondary" name="do" value="new">Regenerate link</button><button class="danger" name="do" value="revoke">Turn off</button>${savedNote(fresh.saved, "export")}</form>`
           : html`<p>Create a secret link that Google Sheets can read with IMPORTDATA.</p>
-              <form method="post" action="/dashboard/settings/export"><button name="do" value="new">Create link</button></form>`}
+              <form method="post" action="/dashboard/settings/export" class="row"><button name="do" value="new">Create link</button>${savedNote(fresh.saved, "export-off")}</form>`}
       </div>
-      ${webhookCard(ctx, campaigns, deliveries, { error: fresh.webhookError, test })}
-      <div class="card">
+      ${webhookCard(ctx, campaigns, deliveries, { error: fresh.webhookError, test, saved: fresh.saved })}
+      <div class="card" id="api-token">
         <h3>API token</h3>
         <p>For tools that read your campaigns and leads. See <code>GET ${s.base_url ?? ""}/api</code>.</p>
         ${fresh.apiToken
           ? html`<p class="ok">Copy it now; it is shown only once.</p>${copyField(fresh.apiToken)}`
           : html`<p class="muted">${s.api_token_hash ? "A token exists." : "No token yet."}</p>`}
         <form method="post" action="/dashboard/settings/api-token" class="row"><button name="do" value="new">${s.api_token_hash ? "Replace token" : "Create token"}</button>
-          ${s.api_token_hash ? html`<button class="danger" name="do" value="revoke">Revoke</button>` : ""}</form>
+          ${s.api_token_hash ? html`<button class="danger" name="do" value="revoke">Revoke</button>` : ""}${savedNote(fresh.saved, "api-token-off")}</form>
       </div>
       <div class="card" id="clicks">
         <h3>Link clicks</h3>
@@ -589,9 +613,9 @@ export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string; webhook
           : "Off. Campaign links go out as they are, and clicks aren't counted."}</p>
         <p class="hint">Each person gets their own random link: it names nobody. Only a person's first click counts, and link previews (Instagram's included) don't.
           Links already sent keep working either way.</p>
-        <form method="post" action="/dashboard/settings/clicks"><button class="secondary" name="do" value="${clicksOn ? "off" : "on"}">${clicksOn ? "Stop counting clicks" : "Count clicks"}</button></form>
+        <form method="post" action="/dashboard/settings/clicks" class="row"><button class="secondary" name="do" value="${clicksOn ? "off" : "on"}">${clicksOn ? "Stop counting clicks" : "Count clicks"}</button>${savedNote(fresh.saved, "clicks")}</form>
       </div>
-      ${timeZoneCard(s.time_zone)}
+      ${timeZoneCard(s.time_zone, savedNote(fresh.saved, "time-zone"))}
       <div class="card" id="sender">
         <h3>You, on the privacy page</h3>
         <form method="post" action="/dashboard/settings/contact">
@@ -604,7 +628,7 @@ export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string; webhook
           <p class="hint">Shown on <a href="/privacy">/privacy</a>, which the default email questions link to as "who I am and my address", and on <a href="/data-deletion">/data-deletion</a>.
             Anti-spam laws such as Canada's CASL ask for a name and a mailing address wherever you ask for an email.
             New campaigns name you in their email questions; existing ones keep their wording until you edit it.</p>
-          <p><button>Save</button></p>
+          <p class="row"><button>Save</button>${savedNote(fresh.saved, "contact")}</p>
         </form>
       </div>`,
     { nav: true },
@@ -632,15 +656,19 @@ export async function settingsAction(ctx: Ctx, request: Request, what: string): 
   const form = await request.formData();
   const pw = ctx.env.ADMIN_PASSWORD;
   const action = String(form.get("do") ?? "");
+  const saved = (done: SavedForm, card: string) => redirect(`/dashboard/settings?saved=${done}#${card}`);
   if (what === "export") {
-    if (action === "revoke") await deleteSettings(ctx.db, ["export_key"]);
-    else await saveSettings(ctx.db, pw, { export_key: randomToken(24) });
-    return redirect("/dashboard/settings");
+    if (action === "revoke") {
+      await deleteSettings(ctx.db, ["export_key"]);
+      return saved("export-off", "sheets");
+    }
+    await saveSettings(ctx.db, pw, { export_key: randomToken(24) });
+    return saved("export", "sheets");
   }
   if (what === "api-token") {
     if (action === "revoke") {
       await deleteSettings(ctx.db, ["api_token_hash"]);
-      return redirect("/dashboard/settings");
+      return saved("api-token-off", "api-token");
     }
     const token = `oc_${randomToken(24)}`;
     const hash = await sha256Hex(token);
@@ -651,12 +679,12 @@ export async function settingsAction(ctx: Ctx, request: Request, what: string): 
   if (what === "webhook") {
     if (action === "off") {
       await deleteSettings(ctx.db, ["lead_webhook_url", "lead_webhook_secret"]);
-      return redirect("/dashboard/settings#webhook");
+      return saved("webhook-off", "webhook");
     }
     const values = webhookFromForm(ctx, form);
     if ("error" in values) return settingsPage(ctx, { webhookError: values.error });
     await saveSettings(ctx.db, pw, { lead_webhook_url: values.url, lead_webhook_secret: values.secret });
-    return redirect("/dashboard/settings#webhook");
+    return saved("webhook", "webhook");
   }
   if (what === "test-lead") {
     if (!webhookConfig(ctx)) return settingsPage(ctx, { webhookError: "Set the webhook's URL and secret first." });
@@ -674,17 +702,18 @@ export async function settingsAction(ctx: Ctx, request: Request, what: string): 
   if (what === "clicks") {
     if (action === "off") await saveSettings(ctx.db, pw, { click_tracking: "off" });
     else await deleteSettings(ctx.db, ["click_tracking"]);
-    return redirect("/dashboard/settings#clicks");
+    return saved("clicks", "clicks");
   }
   if (what === "time-zone") {
     const tz = String(form.get("time_zone") ?? "").trim();
-    if (isTimeZone(tz)) await saveSettings(ctx.db, pw, { time_zone: tz });
-    return redirect("/dashboard/settings");
+    if (!isTimeZone(tz)) return redirect("/dashboard/settings#time-zone");
+    await saveSettings(ctx.db, pw, { time_zone: tz });
+    return saved("time-zone", "time-zone");
   }
   if (what === "contact") {
     const field = (k: string, max: number) => String(form.get(k) ?? "").trim().slice(0, max);
     await saveSettings(ctx.db, pw, { contact: field("contact", 200), sender_name: field("sender_name", 100), sender_address: field("sender_address", 300) });
-    return redirect("/dashboard/settings#sender");
+    return saved("contact", "sender");
   }
   return new Response("Not found", { status: 404 });
 }

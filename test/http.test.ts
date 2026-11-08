@@ -315,3 +315,60 @@ describe("without a connection", () => {
     expect(w.meta.calls).toHaveLength(0);
   });
 });
+
+describe("the Settings forms say when they've saved", () => {
+  const SECRET = "a-test-secret-not-real-0123456";
+  const note = (word: string) => `role="status">${word}</span>`;
+
+  it.each([
+    ["contact", { sender_name: "Sam Lee", sender_address: "PO Box 1, Testville", contact: "" }, "contact", "sender", "Saved"],
+    ["time-zone", { time_zone: "America/Toronto" }, "time-zone", "time-zone", "Saved"],
+    ["clicks", { do: "off" }, "clicks", "clicks", "Saved"],
+    ["export", { do: "new" }, "export", "sheets", "New link made"],
+    ["export", { do: "revoke" }, "export-off", "sheets", "Turned off"],
+    ["webhook", { do: "save", url: "https://receiver.example/hook", secret: SECRET }, "webhook", "webhook", "Saved"],
+    ["webhook", { do: "off" }, "webhook-off", "webhook", "Turned off"],
+    ["api-token", { do: "revoke" }, "api-token-off", "api-token", "Revoked"],
+  ])("%s with %j", async (path, data, done, card, word) => {
+    const cookie = await w.signIn();
+    const res = await w.fetch(`/dashboard/settings/${path}`, form(cookie, data as Record<string, string>));
+    expect(res.status).toBe(303);
+    const location = res.headers.get("location")!;
+    expect(location).toBe(`/dashboard/settings?saved=${done}#${card}`);
+
+    const page = await (await w.fetch(location, { headers: { cookie } })).text();
+    expect(page.split('id="saved-note"')).toHaveLength(2);
+    // In the card of the form that saved, inside that form.
+    const inCard = page.slice(page.indexOf(`id="${card}"`));
+    const formEnd = inCard.indexOf("</form>", inCard.indexOf('id="saved-note"'));
+    expect(inCard.indexOf(note(word))).toBeGreaterThan(0);
+    expect(inCard.indexOf(note(word))).toBeLessThan(formEnd);
+  });
+
+  it("shows nothing on a plain visit, or for a value it doesn't know", async () => {
+    const cookie = await w.signIn();
+    const page = async (path: string) => (await w.fetch(path, { headers: { cookie } })).text();
+    expect(await page("/dashboard/settings")).not.toContain("saved-note");
+    const odd = await page(`/dashboard/settings?saved=${encodeURIComponent("<b>nope</b>")}`);
+    expect(odd).not.toContain("saved-note");
+    expect(odd).not.toContain("nope");
+    expect(await page("/dashboard/settings?saved=constructor")).not.toContain("saved-note");
+  });
+
+  it("doesn't say Saved when nothing was", async () => {
+    const cookie = await w.signIn();
+    const zone = await w.fetch("/dashboard/settings/time-zone", form(cookie, { time_zone: "Mars/Olympus" }));
+    expect(zone.headers.get("location")).toBe("/dashboard/settings#time-zone");
+
+    const bad = await w.fetch("/dashboard/settings/webhook", form(cookie, { do: "save", url: "http://not-https.example/hook", secret: SECRET }));
+    expect(bad.status).toBe(200);
+    expect(await bad.text()).not.toContain("saved-note");
+  });
+
+  it("drops the word when the form is edited, and cleans the address", async () => {
+    const cookie = await w.signIn();
+    const page = await (await w.fetch("/dashboard/settings?saved=contact#sender", { headers: { cookie } })).text();
+    expect(page).toContain('addEventListener("input",()=>n.remove(),{once:true})');
+    expect(page).toContain('history.replaceState(null,"",location.pathname+location.hash)');
+  });
+});
