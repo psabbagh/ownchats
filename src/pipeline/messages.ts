@@ -55,7 +55,7 @@ export async function handleInbound(ctx: Ctx, ev: InboundEvent): Promise<void> {
   const text = ev.text ?? "";
   const open = await openConversation(ctx.db, ev.senderId, ctx.now() - 7 * DAY);
   const campaign = open ? await getCampaign(ctx.db, open.campaign_id) : null;
-  if (open && campaign) {
+  if (open && campaign && !tooLateToAnswer(open, text, ev.timestamp)) {
     if (open.state !== "optional_email") {
       await touch(ctx, open, ev.timestamp);
       // They wrote instead of tapping: that counts just the same, for either button.
@@ -80,6 +80,17 @@ export async function handleInbound(ctx: Ctx, ev: InboundEvent): Promise<void> {
 }
 
 const FOLLOW_STATES: ConversationState[] = ["awaiting_follow", "follow_reasked"];
+const EMAIL_STATES: ConversationState[] = ["awaiting_email", "reasked"];
+/** How long after the email question a message with no email in it still counts as the answer. */
+const EMAIL_ANSWER_WINDOW = DAY;
+
+/**
+ * Someone who never answered the email question may write days later about
+ * something else. An email is still an answer; anything else is an ordinary DM.
+ */
+function tooLateToAnswer(conversation: Conversation, text: string, at: number): boolean {
+  return EMAIL_STATES.includes(conversation.state) && at - conversation.updated_at > EMAIL_ANSWER_WINDOW && !extractEmail(text);
+}
 
 /** A tap on the opening button, or on "I'm following". */
 async function handleTap(ctx: Ctx, ev: InboundEvent, prefix: string): Promise<void> {

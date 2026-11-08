@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
-import { OPEN_PAYLOAD_PREFIX } from "../src/campaigns";
+import { OPEN_PAYLOAD_PREFIX, setCampaignActive } from "../src/campaigns";
 import { MetaError } from "../src/meta/client";
 import { DAY, HOUR, MINUTE, PRIVATE_REPLIES_PER_HOUR } from "../src/time";
 import { EMAIL_LINES, FAN, FAN2, OTHER_POST, OWNER, REEL, setupWorld } from "./helpers";
@@ -142,6 +142,67 @@ describe("follow-ups only within 24 hours of the person's reply", () => {
     // Done means done: more messages get nothing.
     await w.sendDm(FAN.id, "hello?");
     expect(w.meta.sentTo(FAN.id)).toHaveLength(3);
+  });
+
+  it("leaves a message alone when it comes long after the email question and holds no email", async () => {
+    const id = await w.campaign({ emailMode: "first" });
+    await w.sendComment(w.comment("agents", FAN));
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
+    expect(w.meta.sentTo(FAN.id)).toHaveLength(1);
+    w.clock.advance(DAY + MINUTE);
+    await w.sendDm(FAN.id, "have you read this? https://example.com/article");
+    // A second one too: the first must not have restarted the 24 hours.
+    await w.sendDm(FAN.id, "it's really good");
+    expect(w.meta.sentTo(FAN.id)).toHaveLength(1);
+    expect(await env.DB.prepare("SELECT state FROM conversations").first()).toEqual({ state: "awaiting_email" });
+  });
+
+  it("counts a reply within 24 hours of the question, and the re-ask starts the 24 hours again", async () => {
+    const id = await w.campaign({ emailMode: "first" });
+    await w.sendComment(w.comment("agents", FAN));
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
+    w.clock.advance(DAY - MINUTE);
+    await w.sendDm(FAN.id, "what?");
+    expect(w.meta.sentTo(FAN.id)).toHaveLength(2);
+    expect(w.meta.sentTo(FAN.id)[1]!.message).toMatchObject({ text: expect.stringContaining("doesn't look like an email") });
+    w.clock.advance(DAY + MINUTE);
+    await w.sendDm(FAN.id, "something else entirely");
+    expect(w.meta.sentTo(FAN.id)).toHaveLength(2);
+    expect(await env.DB.prepare("SELECT state FROM conversations").first()).toEqual({ state: "reasked" });
+  });
+
+  it("still takes an email days after the question", async () => {
+    const id = await w.campaign({ emailMode: "first" });
+    await w.sendComment(w.comment("agents", FAN));
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
+    w.clock.advance(3 * DAY);
+    await w.sendDm(FAN.id, "sorry, it's fan@example.com");
+    expect(await w.unwrap(w.meta.sentTo(FAN.id).at(-1)!.message)).toMatchObject({ buttons: [{ url: "https://example.com/library" }] });
+    expect(await env.DB.prepare("SELECT email FROM leads").first()).toEqual({ email: "fan@example.com" });
+  });
+
+  it("a campaign that is off stops answering typed messages, while its buttons keep working", async () => {
+    const id = await w.campaign({ emailMode: "first" });
+    await w.sendComment(w.comment("agents", FAN));
+    await setCampaignActive(env.DB, id, false, w.clock.now());
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
+    expect(w.meta.sentTo(FAN.id)).toHaveLength(1);
+    await w.sendDm(FAN.id, "what?");
+    expect(w.meta.sentTo(FAN.id)).toHaveLength(1);
+    expect(await env.DB.prepare("SELECT state FROM conversations").first()).toEqual({ state: "awaiting_email" });
+  });
+
+  it("a campaign that is off doesn't hide a conversation still open on one that is on", async () => {
+    const on = await w.campaign({ emailMode: "first" });
+    const off = await w.campaign({ name: "Prompts", keywords: ["PROMPTS"], mediaId: OTHER_POST, emailMode: "first" });
+    await w.sendComment(w.comment("agents", FAN));
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${on}`);
+    w.clock.advance(MINUTE);
+    await w.sendComment(w.comment("prompts", FAN, { media: OTHER_POST }));
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${off}`);
+    await setCampaignActive(env.DB, off, false, w.clock.now());
+    await w.sendDm(FAN.id, "fan@example.com");
+    expect(await env.DB.prepare("SELECT campaign_id FROM leads").first()).toEqual({ campaign_id: on });
   });
 
   it("does not answer an event that is more than 24 hours old", async () => {
