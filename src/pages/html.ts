@@ -42,7 +42,7 @@ const STYLE = `
 *{box-sizing:border-box}body{margin:0;font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;background:var(--bg);color:var(--fg)}
 main{max-width:860px;margin:0 auto;padding:24px 16px 64px}
 header.top{display:flex;gap:16px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--line);padding:12px 16px}
-header.top strong{font-size:18px}header.top nav{display:flex;gap:12px;flex-wrap:wrap}
+header.top strong{font-size:18px}header.top strong span{font-size:14px;font-weight:400;color:var(--muted)}header.top nav{display:flex;gap:12px;flex-wrap:wrap}
 a{color:var(--accent)}h1{font-size:26px;margin:8px 0 16px}h2{font-size:20px;margin:28px 0 8px}h3{font-size:17px;margin:0 0 6px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin:12px 0}
 .muted{color:var(--muted)}.small{font-size:14px}
@@ -74,7 +74,7 @@ const COPY_SCRIPT = `document.addEventListener('click',e=>{const b=e.target.clos
 
 export function page(title: string, body: Html, opts: { nav?: boolean; head?: Html } = {}): Response {
   const nav = opts.nav
-    ? html`<header class="top"><strong>OwnChats</strong><nav><a href="/dashboard">Campaigns</a><a href="/dashboard/leads">Leads</a><a href="/dashboard/activity">Activity</a><a href="/dashboard/settings">Settings</a><a href="/setup">Setup</a></nav>
+    ? html`<header class="top"><strong>OwnChats <span>for Instagram</span></strong><nav><a href="/dashboard">Campaigns</a><a href="/dashboard/leads">Leads</a><a href="/dashboard/activity">Activity</a><a href="/dashboard/settings">Settings</a><a href="/setup">Setup</a></nav>
         <form method="post" action="/logout" style="margin-left:auto"><button class="secondary">Sign out</button></form></header>`
     : "";
   const doc = html`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
