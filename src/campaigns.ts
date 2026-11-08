@@ -378,6 +378,11 @@ export async function saveCampaign(db: D1Database, c: CampaignInput, id: number 
   return id;
 }
 
+/** The on/off switch. Only this column, so it can't undo an edit saved in another tab. */
+export async function setCampaignActive(db: D1Database, id: number, active: boolean, now: number): Promise<void> {
+  await db.prepare("UPDATE campaigns SET active = ?, updated_at = ? WHERE id = ?").bind(active ? 1 : 0, now, id).run();
+}
+
 /**
  * The campaign a comment belongs to. A one-post campaign wins over an all-posts
  * one, and a keyword campaign wins over an any-comment one; then the oldest wins.

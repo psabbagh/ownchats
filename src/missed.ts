@@ -2,7 +2,7 @@ import { getCampaign, onAllPosts, type Campaign } from "./campaigns";
 import type { Ctx } from "./context";
 import { CommentText, KeywordSet, matchesKeyword, parseKeywords } from "./match";
 import { handleComment } from "./pipeline/comments";
-import { PRIVATE_REPLY_WINDOW } from "./time";
+import { DAY, HOUR, PRIVATE_REPLY_WINDOW } from "./time";
 
 /**
  * Comments a campaign could still answer by hand: skipped, but close to its
@@ -43,6 +43,14 @@ interface Candidate {
   reason: string;
   campaign_id: number | null;
   media_id: string;
+}
+
+/** What is left of Meta's 7-day window for one comment. */
+export function timeLeft(ms: number): string {
+  if (ms >= 2 * DAY) return `${Math.floor(ms / DAY)} days left to answer`;
+  if (ms >= DAY) return "1 day left to answer";
+  if (ms >= 2 * HOUR) return `${Math.floor(ms / HOUR)} hours left to answer`;
+  return "less than 2 hours left to answer";
 }
 
 function onItsPosts(c: Candidate, campaign: Campaign): boolean {

@@ -20,6 +20,29 @@ export function postFor(campaign: Campaign, oldestFirst: Media[]): Media | undef
   );
 }
 
+/** A post that went up while campaigns waited and that none of them attached to. */
+export interface UntakenPost {
+  post: Media;
+  /** The campaigns on that were already waiting when it went up. */
+  waiting: Campaign[];
+}
+
+/**
+ * Posts published since a campaign started waiting that no campaign has: usually a
+ * caption without the "Comment KEYWORD" line. Nothing else would show it, because the
+ * campaign just keeps waiting and the post's comments match nothing. Reads the list
+ * the Cron refreshes every minute while a campaign waits, so a page load calls no one.
+ */
+export function untakenPosts(ctx: Ctx, campaigns: Campaign[]): UntakenPost[] {
+  const on = campaigns.filter((c) => c.active && c.nextPostAfter !== null);
+  if (!on.length || !ctx.settings.media_cache) return [];
+  const taken = new Set(campaigns.map((c) => c.mediaId));
+  return (JSON.parse(ctx.settings.media_cache) as Media[]).flatMap((post) => {
+    const waiting = on.filter((c) => post.timestamp > c.nextPostAfter!);
+    return waiting.length && !taken.has(post.id) ? [{ post, waiting }] : [];
+  });
+}
+
 /**
  * Called by the Cron every minute, before waiting comments are handled: attaches
  * each campaign that waits for the next post to its post (postFor). Comments on

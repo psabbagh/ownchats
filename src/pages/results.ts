@@ -3,7 +3,7 @@ import { trackingBase } from "../clicks";
 import type { Ctx } from "../context";
 import type { Media } from "../meta/client";
 import { MISSING_PERMISSION, readMediaStats, type MediaStats } from "../insights";
-import { ANSWER_PROBLEM, answerMissed, answerOutcome, missedComments, type AnswerProblem, type MissedComment } from "../missed";
+import { ANSWER_PROBLEM, answerMissed, answerOutcome, missedComments, timeLeft, type AnswerProblem, type MissedComment } from "../missed";
 import { recentMedia } from "../pipeline/poll";
 import {
   campaignResults,
@@ -17,7 +17,7 @@ import {
 } from "../stats";
 import { activityTable, EMAIL_MODE_LABEL, healthBanner, KIND_LABEL } from "./dashboard";
 import { fmtCount, fmtTime, html, page, plural, redirect, type Html } from "./html";
-import { DAY, HOUR, timeZoneOf } from "../time";
+import { timeZoneOf } from "../time";
 
 const COMMENTS_PER_PAGE = 100;
 const MISSED_SHOWN = 50;
@@ -127,13 +127,6 @@ function commentText(line: CommentLine): Html {
   if (!line.text && line.reason === "person deleted") return html`<span class="muted">(deleted on request)</span>`;
   const text = line.text.length > 280 ? `${line.text.slice(0, 280)}...` : line.text;
   return html`${line.parent_id ? html`<span class="muted small">reply: </span>` : ""}${text}`;
-}
-
-function timeLeft(ms: number): string {
-  if (ms >= 2 * DAY) return `${Math.floor(ms / DAY)} days left to answer`;
-  if (ms >= DAY) return "1 day left to answer";
-  if (ms >= 2 * HOUR) return `${Math.floor(ms / HOUR)} hours left to answer`;
-  return "less than 2 hours left to answer";
 }
 
 function whyMissed(m: MissedComment, campaign: Campaign): string {
