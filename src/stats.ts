@@ -38,6 +38,12 @@ export async function campaignCounts(ctx: Ctx): Promise<Map<number, CampaignCoun
   return out;
 }
 
+/** How many things failed since this time, from the log. */
+export async function failuresSince(ctx: Ctx, since: number): Promise<number> {
+  const row = await ctx.db.prepare("SELECT COUNT(*) AS n FROM activity WHERE outcome = 'failed' AND at > ?").bind(since).first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
 /** What happened to the comments a campaign watches, over one period. */
 export interface CommentTally {
   total: number;

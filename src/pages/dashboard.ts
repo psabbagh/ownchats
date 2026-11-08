@@ -1,4 +1,4 @@
-import { campaignFromForm, DEFAULTS, getCampaign, listCampaigns, NEXT_POST, postLabel, saveCampaign, type Campaign, type CampaignInput, type EmailMode } from "../campaigns";
+import { campaignFromForm, DEFAULTS, getCampaign, listCampaigns, NEXT_POST, postLabel, saveCampaign, setCampaignActive, type Campaign, type CampaignInput, type EmailMode } from "../campaigns";
 
 export const EMAIL_MODE_LABEL: Record<EmailMode, string> = { none: "link only", optional: "link plus optional email", first: "email first" };
 
@@ -37,11 +37,12 @@ import { leadsCsv, listLeads } from "../export";
 import type { Media } from "../meta/client";
 import { recentMedia } from "../pipeline/poll";
 import { MISSING_PERMISSION, readMediaStats } from "../insights";
-import { missedComments } from "../missed";
+import { missedComments, timeLeft, type MissedComment } from "../missed";
+import { untakenPosts } from "../nextpost";
 import { deleteSettings, saveSettings } from "../settings";
-import { campaignCounts, deletePerson, findPersonByUsername, listActivity, storedAboutPeople, type ActivityRow } from "../stats";
+import { campaignCounts, deletePerson, failuresSince, findPersonByUsername, listActivity, storedAboutPeople, type ActivityRow } from "../stats";
 import { copyField, fmtCount, fmtDate, fmtTime, html, page, plural, redirect, type Html } from "./html";
-import { isTimeZone, timeZoneOf } from "../time";
+import { DAY, isTimeZone, timeZoneOf } from "../time";
 
 /** Which post a campaign watches, in a few words. */
 export function postWords(c: Campaign): string {
@@ -60,44 +61,101 @@ export function healthBanner(ctx: Ctx): Html {
   return html`<div class="card notice">${notes.map((n) => html`<p>${n}</p>`)}</div>`;
 }
 
+/** A problem the Cron saved as "at|detail", in a sentence. */
+function cronProblem(saved: string | undefined, what: string, tz: string): Html | null {
+  const [at, detail] = (saved ?? "").split("|");
+  return detail ? html`${what} failed (${fmtTime(Number(at), tz)}): ${detail}` : null;
+}
+
+/** What the owner should look at, most urgent first: each line says what, and links to where to act. */
+function needsYou(ctx: Ctx, campaigns: Campaign[], missed: Map<number, MissedComment[]>, failures: number, tz: string): Html[] {
+  const s = ctx.settings;
+  const items: Array<Html | null> = [];
+  // Each problem is cleared by the next good run, and those runs only happen with work to do.
+  if (campaigns.some((c) => c.active && c.nextPostAfter === null)) items.push(cronProblem(s.last_poll_problem, "The last check for missed comments", tz));
+  if (campaigns.some((c) => c.nextPostAfter !== null)) items.push(cronProblem(s.next_post_problem, "The last look for your next post", tz));
+  for (const { post, waiting } of untakenPosts(ctx, campaigns)) {
+    const needs = waiting.map(
+      (c, i) => html`${i ? ", " : ""}<a href="/dashboard/campaigns/${c.id}/edit">${c.name}</a> needs "Comment ${c.keywords[0] ?? ""}"`,
+    );
+    items.push(html`A post went up and no campaign attached to it: "${postLabel(post)}". If it is for a waiting campaign, add the line to its caption (${needs}), or pick the post in the campaign.`);
+  }
+  const toCheck = campaigns.flatMap((c) => {
+    const list = missed.get(c.id);
+    return list?.length ? [{ c, n: list.length, left: Math.min(...list.map((m) => m.left)) }] : [];
+  });
+  for (const { c, n, left } of toCheck.sort((a, b) => a.left - b.left)) {
+    items.push(html`<a href="/dashboard/campaigns/${c.id}#to-check">${plural(n, "comment")} to check on ${c.name}</a> <span class="muted">(${n > 1 ? "oldest: " : ""}${timeLeft(left)})</span>`);
+  }
+  if (failures) items.push(html`<a href="/dashboard/activity?show=failed">${plural(failures, "failure")} in the last 24 hours</a>`);
+  return items.filter((i): i is Html => i !== null);
+}
+
+/** Says the state and changes it. The form sends the state wanted, so a double click or an old tab can't flip it back. */
+function campaignSwitch(c: Campaign): Html {
+  const ask = `Turn off ${c.name}? Comments that arrive while it is off get no DM.`;
+  return html`<form method="post" action="/dashboard/campaigns/${c.id}/switch"${c.active ? html` data-ask="${ask}" onsubmit="return confirm(this.dataset.ask)"` : ""}>
+    <input type="hidden" name="active" value="${c.active ? "off" : "on"}"><button class="switch${c.active ? " on" : ""}" role="switch" aria-checked="${c.active ? "true" : "false"}" title="${c.active ? "On. Click to turn off." : "Off. Click to turn on."}">${c.active ? "on" : "off"}</button></form>`;
+}
+
+export async function switchCampaign(ctx: Ctx, request: Request, id: number): Promise<Response> {
+  const wanted = String((await request.formData()).get("active") ?? "");
+  if (wanted === "on" || wanted === "off") await setCampaignActive(ctx.db, id, wanted === "on", ctx.now());
+  return redirect("/dashboard");
+}
+
 export async function dashboardHome(ctx: Ctx): Promise<Response> {
   // Newest first here only: listCampaigns keeps id order, which DM keyword matching relies on.
   const campaigns = (await listCampaigns(ctx.db)).sort((a, b) => b.createdAt - a.createdAt || b.id - a.id);
+  const on = campaigns.filter((c) => c.active);
+  const off = campaigns.filter((c) => !c.active);
   const counts = await campaignCounts(ctx);
-  const missed = await missedComments(ctx, campaigns.filter((c) => c.active));
+  const missed = await missedComments(ctx, on);
   const stats = await readMediaStats(ctx, campaigns.flatMap((c) => (c.mediaId ? [c.mediaId] : [])));
-  const noPermission = campaigns.some((c) => c.active && c.mediaId && stats.get(c.mediaId)?.problem === MISSING_PERMISSION);
+  const failures = await failuresSince(ctx, ctx.now() - DAY);
+  const noPermission = on.some((c) => c.mediaId && stats.get(c.mediaId)?.problem === MISSING_PERMISSION);
   const s = ctx.settings;
   const tz = timeZoneOf(s);
+  const banner = healthBanner(ctx);
+  const items = needsYou(ctx, campaigns, missed, failures, tz);
+
+  const card = (c: Campaign) => {
+    const n = counts.get(c.id);
+    const views = c.mediaId ? stats.get(c.mediaId)?.views : undefined;
+    // Instagram's cover image for the post: the Reel's first frame unless another cover was chosen. Kept fresh by the hourly post list.
+    const cover = c.mediaId ? stats.get(c.mediaId)?.thumbnailUrl : null;
+    return html`<div class="card row campaign">
+      <a class="cover" href="/dashboard/campaigns/${c.id}" aria-hidden="true" tabindex="-1">${cover ? html`<img src="${cover}" alt="" loading="lazy" onerror="this.remove()">` : ""}</a>
+      <div class="body">
+      <div class="row"><h3 style="flex:1 1 auto"><a href="/dashboard/campaigns/${c.id}">${c.name}</a></h3><span class="muted small">Started ${fmtDate(c.createdAt, tz)}</span>
+        ${campaignSwitch(c)}</div>
+      <p class="muted small">${c.anyComment ? "Any comment" : `Keyword: ${c.keywords.join(", ")}`} on ${postWords(c)}, ${EMAIL_MODE_LABEL[c.emailMode]}</p>
+      ${missed.get(c.id)?.length
+        ? html`<p class="small"><a class="warn" href="/dashboard/campaigns/${c.id}#to-check">${plural(missed.get(c.id)!.length, "comment")} to check</a></p>`
+        : ""}
+      <div class="stats small">
+        ${views !== undefined ? html`<div><b>${fmtCount(views)}</b>views</div>` : ""}
+        <div><b>${n?.people ?? 0}</b>people</div><div><b>${n?.dmsSent ?? 0}</b>DMs sent</div>
+        ${c.openingButton ? html`<div><b>${n?.taps ?? 0}</b>taps</div>` : ""}
+        ${c.emailMode !== "none" ? html`<div><b>${n?.emails ?? 0}</b>emails</div>` : ""}
+        <div><b>${n?.linksSent ?? 0}</b>links sent</div><div><b>${n?.failed ?? 0}</b>failed</div>
+      </div></div></div>`;
+  };
+
   return page(
     "OwnChats",
-    html`${healthBanner(ctx)}
+    html`${banner}
       <div class="row"><h1 style="flex:1">Campaigns</h1><a class="button" href="/dashboard/campaigns/new">New campaign</a></div>
+      ${items.length
+        ? html`<div class="card notice" id="needs-you"><h3>Needs you</h3><ul class="small" style="margin:0;padding-left:18px">${items.map((i) => html`<li>${i}</li>`)}</ul></div>`
+        : s.ig_username && on.length && !banner.value
+          ? html`<p class="ok small" id="needs-you">Nothing needs you right now.</p>`
+          : ""}
       ${s.ig_username ? html`<p class="muted">Connected to @${s.ig_username}. Last webhook: ${fmtTime(Number(s.last_webhook_at), tz) || "none yet"}. Last check for missed comments: ${fmtTime(Number(s.last_poll_at), tz) || "none yet"}.${s.time_zone ? "" : html` Times are in UTC: <a href="/dashboard/settings#time-zone">choose your time zone</a>.`}</p>` : ""}
       ${noPermission ? html`<p class="warn small">Instagram shares each post's views once your Meta login configuration includes <code>instagram_manage_insights</code>. <a href="/setup#step-3">Add it in setup</a>, then reconnect.</p>` : ""}
       ${campaigns.length === 0 ? html`<div class="card"><p>No campaigns yet. Create one: a keyword, the post it watches, and the link to send.</p></div>` : ""}
-      ${campaigns.map((c) => {
-        const n = counts.get(c.id);
-        const views = c.mediaId ? stats.get(c.mediaId)?.views : undefined;
-        // Instagram's cover image for the post: the Reel's first frame unless another cover was chosen. Kept fresh by the hourly post list.
-        const cover = c.mediaId ? stats.get(c.mediaId)?.thumbnailUrl : null;
-        return html`<div class="card row campaign">
-          <a class="cover" href="/dashboard/campaigns/${c.id}" aria-hidden="true" tabindex="-1">${cover ? html`<img src="${cover}" alt="" loading="lazy" onerror="this.remove()">` : ""}</a>
-          <div class="body">
-          <div class="row"><h3 style="flex:1 1 auto"><a href="/dashboard/campaigns/${c.id}">${c.name}</a></h3><span class="muted small">Started ${fmtDate(c.createdAt, tz)}</span>
-            <span class="pill ${c.active ? "sent" : "skipped"}">${c.active ? "on" : "off"}</span></div>
-          <p class="muted small">${c.anyComment ? "Any comment" : `Keyword: ${c.keywords.join(", ")}`} on ${postWords(c)}, ${EMAIL_MODE_LABEL[c.emailMode]}</p>
-          ${missed.get(c.id)?.length
-            ? html`<p class="small"><a class="warn" href="/dashboard/campaigns/${c.id}#to-check">${missed.get(c.id)!.length === 1 ? "1 comment" : `${missed.get(c.id)!.length} comments`} to check</a></p>`
-            : ""}
-          <div class="stats small">
-            ${views !== undefined ? html`<div><b>${fmtCount(views)}</b>views</div>` : ""}
-            <div><b>${n?.people ?? 0}</b>people</div><div><b>${n?.dmsSent ?? 0}</b>DMs sent</div>
-            ${c.openingButton ? html`<div><b>${n?.taps ?? 0}</b>taps</div>` : ""}
-            ${c.emailMode !== "none" ? html`<div><b>${n?.emails ?? 0}</b>emails</div>` : ""}
-            <div><b>${n?.linksSent ?? 0}</b>links sent</div><div><b>${n?.failed ?? 0}</b>failed</div>
-          </div></div></div>`;
-      })}`,
+      ${on.map(card)}
+      ${off.length ? html`<details${on.length ? "" : html` open`} style="margin-top:20px"><summary class="muted">${plural(off.length, "campaign")} off</summary>${off.map(card)}</details>` : ""}`,
     { nav: true },
   );
 }

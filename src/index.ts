@@ -15,6 +15,7 @@ import {
   leadsPage,
   newCampaignPage,
   saveCampaignForm,
+  switchCampaign,
   settingsAction,
   settingsPage,
 } from "./pages/dashboard";
@@ -43,11 +44,12 @@ async function adminRoutes(ctx: Ctx, request: Request, url: URL): Promise<Respon
 
   if (path === "/dashboard") return dashboardHome(ctx);
   if (path === "/dashboard/campaigns/new") return post ? saveCampaignForm(ctx, request, null) : newCampaignPage(ctx);
-  const campaign = path.match(/^\/dashboard\/campaigns\/(\d+)(\/delete|\/edit|\/answer)?$/);
+  const campaign = path.match(/^\/dashboard\/campaigns\/(\d+)(\/delete|\/edit|\/answer|\/switch)?$/);
   if (campaign) {
     const id = Number(campaign[1]);
     if (campaign[2] === "/delete") return post ? deleteCampaign(ctx, id) : null;
     if (campaign[2] === "/answer") return post ? answerMissedForm(ctx, request, id) : null;
+    if (campaign[2] === "/switch") return post ? switchCampaign(ctx, request, id) : null;
     if (campaign[2] === "/edit") return post ? saveCampaignForm(ctx, request, id) : editCampaignPage(ctx, id);
     return post ? saveCampaignForm(ctx, request, id) : campaignResultsPage(ctx, id, url);
   }

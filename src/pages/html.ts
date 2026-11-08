@@ -59,6 +59,9 @@ textarea{min-height:80px}label{display:block;margin:12px 0 4px;font-weight:600}l
 table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
 .pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:13px;border:1px solid var(--line)}
 .pill.sent,.pill.saved,.pill.received{color:var(--ok);border-color:var(--ok)}.pill.failed{color:var(--bad);border-color:var(--bad)}.pill.skipped,.pill.queued{color:var(--muted)}
+button.switch{display:inline-flex;align-items:center;gap:6px;padding:4px 10px 4px 5px;border-radius:999px;font-size:13px;line-height:1.3;background:transparent;color:var(--muted);border-color:var(--muted)}
+button.switch::before{content:"";width:14px;height:14px;border-radius:50%;background:var(--muted)}
+button.switch.on{flex-direction:row-reverse;padding:4px 5px 4px 10px;color:var(--ok);border-color:var(--ok)}button.switch.on::before{background:var(--ok)}
 .errors{border-color:var(--bad)}.notice{border-color:var(--warn)}
 .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
 td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}table.figures{max-width:480px}
