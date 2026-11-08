@@ -2,6 +2,7 @@ import type { Ctx } from "./context";
 import { POST_DAYS, refreshAccountStats, refreshMediaStats, refreshPostList } from "./insights";
 import { handleComment, pendingCommentIds, QUERIES_PER_COMMENT } from "./pipeline/comments";
 import { listCampaigns } from "./campaigns";
+import { deliverDue, KEEP_DELIVERIES } from "./leadwebhook";
 import { attachNextPosts } from "./nextpost";
 import { pollComments } from "./pipeline/poll";
 import { saveSettings } from "./settings";
@@ -15,10 +16,12 @@ const KEEP_COMMENTS = 30 * DAY;
 
 /**
  * Runs every minute: attach campaigns waiting for the next post, retry what waited,
- * poll for missed comments, read Instagram's numbers that are due, and once a day, upkeep.
+ * poll for missed comments, read Instagram's numbers that are due, send what the
+ * lead webhook has waiting, and once a day, upkeep.
  */
 export async function runCron(ctx: Ctx): Promise<void> {
-  if (!ctx.meta) return;
+  // Leads already saved still go to the webhook while Instagram is disconnected.
+  if (!ctx.meta) return deliverDue(ctx);
   // First, so the comments it hands back are answered in this same run.
   await attachNextPosts(ctx);
   const pending = await pendingCommentIds(ctx);
@@ -33,6 +36,7 @@ export async function runCron(ctx: Ctx): Promise<void> {
   await refreshPostList(ctx);
   await refreshMediaStats(ctx);
   await refreshAccountStats(ctx);
+  await deliverDue(ctx);
   if (ctx.now() - Number(ctx.settings.daily_at ?? 0) > DAY) {
     await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { daily_at: String(ctx.now()) });
     await checkToken(ctx);
@@ -47,6 +51,7 @@ export async function cleanup(ctx: Ctx): Promise<void> {
     ctx.db.prepare("DELETE FROM comments WHERE received_at < ? AND status IN ('done', 'skipped', 'failed')").bind(now - KEEP_COMMENTS),
     ctx.db.prepare("DELETE FROM inbound WHERE received_at < ?").bind(now - KEEP_COMMENTS),
     ctx.db.prepare("DELETE FROM login_attempts WHERE at < ?").bind(now - DAY),
+    ctx.db.prepare("DELETE FROM deliveries WHERE status <> 'pending' AND updated_at < ?").bind(now - KEEP_DELIVERIES),
     ctx.db
       .prepare("DELETE FROM media_stats WHERE media_id NOT IN (SELECT media_id FROM campaigns WHERE media_id IS NOT NULL) AND (posted_at IS NULL OR posted_at < ?)")
       .bind(now - POST_DAYS * DAY),

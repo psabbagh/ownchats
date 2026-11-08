@@ -47,7 +47,7 @@ describe("follow check", () => {
     w.meta.followers.add(FAN.id);
     await w.tap(FAN.id, follow(id));
     expect(toFan()).toHaveLength(2);
-    expect(toFan()[1]).toMatchObject({ kind: "buttons", buttons: [{ type: "web_url", url: "https://example.com/library" }] });
+    expect(await w.unwrap(toFan()[1]!)).toMatchObject({ kind: "buttons", buttons: [{ type: "web_url", url: "https://example.com/library" }] });
     expect(await conversation()).toMatchObject({ state: "done", follows: 1, follow_asked: 1 });
     expect(await followLog()).toEqual(["received: not following", "received: follows"]);
   });

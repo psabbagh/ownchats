@@ -1,7 +1,7 @@
 import { decryptText, encryptText } from "./crypto";
 
 /** Settings stored encrypted with a key derived from ADMIN_PASSWORD. */
-const SECRET_KEYS = new Set(["meta_app_secret", "access_token", "export_key"]);
+const SECRET_KEYS = new Set(["meta_app_secret", "access_token", "export_key", "lead_webhook_secret"]);
 
 export type SettingKey =
   | "base_url"
@@ -23,6 +23,11 @@ export type SettingKey =
   | "last_webhook_problem"
   | "published_confirmed_at"
   | "contact"
+  | "sender_name"
+  | "sender_address"
+  | "lead_webhook_url"
+  | "lead_webhook_secret"
+  | "click_tracking"
   | "time_zone"
   | "api_token_hash"
   | "export_key"

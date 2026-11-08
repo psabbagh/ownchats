@@ -1,5 +1,6 @@
 import { handleApi } from "./api";
 import { handleLogin, handleLogout, isAdmin, loginPage, noPasswordPage, sameOrigin } from "./auth";
+import { followLink } from "./clicks";
 import { buildCtx, type AppOptions, type Ctx } from "./context";
 import { runCron } from "./cron";
 import type { Env } from "./env";
@@ -57,8 +58,8 @@ async function adminRoutes(ctx: Ctx, request: Request, url: URL): Promise<Respon
   if (path === "/dashboard/leads.csv") return leadsCsvDownload(ctx);
   if (path === "/dashboard/people/delete" && post) return deletePersonForm(ctx, request);
   if (path === "/dashboard/activity") return activityPage(ctx, url);
-  if (path === "/dashboard/settings") return settingsPage(ctx);
-  const setting = path.match(/^\/dashboard\/settings\/(export|api-token|contact|time-zone)$/);
+  if (path === "/dashboard/settings") return settingsPage(ctx, { testId: url.searchParams.get("test") });
+  const setting = path.match(/^\/dashboard\/settings\/(export|api-token|contact|time-zone|webhook|test-lead|clicks)$/);
   if (setting && post) return settingsAction(ctx, request, setting[1]!);
   return null;
 }
@@ -80,6 +81,8 @@ export function createApp(options: AppOptions): ExportedHandler<Env> {
         }
         return new Response("Method not allowed", { status: 405 });
       }
+      const go = path.match(/^\/go\/([A-Za-z0-9_-]{8,64})$/);
+      if (go) return followLink(ctx, request, go[1]!);
       if (path === "/privacy") return privacyPage(ctx);
       if (path === "/terms") return termsPage(ctx);
       if (path === "/data-deletion") return dataDeletionPage(ctx);

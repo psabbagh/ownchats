@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { OPEN_PAYLOAD_PREFIX } from "../src/campaigns";
 import { MetaError } from "../src/meta/client";
 import { DAY, HOUR, MINUTE, PRIVATE_REPLIES_PER_HOUR } from "../src/time";
-import { FAN, FAN2, OTHER_POST, OWNER, REEL, setupWorld } from "./helpers";
+import { EMAIL_LINES, FAN, FAN2, OTHER_POST, OWNER, REEL, setupWorld } from "./helpers";
 
 type World = Awaited<ReturnType<typeof setupWorld>>;
 let w: World;
@@ -122,7 +122,7 @@ describe("follow-ups only within 24 hours of the person's reply", () => {
     await w.sendDm(FAN.id, "sure! it's Invented.Fan@Example.com.");
     const toFan = w.meta.sentTo(FAN.id);
     expect(toFan.map((s) => (s.message as { kind: string }).kind)).toEqual(["text", "buttons"]);
-    expect(toFan[1]!.message).toMatchObject({ buttons: [{ type: "web_url", url: "https://example.com/library" }] });
+    expect(await w.unwrap(toFan[1]!.message)).toMatchObject({ buttons: [{ type: "web_url", url: "https://example.com/library" }] });
     const lead = await env.DB.prepare("SELECT * FROM leads").first<{ email: string; consent_text: string; consented_at: number; username: string }>();
     expect(lead).toMatchObject({ email: "invented.fan@example.com", username: FAN.username, consented_at: w.clock.now() });
     expect(lead!.consent_text).toContain("newsletter");
@@ -350,7 +350,7 @@ describe("email modes", () => {
     await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
     const [link] = w.meta.sentTo(FAN.id);
     expect(link!.message).toMatchObject({ kind: "buttons", text: expect.stringContaining("Reply with your email") });
-    expect(link!.message).toMatchObject({ buttons: [{ type: "web_url", url: "https://example.com/library" }] });
+    expect(await w.unwrap(link!.message)).toMatchObject({ buttons: [{ type: "web_url", url: "https://example.com/library" }] });
     await w.sendDm(FAN.id, "ok here: fan@example.com");
     expect(await env.DB.prepare("SELECT email, consent_text FROM leads").first()).toEqual({ email: "fan@example.com", consent_text: "Newsletter from test_creator" });
     expect(w.meta.sentTo(FAN.id)[1]!.message).toEqual({ kind: "text", text: "Thanks, you're on the list!" });
@@ -373,9 +373,9 @@ describe("email modes", () => {
     await w.campaign({ emailMode: "optional", openingButton: "", links: [{ label: "", url: "https://example.com/library" }] });
     await w.sendComment(w.comment("agents", FAN));
     const dm = w.meta.sent.find((s) => s.kind === "private_reply")!;
-    expect(dm.message).toEqual({
+    expect(await w.unwrap(dm.message)).toEqual({
       kind: "text",
-      text: `Here you go:\n\n${"Want more like this? Reply with your email and I'll add you to my newsletter. You can unsubscribe anytime."}\nhttps://example.com/library`,
+      text: `Here you go:\n\n${EMAIL_LINES.optionalPrompt}\nhttps://example.com/library`,
     });
   });
 
@@ -385,7 +385,7 @@ describe("email modes", () => {
     await w.sendComment(w.comment("agents", FAN));
     await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${a}`);
     await w.sendDm(FAN.id, "PROMPTS please");
-    expect(w.meta.sentTo(FAN.id).at(-1)!.message).toMatchObject({ buttons: [{ url: "https://example.com/prompts" }] });
+    expect(await w.unwrap(w.meta.sentTo(FAN.id).at(-1)!.message)).toMatchObject({ buttons: [{ url: "https://example.com/prompts" }] });
   });
 
   it("email first: the thank-you text goes with the link, and the consent defaults to the question", async () => {
@@ -426,7 +426,7 @@ describe("editable texts", () => {
     });
     await w.sendComment(w.comment("agents", FAN));
     await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
-    expect(w.meta.sentTo(FAN.id)[0]!.message).toMatchObject({
+    expect(await w.unwrap(w.meta.sentTo(FAN.id)[0]!.message)).toMatchObject({
       kind: "buttons",
       buttons: [
         { title: "Library", url: "https://example.com/1" },
@@ -435,7 +435,7 @@ describe("editable texts", () => {
     });
     const plain = await w.campaign({ name: "Plain", keywords: ["PLAIN"], openingButton: "", links: [{ label: "", url: "https://example.com/a" }, { label: "", url: "https://example.com/b" }] });
     await w.sendComment(w.comment("plain", FAN2));
-    expect(w.meta.sent.find((s) => s.kind === "private_reply" && s.to !== w.meta.sent[0]!.to)!.message).toEqual({
+    expect(await w.unwrap(w.meta.sent.find((s) => s.kind === "private_reply" && s.to !== w.meta.sent[0]!.to)!.message)).toEqual({
       kind: "text",
       text: "Here you go:\nhttps://example.com/a\nhttps://example.com/b",
     });

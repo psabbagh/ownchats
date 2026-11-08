@@ -1,10 +1,10 @@
 import { createExecutionContext, createScheduledController, waitOnExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { DEFAULTS, saveCampaign, type CampaignInput } from "../src/campaigns";
+import { DEFAULTS, emailLines, saveCampaign, senderOf, type CampaignInput } from "../src/campaigns";
 import { buildCtx } from "../src/context";
 import { hmacSha256Hex } from "../src/crypto";
 import { createApp } from "../src/index";
-import type { IgComment } from "../src/meta/client";
+import type { IgComment, OutMessage } from "../src/meta/client";
 import { saveSettings } from "../src/settings";
 import { HOUR } from "../src/time";
 import { FakeMeta } from "./fake-meta";
@@ -14,6 +14,7 @@ export const OWNER = { id: "17841400000000001", username: "test_creator" };
 export const APP_SECRET = "test-app-secret-not-real";
 export const VERIFY_TOKEN = "test-verify-token";
 export const BASE = "https://ownchats.example.workers.dev";
+export const WEBHOOK_SECRET = "test-webhook-secret-not-real-0123456789";
 export const REEL = "18000000000000001";
 export const OTHER_POST = "18000000000000002";
 
@@ -25,13 +26,47 @@ export class Clock {
   }
 }
 
-const TABLES = ["settings", "campaigns", "comments", "conversations", "leads", "inbound", "activity", "login_attempts", "media_stats"];
+const TABLES = ["settings", "campaigns", "comments", "conversations", "leads", "inbound", "activity", "login_attempts", "media_stats", "deliveries", "tracked_links"];
+
+/** The default email lines for the test account, which has no sender name set. */
+export const EMAIL_LINES = emailLines(senderOf({ ig_username: OWNER.username, base_url: BASE }));
+
+export interface Received {
+  url: string;
+  headers: Record<string, string>;
+  body: string;
+  at: number;
+}
+
+/**
+ * Stands in for the owner's webhook receiver: records every request OwnChats
+ * makes and answers with the replies queued in `replies` (200 when none is).
+ */
+export class FakeReceiver {
+  received: Received[] = [];
+  replies: Array<number | "timeout" | "offline"> = [];
+  constructor(private readonly now: () => number) {}
+  fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const req = new Request(input, init);
+    const body = await req.text();
+    this.received.push({ url: req.url, headers: Object.fromEntries(req.headers), body, at: this.now() });
+    const next = this.replies.shift() ?? 200;
+    if (next === "timeout") throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    if (next === "offline") throw new TypeError("Network connection lost.");
+    return new Response(next >= 200 && next < 300 ? "ok" : `refused with ${next}`, { status: next });
+  };
+  /** The parsed bodies, in order. */
+  bodies(): Array<Record<string, any>> {
+    return this.received.map((r) => JSON.parse(r.body) as Record<string, any>);
+  }
+}
 
 export async function setupWorld(opts: { connected?: boolean } = {}) {
   await env.DB.batch(TABLES.map((t) => env.DB.prepare(`DELETE FROM ${t}`)));
   const clock = new Clock();
   const meta = new FakeMeta(clock.now);
   meta.account = OWNER;
+  const receiver = new FakeReceiver(clock.now);
   const base = { meta_app_id: "1000000000000001", meta_app_secret: APP_SECRET, meta_config_id: "2000000000000001", verify_token: VERIFY_TOKEN, base_url: BASE };
   await saveSettings(
     env.DB,
@@ -41,13 +76,14 @@ export async function setupWorld(opts: { connected?: boolean } = {}) {
   // Public reply picks are random in production; here they follow a fixed sequence.
   let r = 0;
   const random = () => [0.1, 0.6, 0.3, 0.9, 0.5][r++ % 5]!;
-  const options = { meta: (_e: unknown, s: { access_token?: string }) => (s.access_token ? meta : null), now: clock.now, random };
+  const options = { meta: (_e: unknown, s: { access_token?: string }) => (s.access_token ? meta : null), now: clock.now, random, fetch: receiver.fetch as typeof fetch };
   const app = createApp(options);
   let seq = 0;
 
   const world = {
     clock,
     meta,
+    receiver,
     app,
     ctx: () => buildCtx(env, options),
 
@@ -64,14 +100,16 @@ export async function setupWorld(opts: { connected?: boolean } = {}) {
         openingText: DEFAULTS.openingText,
         openingButton: DEFAULTS.openingButton,
         emailMode: "none",
-        emailPrompt: DEFAULTS.emailPrompt,
+        emailPrompt: EMAIL_LINES.emailPrompt,
         emailReask: DEFAULTS.emailReask,
         emailThanks: DEFAULTS.emailThanks,
-        optionalPrompt: DEFAULTS.optionalPrompt,
+        optionalPrompt: EMAIL_LINES.optionalPrompt,
         optionalThanks: DEFAULTS.optionalThanks,
         consentText: "",
+        emailTag: "",
         linkText: DEFAULTS.linkText,
         links: [{ label: DEFAULTS.linkLabel, url: "https://example.com/library" }],
+        linkTitle: "",
         followCheck: false,
         followPrompt: DEFAULTS.followPrompt,
         followReask: DEFAULTS.followReask,
@@ -151,6 +189,32 @@ export async function setupWorld(opts: { connected?: boolean } = {}) {
           { id: OWNER.id, time: at, messaging: [{ sender: { id: senderId }, recipient: { id: OWNER.id }, timestamp: at, postback: { mid: `mid.pb.${seq}`, title: "Send me the link", payload } }] },
         ],
       });
+    },
+
+    /** Where a /go/ link leads, read from the database without counting a click; any other URL as it is. */
+    async realUrl(url: string): Promise<string> {
+      const m = url.match(/^https:\/\/ownchats\.example\.workers\.dev\/go\/([A-Za-z0-9_-]+)$/);
+      if (!m) return url;
+      const row = await env.DB.prepare("SELECT url FROM tracked_links WHERE id = ?").bind(m[1]).first<{ url: string }>();
+      return row?.url ?? `(unknown link ${m[1]})`;
+    },
+
+    /** A sent message with each /go/ link replaced by where it leads. */
+    async unwrap(message: OutMessage | string): Promise<OutMessage | string> {
+      if (typeof message === "string") return message;
+      if (message.kind === "buttons") {
+        const buttons = [];
+        for (const b of message.buttons) buttons.push(b.type === "web_url" ? { ...b, url: await world.realUrl(b.url) } : b);
+        return { ...message, buttons };
+      }
+      const lines = [];
+      for (const line of message.text.split("\n")) lines.push(await world.realUrl(line));
+      return { kind: "text", text: lines.join("\n") };
+    },
+
+    /** Sets up the lead webhook, as the owner would in Settings. */
+    async lead_webhook(url = "https://hooks.example.net/ownchats", secret = WEBHOOK_SECRET): Promise<void> {
+      await saveSettings(env.DB, env.ADMIN_PASSWORD, { lead_webhook_url: url, lead_webhook_secret: secret });
     },
 
     async cron(): Promise<void> {

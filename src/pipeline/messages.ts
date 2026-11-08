@@ -15,7 +15,9 @@ import {
   type ConversationState,
   type Person,
 } from "../campaigns";
+import { trackLinks } from "../clicks";
 import { log, logStatement, type Ctx } from "../context";
+import { deliverNow, queueLeadCreated } from "../leadwebhook";
 import { extractEmail } from "../match";
 import { explainError, sendWithFallback, type OutMessage } from "../meta/client";
 import { DAY, MESSAGING_WINDOW } from "../time";
@@ -156,18 +158,29 @@ async function checkFollow(ctx: Ctx, conversation: Conversation, campaign: Campa
   return status.follows;
 }
 
-async function saveLead(ctx: Ctx, conversation: Conversation, campaign: Campaign, email: string): Promise<void> {
+/** Saves the email with its consent wording, and queues it for the lead webhook. Returns the delivery id, if any. */
+async function saveLead(ctx: Ctx, conversation: Conversation, campaign: Campaign, email: string): Promise<string | null> {
   const who = { campaignId: campaign.id, igUserId: conversation.ig_user_id, username: conversation.username };
-  await ctx.db.batch([
+  const consent = fill(consentFor(campaign), person(conversation));
+  const now = ctx.now();
+  const [saved] = await ctx.db.batch<{ id: number }>([
     ctx.db
       .prepare(
         `INSERT INTO leads (campaign_id, ig_user_id, username, email, consent_text, consented_at) VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT (campaign_id, ig_user_id) DO UPDATE SET email = excluded.email, username = excluded.username,
-           consent_text = excluded.consent_text, consented_at = excluded.consented_at`,
+           consent_text = excluded.consent_text, consented_at = excluded.consented_at RETURNING id`,
       )
-      .bind(campaign.id, conversation.ig_user_id, conversation.username, email, fill(consentFor(campaign), person(conversation)), ctx.now()),
+      .bind(campaign.id, conversation.ig_user_id, conversation.username, email, consent, now),
     logStatement(ctx, { kind: "email", outcome: "saved", ...who }),
   ]);
+  const leadId = saved?.results[0]?.id;
+  if (!leadId) return null;
+  // The name only when Meta shared one: an empty name is "Meta had none", never the username.
+  return queueLeadCreated(
+    ctx,
+    { id: leadId, email, name: conversation.name || null, createdAt: now, campaign, consentText: consent },
+    { conversationId: conversation.id, igUserId: conversation.ig_user_id, username: conversation.username },
+  );
 }
 
 /** Email first: save a valid email and send the link; otherwise re-ask once, then send the link anyway. */
@@ -175,8 +188,10 @@ async function emailStep(ctx: Ctx, conversation: Conversation, campaign: Campaig
   const p = person(conversation);
   const email = extractEmail(text);
   if (email) {
-    await saveLead(ctx, conversation, campaign, email);
-    return advance(ctx, conversation, campaign, { message: linkAfterEmail(campaign, p), state: "done" }, "after the email");
+    const delivery = await saveLead(ctx, conversation, campaign, email);
+    await advance(ctx, conversation, campaign, { message: linkAfterEmail(campaign, p), state: "done" }, "after the email");
+    // After the DM, so the person's link never waits on the webhook.
+    return deliverNow(ctx, delivery);
   }
   if (conversation.state === "awaiting_email") {
     return advance(ctx, conversation, campaign, { message: { kind: "text", text: fill(campaign.emailReask, p) }, state: "reasked" }, "re-ask");
@@ -187,12 +202,13 @@ async function emailStep(ctx: Ctx, conversation: Conversation, campaign: Campaig
 
 /** Link plus optional email: save it, and thank them if the campaign has a thank-you. */
 async function optionalEmail(ctx: Ctx, conversation: Conversation, campaign: Campaign, email: string): Promise<void> {
-  await saveLead(ctx, conversation, campaign, email);
+  const delivery = await saveLead(ctx, conversation, campaign, email);
   if (campaign.optionalThanks) {
     await send(ctx, conversation, campaign, { kind: "text", text: fill(campaign.optionalThanks, person(conversation)) }, "done", "thank-you", "message");
   } else {
     await ctx.db.prepare("UPDATE conversations SET state = 'done', updated_at = ? WHERE id = ?").bind(ctx.now(), conversation.id).run();
   }
+  await deliverNow(ctx, delivery);
 }
 
 async function dmKeyword(ctx: Ctx, campaign: Campaign, ev: InboundEvent): Promise<void> {
@@ -307,8 +323,10 @@ async function send(
     await log(ctx, { kind: "message", outcome: "failed", reason: "too many requests in one run", ...who });
     return false;
   }
+  // The campaign's links go out as /go/ links, so a click can be counted.
+  const out = await trackLinks(ctx, conversation.id, campaign, message);
   try {
-    await sendWithFallback((m) => ctx.meta!.sendMessage(conversation.ig_user_id, m), message);
+    await sendWithFallback((m) => ctx.meta!.sendMessage(conversation.ig_user_id, m), out);
   } catch (err) {
     const { reason: why, detail } = explainError(err);
     await log(ctx, { kind: "message", outcome: "failed", reason: why, ...who, detail });
