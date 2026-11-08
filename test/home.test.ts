@@ -212,3 +212,16 @@ describe("the order of the list", () => {
     expect(await home()).not.toContain("<details");
   });
 });
+
+describe("which platform this covers", () => {
+  it("says Instagram on every signed-in page", async () => {
+    for (const path of ["/dashboard", "/dashboard/leads", "/dashboard/activity", "/dashboard/settings"]) {
+      const page = await (await w.fetch(path, { headers: { cookie } })).text();
+      expect(page, path).toContain("OwnChats <span>for Instagram</span>");
+    }
+  });
+
+  it("names Instagram on the connected line", async () => {
+    expect(await home()).toMatch(/Connected to Instagram as @\w+\./);
+  });
+});
