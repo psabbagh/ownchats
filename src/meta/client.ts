@@ -120,6 +120,18 @@ export function explainError(err: unknown): { reason: string; detail: string } {
   return { reason: "error", detail: message };
 }
 
+/**
+ * The same for a public reply. There the object Meta can't reach is the comment, so subcode 33
+ * says nothing about the connection. A public reply is only tried once its DM went out.
+ */
+export function explainReplyError(err: unknown): { reason: string; detail: string } {
+  const explained = explainError(err);
+  if (!(err instanceof MetaError)) return explained;
+  if (err.code === 100 && err.subcode === 33) return { ...explained, reason: "this comment can't be replied to, it may be hidden or deleted (the DM still went out)" };
+  if (err.code === 20) return { ...explained, reason: "Instagram blocked this public reply, possibly as spam (the DM still went out)" };
+  return explained;
+}
+
 // Codes from Meta's Messenger Platform error list and reports from other tools.
 function knownReason(err: MetaError): string | null {
   const m = err.message.toLowerCase();

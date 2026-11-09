@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { getCampaign } from "../src/campaigns";
-import type { Media } from "../src/meta/client";
+import { MetaError, type Media } from "../src/meta/client";
 import { saveSettings } from "../src/settings";
 import { DAY, HOUR, MINUTE } from "../src/time";
 import { BASE, FAN, FAN2, OTHER_POST, REEL, setupWorld } from "./helpers";
@@ -223,5 +223,60 @@ describe("which platform this covers", () => {
 
   it("names Instagram on the connected line", async () => {
     expect(await home()).toMatch(/Connected to Instagram as @\w+\./);
+  });
+});
+
+describe("a public reply Instagram refuses", () => {
+  const COMMENT_GONE = () => new MetaError("Unsupported post request. Object with ID '1' does not exist", 400, 100, 33);
+  const BLOCKED = () => new MetaError("This API call does not support the requested response format", 400, 20, 1772107);
+
+  const refuse = async (error: MetaError) => {
+    const id = await w.campaign();
+    w.meta.failNext("replyToComment", error);
+    await w.sendComment(w.comment("agents", FAN));
+    return { id, entry: (await w.activity()).at(-1)! };
+  };
+
+  it("still leaves the DM sent", async () => {
+    await refuse(COMMENT_GONE());
+    expect(w.meta.sent.map((s) => s.kind)).toEqual(["private_reply"]);
+  });
+
+  it("blames the comment, and doesn't send the owner to reconnect", async () => {
+    const { entry } = await refuse(COMMENT_GONE());
+    expect(entry).toMatchObject({ kind: "public_reply", outcome: "failed" });
+    expect(entry.reason).toContain("may be hidden or deleted");
+    expect(entry.reason).not.toContain("/setup");
+  });
+
+  it("says Instagram blocked it, without claiming to know why", async () => {
+    const { entry } = await refuse(BLOCKED());
+    expect(entry.reason).toBe("Instagram blocked this public reply, possibly as spam (the DM still went out)");
+  });
+
+  it("keeps the usual words for any other error", async () => {
+    const { entry } = await refuse(new MetaError("Error validating access token", 401, 190));
+    expect(entry).toMatchObject({ kind: "public_reply", reason: expect.stringContaining("reconnect Instagram") });
+  });
+
+  it("doesn't blame the comment for other invalid requests", async () => {
+    const { entry } = await refuse(new MetaError("Invalid parameter", 400, 100));
+    expect(entry.reason).toBe("Meta refused");
+  });
+
+  it("still names the connection when the DM gets that same error", async () => {
+    await w.campaign();
+    w.meta.failNext("sendPrivateReply", COMMENT_GONE());
+    await w.sendComment(w.comment("agents", FAN));
+    expect((await w.activity()).at(-1)).toMatchObject({ kind: "private_reply", reason: expect.stringContaining("not assigned to this login") });
+  });
+
+  it("isn't listed as needing the owner, but stays in the log and on its campaign", async () => {
+    const { id } = await refuse(COMMENT_GONE());
+    expect(await home()).toContain("Nothing needs you right now.");
+    const logged = await (await w.fetch("/dashboard/activity?show=failed", { headers: { cookie } })).text();
+    expect(logged).toContain("may be hidden or deleted");
+    const campaign = await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie } })).text();
+    expect(campaign).toContain("Public reply: this comment");
   });
 });
