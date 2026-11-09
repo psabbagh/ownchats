@@ -135,6 +135,8 @@ What a comment's status and reason mean:
 | skipped: person deleted | The marker left when someone's data was deleted. |
 | queued | Waiting for the hourly limit or the next run. |
 | failed: Meta refused a private reply | Already answered once (by OwnChats or another tool), or too old. |
+| failed: this comment can't be replied to | Public reply only. The comment was probably hidden or deleted. The DM still went out, so nothing is needed. |
+| failed: Instagram blocked this public reply | Public reply only, possibly Instagram's spam filter. The DM still went out. If it keeps happening with different people, Instagram may be limiting the account. |
 
 Write to the database only for the fix below, and only with the person's OK.
 

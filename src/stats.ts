@@ -47,9 +47,12 @@ export async function campaignCounts(ctx: Ctx): Promise<Map<number, CampaignCoun
   return out;
 }
 
-/** How many things failed since this time, from the log. */
+/**
+ * How many things failed since this time and need the owner, from the log. A public reply is left
+ * out: it is only tried once its DM went out, so the person already has what they asked for.
+ */
 export async function failuresSince(ctx: Ctx, since: number): Promise<number> {
-  const row = await ctx.db.prepare("SELECT COUNT(*) AS n FROM activity WHERE outcome = 'failed' AND at > ?").bind(since).first<{ n: number }>();
+  const row = await ctx.db.prepare("SELECT COUNT(*) AS n FROM activity WHERE outcome = 'failed' AND kind != 'public_reply' AND at > ?").bind(since).first<{ n: number }>();
   return row?.n ?? 0;
 }
 

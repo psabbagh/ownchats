@@ -1,7 +1,7 @@
 import { fill, firstMessage, listCampaigns, matchComment, pickPublicReply, plainFirstMessage, type Campaign, type ConversationState } from "../campaigns";
 import { trackLinks } from "../clicks";
 import { logStatement, type ActivityEntry, type Ctx } from "../context";
-import { explainError, isTemplateRejection, MetaError, type IgComment } from "../meta/client";
+import { explainError, explainReplyError, isTemplateRejection, MetaError, type IgComment } from "../meta/client";
 import { HOUR, MINUTE, PRIVATE_REPLIES_PER_HOUR, PRIVATE_REPLY_WINDOW } from "../time";
 import { claimConversation, getConversation, releaseClaim } from "./conversations";
 
@@ -291,7 +291,7 @@ export async function handleComment(ctx: Ctx, id: string, campaigns?: Campaign[]
       await ctx.meta.replyToComment(row.id, variant);
       entry = { kind: "public_reply", outcome: "sent", campaignId: cid, ...who, detail: variant };
     } catch (err) {
-      const { reason, detail } = explainError(err);
+      const { reason, detail } = explainReplyError(err);
       entry = { kind: "public_reply", outcome: "failed", reason, campaignId: cid, ...who, detail };
     }
     extra.push(logStatement(ctx, entry));
