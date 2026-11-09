@@ -372,3 +372,42 @@ describe("the Settings forms say when they've saved", () => {
     expect(page).toContain('history.replaceState(null,"",location.pathname+location.hash)');
   });
 });
+
+describe("the flows a new campaign starts from", () => {
+  const start = async (query: string) => {
+    const cookie = await w.signIn();
+    return (await w.fetch(`/dashboard/campaigns/new${query}`, { headers: { cookie } })).text();
+  };
+
+  it.each(["", "?flow=link", "?flow=nonsense"])("%s: the link in the first DM, with no button or email ask", async (query) => {
+    const page = await start(query);
+    expect(page).toContain("<b>DM with the link</b>");
+    expect(page).toMatch(/name="opening_button" type="text" value=""/);
+    expect(page).toMatch(/name="email_mode" value="none" checked/);
+    expect(page).not.toMatch(/name="email_mode" value="(optional|first)" checked/);
+  });
+
+  it("a button, then the link with an email ask that stays optional", async () => {
+    const page = await start("?flow=email");
+    expect(page).toContain("<b>DM with a button, then ask for their email</b>");
+    expect(page).toMatch(/name="opening_button" type="text" value="Send me the link"/);
+    expect(page).toMatch(/name="email_mode" value="optional" checked/);
+    expect(page).not.toMatch(/name="email_mode" value="first" checked/);
+    // The line people answer says who is asking, that they can unsubscribe, and where the address is.
+    expect(page).toContain(`unsubscribe anytime. Who I am and my address: ${BASE}/privacy`);
+  });
+
+  it("offers the choice only on a new, untouched form", async () => {
+    const cookie = await w.signIn();
+    const bad = await w.fetch("/dashboard/campaigns/new", form(cookie, { name: "", keywords: "", media_id: "all" }));
+    expect(await bad.text()).not.toContain("Start from");
+
+    await w.fetch(
+      "/dashboard/campaigns/new",
+      form(cookie, { name: "Kept", keywords: "KEPT", media_id: "all", link_text: "Here:", link_url_0: "https://example.com/kept", link_label_0: "Open", active: "on" }),
+    );
+    const { id } = (await env.DB.prepare("SELECT id FROM campaigns WHERE name = 'Kept'").first<{ id: number }>())!;
+    const edit = await (await w.fetch(`/dashboard/campaigns/${id}/edit`, { headers: { cookie } })).text();
+    expect(edit).not.toContain("Start from");
+  });
+});
