@@ -8,12 +8,12 @@ I built this for my own Instagram account and I'm sharing it as-is. Take it, cha
 
 ## What it does
 
-- **Keyword, then link.** Someone comments AGENTS on your Reel. OwnChats replies under the comment ("Sent! Check your DMs") and sends a DM with a "Send me the link" button. The tap sends the link.
+- **Keyword, then link.** Someone comments AGENTS on your Reel. OwnChats replies under the comment ("Sent! Check your DMs") and sends a DM with the link, or with a "Send me the link" button whose tap sends it.
 - **Email, three ways, per campaign:**
   - **Link only.**
   - **Link plus optional email:** the link comes right away with "Reply with your email if you want more". An email reply is saved; anything else is left alone.
   - **Email first:** it asks for their email and says what they'll get. A valid email is saved and the link goes out. Anything else gets one re-ask, then the link goes out anyway, so nobody leaves empty-handed.
-- **Follow check, per campaign.** After the tap, OwnChats asks Instagram whether the person follows you. If not, they get "Follow me first" with an "I'm following" button, then one more ask, then the link either way, so nobody who commented leaves empty-handed. If Instagram doesn't answer, the link goes out. Off by default.
+- **Follow check, per campaign.** After the tap, OwnChats asks Instagram whether the person follows you. If not, they get "Follow me first" with an "I'm following" button, then one more ask, then the link either way, so nobody who commented leaves empty-handed. If Instagram doesn't answer, the link goes out. Off by default and not recommended: [Meta's spam policy](https://transparency.meta.com/policies/community-standards/spam/) doesn't allow requiring people to follow you to get access to specific content, so it can put your account at risk.
 - **Every word is yours.** Each campaign's public replies, DMs, button labels, links (up to three) and consent wording are editable, with defaults that work as they are. Write `{name}` to greet people by name.
 - **DM keyword.** Someone sends AGENTS by DM (for example, their comment is older than a week) and gets the same flow. Off by default; switch it on per campaign.
 - **One post, the next post, or all posts.** Arm a campaign on one Reel, or on the next post you publish: set it up before you post, and within a minute of posting it attaches itself to the new Reel whose caption says "Comment" and your keyword, and answers the comments that came in first. Or arm it on all your posts. A campaign on one post can also answer every comment, keyword or not.
@@ -75,7 +75,7 @@ At the end, help me run the test with my second account.
 
 ## Using it
 
-- **Campaigns:** in the dashboard, New campaign. Pick the keyword (add extra spellings with commas), the post (one post, the next post you publish, or all posts), and the link. Then adjust any of the wording if you like: the public replies, the first DM and its button, the email mode and its messages.
+- **Campaigns:** in the dashboard, New campaign. Start from a DM with the link, or a DM with a button whose tap brings the link and asks for their email. Pick the keyword (add extra spellings with commas), the post (one post, the next post you publish, or all posts), and the link. Then adjust any of the wording if you like: the public replies, the first DM and its button, the email mode and its messages.
 - **Only one tool per Reel.** Instagram allows one private reply per comment. If ManyChat or another tool also answers a Reel, the second one fails. Move a Reel to OwnChats by turning it off in the other tool first. While the other tool's Instagram channel stays connected, it can keep the DM threads to itself, so button taps and DMs may not reach OwnChats; the [guide](docs/guide-for-ai-agents.md#moving-from-manychat-or-another-tool) explains how to switch it off.
 - **Leads:** the Leads page lists every email with the wording the person agreed to and when. Download a CSV there.
 - **The email question's wording:** the default lines say what people get, name you (Settings, "You, on the privacy page": your name and a mailing address, which a PO box can be), link to your privacy page, which shows them, and say people can unsubscribe. That follows Canada's anti-spam law (CASL). **Check the rules where you and your audience live, and adjust the wording to fit**: the EU's GDPR, the UK's PECR, the US CAN-SPAM Act and others differ.

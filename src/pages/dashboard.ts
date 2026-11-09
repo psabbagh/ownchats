@@ -18,7 +18,20 @@ import {
 
 export const EMAIL_MODE_LABEL: Record<EmailMode, string> = { none: "link only", optional: "link plus optional email", first: "email first" };
 
-function newCampaignDefaults(settings: Settings): CampaignInput {
+/** The flows a new campaign can start from. Everything they set stays editable in the form. */
+type StartFlow = "link" | "email";
+const START_FLOWS: Record<StartFlow, { openingButton: string; emailMode: EmailMode; label: string; hint: string }> = {
+  link: { openingButton: "", emailMode: "none", label: "DM with the link", hint: "The first DM carries the link. No email ask." },
+  // The tap brings the link with the email ask under it, so nobody has to give an email to get it.
+  email: {
+    openingButton: DEFAULTS.openingButton,
+    emailMode: "optional",
+    label: "DM with a button, then ask for their email",
+    hint: "The first DM has a button. The tap brings the link, with a line asking for their email.",
+  },
+};
+
+function newCampaignDefaults(settings: Settings, flow: StartFlow): CampaignInput {
   // The email lines name the sender and link to the privacy page, which shows their mailing address.
   const lines = emailLines(senderOf(settings));
   return {
@@ -30,8 +43,8 @@ function newCampaignDefaults(settings: Settings): CampaignInput {
     nextPostAfter: null,
     publicReplies: DEFAULTS.publicReplies,
     openingText: DEFAULTS.openingText,
-    openingButton: DEFAULTS.openingButton,
-    emailMode: "none",
+    openingButton: START_FLOWS[flow].openingButton,
+    emailMode: START_FLOWS[flow].emailMode,
     emailPrompt: lines.emailPrompt,
     emailReask: DEFAULTS.emailReask,
     emailThanks: DEFAULTS.emailThanks,
@@ -208,7 +221,7 @@ function mediaPicker(media: Media[], current: Campaign | null, tz: string, input
     <script>document.addEventListener('change',e=>{if(e.target.name==='media_id'){document.querySelector('[name=media_label]').value=e.target.dataset.label||''}})</script>`;
 }
 
-async function campaignForm(ctx: Ctx, current: Campaign | null, input?: CampaignInput, errors: string[] = []): Promise<Response> {
+async function campaignForm(ctx: Ctx, current: Campaign | null, input?: CampaignInput, errors: string[] = [], flow: StartFlow = "link"): Promise<Response> {
   let media: Media[] = [];
   let mediaProblem = "";
   try {
@@ -217,7 +230,7 @@ async function campaignForm(ctx: Ctx, current: Campaign | null, input?: Campaign
   } catch (e) {
     mediaProblem = e instanceof Error ? e.message : String(e);
   }
-  const v: CampaignInput = input ?? current ?? newCampaignDefaults(ctx.settings);
+  const v: CampaignInput = input ?? current ?? newCampaignDefaults(ctx.settings, flow);
   const s = ctx.settings;
   const action = current ? `/dashboard/campaigns/${current.id}` : "/dashboard/campaigns/new";
   const checked = (b: boolean) => (b ? "checked" : "");
@@ -229,6 +242,14 @@ async function campaignForm(ctx: Ctx, current: Campaign | null, input?: Campaign
     html`<h1>${current ? `Edit "${current.name}"` : "New campaign"}</h1>
       ${errors.length ? html`<div class="card errors"><ul>${errors.map((e) => html`<li>${e}</li>`)}</ul></div>` : ""}
       <p class="muted">Every message below is yours to edit. Write <code>{name}</code> for the person's Instagram name (their username when Meta doesn't share the name) or <code>{username}</code> for their username.</p>
+      ${current || input
+        ? ""
+        : html`<div class="card"><h3>Start from</h3>
+            ${(Object.keys(START_FLOWS) as StartFlow[]).map((f) => {
+              const { label, hint } = START_FLOWS[f];
+              return html`<p>${f === flow ? html`<b>${label}</b>` : html`<a href="/dashboard/campaigns/new?flow=${f}">${label}</a>`} <span class="muted small">${hint}</span></p>`;
+            })}
+          </div>`}
       <form method="post" action="${action}">
         <div class="card">
           <label for="name">Name</label><input id="name" name="name" type="text" value="${v.name}" placeholder="Agents library" required>
@@ -253,6 +274,7 @@ async function campaignForm(ctx: Ctx, current: Campaign | null, input?: Campaign
         <div class="card">
           <h3>Follow check</h3>
           <label class="inline"><input type="checkbox" name="follow_check" ${checked(v.followCheck)}> Ask people to follow you before they get the link</label>
+          <p class="warn small">Not recommended. Meta's <a href="https://transparency.meta.com/policies/community-standards/spam/" rel="noopener noreferrer" target="_blank">spam policy</a> doesn't allow requiring people to follow you to get access to specific content, so this can put your account at risk.</p>
           <p class="hint">After the tap, OwnChats asks Instagram whether the person follows you. If they do, the link (or the email question) comes next. If not, they get the message below with a button to tap once they follow. A tap that still shows no follow gets the second message, and the tap after that gets the link either way. If Instagram doesn't answer, the link goes out. Needs the button above: Instagram only says whether someone follows you after they tap or write.</p>
           <label for="follow_prompt">When they don't follow</label><textarea id="follow_prompt" name="follow_prompt">${v.followPrompt}</textarea>
           <label for="follow_reask">When they tap but still don't follow (sent once)</label><textarea id="follow_reask" name="follow_reask">${v.followReask}</textarea>
@@ -312,8 +334,8 @@ async function campaignForm(ctx: Ctx, current: Campaign | null, input?: Campaign
   );
 }
 
-export function newCampaignPage(ctx: Ctx): Promise<Response> {
-  return campaignForm(ctx, null);
+export function newCampaignPage(ctx: Ctx, flow: string | null): Promise<Response> {
+  return campaignForm(ctx, null, undefined, [], flow === "email" ? "email" : "link");
 }
 
 export async function editCampaignPage(ctx: Ctx, id: number): Promise<Response> {

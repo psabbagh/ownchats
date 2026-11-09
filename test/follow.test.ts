@@ -173,4 +173,14 @@ describe("follow check in the form", () => {
     expect(page).not.toMatch(/name="follow_check" checked/);
     expect(page).toContain("Follow me first, then tap the button");
   });
+
+  it("warns beside the option that Meta's spam policy doesn't allow it", async () => {
+    const cookie = await w.signIn();
+    for (const path of ["/dashboard/campaigns/new", "/dashboard/campaigns/new?flow=email"]) {
+      const page = await (await w.fetch(path, { headers: { cookie } })).text();
+      expect(page).toContain("Not recommended.");
+      expect(page).toContain("https://transparency.meta.com/policies/community-standards/spam/");
+      expect(page).not.toMatch(/name="follow_check" checked/);
+    }
+  });
 });
