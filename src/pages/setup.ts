@@ -21,9 +21,20 @@ function step(n: number, state: StepState, title: string, body: Html): Html {
     <div class="body"><h3>${title}</h3>${body}</div></section>`;
 }
 
+const isWorkersDev = (address: string) => /\.workers\.dev$/i.test(new URL(address).hostname);
+
+/**
+ * The address to keep after an admin page is opened on `visited`. A custom domain
+ * stays once it's set: the workers.dev address keeps answering after one is added,
+ * and a visit there must not put that address back into people's DMs.
+ */
+export function baseUrlAfterVisit(current: string | undefined, visited: string): string {
+  return current && !isWorkersDev(current) && isWorkersDev(visited) ? current : visited;
+}
+
 /** Remembers the deployment's own address, for the values Meta needs and for the Cron. */
 export async function rememberBaseUrl(ctx: Ctx, url: URL): Promise<void> {
-  const base = url.origin;
+  const base = baseUrlAfterVisit(ctx.settings.base_url, url.origin);
   const updates: Record<string, string> = {};
   if (ctx.settings.base_url !== base) updates.base_url = base;
   if (!ctx.settings.verify_token) updates.verify_token = randomToken(18);
