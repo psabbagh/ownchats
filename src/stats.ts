@@ -11,7 +11,14 @@ export interface CampaignCounts {
   linksSent: number;
   /** People who clicked one of the campaign's links at least once; previews don't count. */
   clicks: number;
+  /** Everything the log marks failed for this campaign, as before: the sum of the three below and any other failure (a follow check Meta didn't answer). */
   failed: number;
+  /** DMs that did not go out: a private reply or a message Meta refused. */
+  failedDms: number;
+  /** Public replies Instagram refused. Each is tried only after its DM went out, so the person has the link. */
+  refusedPublicReplies: number;
+  /** Lead webhook deliveries given up on. */
+  failedLeadWebhooks: number;
 }
 
 /** People who clicked a link, per campaign: the first click per person counts, however many links or clicks. */
@@ -20,21 +27,21 @@ const CLICKED = `SELECT campaign_id, COUNT(DISTINCT conversation_id) AS n FROM t
 
 /** The funnel per campaign: people matched, first DMs sent, taps, emails, links, clicks. */
 export async function campaignCounts(ctx: Ctx): Promise<Map<number, CampaignCounts>> {
-  const [conv, taps, leads, failed, clicks] = await ctx.db.batch<Record<string, number>>([
+  const [conv, taps, leads, failed, clicks] = await ctx.db.batch<Record<string, number> & { kind?: string }>([
     ctx.db.prepare(
       `SELECT campaign_id, COUNT(*) AS people, COUNT(first_sent_at) AS dms, SUM(state IN ('done', 'optional_email')) AS links
        FROM conversations GROUP BY campaign_id`,
     ),
     ctx.db.prepare("SELECT campaign_id, COUNT(*) AS n FROM activity WHERE kind = 'tap' AND outcome = 'received' GROUP BY campaign_id"),
     ctx.db.prepare("SELECT campaign_id, COUNT(*) AS n FROM leads GROUP BY campaign_id"),
-    ctx.db.prepare("SELECT campaign_id, COUNT(*) AS n FROM activity WHERE outcome = 'failed' AND campaign_id IS NOT NULL GROUP BY campaign_id"),
+    ctx.db.prepare("SELECT campaign_id, kind, COUNT(*) AS n FROM activity WHERE outcome = 'failed' AND campaign_id IS NOT NULL GROUP BY campaign_id, kind"),
     ctx.db.prepare(CLICKED),
   ]);
   const out = new Map<number, CampaignCounts>();
   const get = (id: number) => {
     let c = out.get(id);
     if (!c) {
-      c = { campaignId: id, people: 0, dmsSent: 0, taps: 0, emails: 0, linksSent: 0, clicks: 0, failed: 0 };
+      c = { campaignId: id, people: 0, dmsSent: 0, taps: 0, emails: 0, linksSent: 0, clicks: 0, failed: 0, failedDms: 0, refusedPublicReplies: 0, failedLeadWebhooks: 0 };
       out.set(id, c);
     }
     return c;
@@ -42,7 +49,13 @@ export async function campaignCounts(ctx: Ctx): Promise<Map<number, CampaignCoun
   for (const r of conv!.results) Object.assign(get(r.campaign_id!), { people: r.people, dmsSent: r.dms, linksSent: r.links ?? 0 });
   for (const r of taps!.results) get(r.campaign_id!).taps = r.n!;
   for (const r of leads!.results) get(r.campaign_id!).emails = r.n!;
-  for (const r of failed!.results) get(r.campaign_id!).failed = r.n!;
+  for (const r of failed!.results) {
+    const c = get(r.campaign_id!);
+    c.failed += r.n!;
+    if (r.kind === "private_reply" || r.kind === "message") c.failedDms += r.n!;
+    else if (r.kind === "public_reply") c.refusedPublicReplies += r.n!;
+    else if (r.kind === "lead_webhook") c.failedLeadWebhooks += r.n!;
+  }
   for (const r of clicks!.results) get(r.campaign_id!).clicks = r.n!;
   return out;
 }

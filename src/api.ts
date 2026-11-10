@@ -2,6 +2,8 @@ import { apiAuthorized } from "./auth";
 import { listCampaigns, onAllPosts, type Campaign } from "./campaigns";
 import type { Ctx } from "./context";
 import { listLeads } from "./export";
+import { webhookConfig } from "./leadwebhook";
+import { attachmentOf, campaignWarnings } from "./readiness";
 import { listPosts, readMediaStats, type MediaStats } from "./insights";
 import { campaignCounts, listActivity } from "./stats";
 import { iso } from "./time";
@@ -27,7 +29,7 @@ function postJson(m: MediaStats | undefined) {
   };
 }
 
-function campaignJson(c: Campaign) {
+function campaignJson(c: Campaign, leadWebhookOn: boolean) {
   return {
     id: c.id,
     name: c.name,
@@ -48,6 +50,12 @@ function campaignJson(c: Campaign) {
     active: c.active,
     created_at: iso(c.createdAt),
     updated_at: iso(c.updatedAt),
+    attachment: attachmentOf(c),
+    waiting_since: c.nextPostAfter !== null ? iso(c.nextPostAfter) : null,
+    asks_for_email: c.emailMode !== "none",
+    has_link: c.links.length > 0,
+    has_link_title: !!c.linkTitle,
+    warnings: campaignWarnings(c, leadWebhookOn),
   };
 }
 
@@ -72,7 +80,7 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
   if (path === "/api") {
     return json({
       endpoints: {
-        "GET /api/campaigns": "campaigns with their counts (clicks: people who clicked a link) and their post's views",
+        "GET /api/campaigns": "campaigns with their counts (clicks: people who clicked a link; failed split into failedDms, refusedPublicReplies, failedLeadWebhooks), their post's views, and what would stop them working (warnings)",
         "GET /api/leads?campaign_id=&since=ISO-8601&limit=": "emails collected, newest first",
         "GET /api/activity?campaign_id=&outcome=sent|skipped|failed&limit=": "what happened and why, newest first",
         "GET /api/posts?since=ISO-8601&limit=": "the account's posts from the last 90 days with Instagram's numbers, newest first",
@@ -86,7 +94,7 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
     const campaigns = await listCampaigns(ctx.db);
     const stats = await readMediaStats(ctx, campaigns.flatMap((c) => (c.mediaId ? [c.mediaId] : [])));
     return json({
-      campaigns: campaigns.map((c) => ({ ...campaignJson(c), counts: counts.get(c.id) ?? null, post: postJson(c.mediaId ? stats.get(c.mediaId) : undefined) })),
+      campaigns: campaigns.map((c) => ({ ...campaignJson(c, !!webhookConfig(ctx)), counts: counts.get(c.id) ?? null, post: postJson(c.mediaId ? stats.get(c.mediaId) : undefined) })),
     });
   }
   if (path === "/api/leads") {
@@ -181,6 +189,7 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
         last_poll_at: iso(Number(s.last_poll_at)) || null,
         token_expires_at: Number(s.token_expires_at) ? iso(Number(s.token_expires_at)) : null,
         token_problem: s.token_problem || null,
+        lead_webhook_configured: !!webhookConfig(ctx),
       },
     });
   }
