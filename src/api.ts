@@ -1,8 +1,9 @@
 import { apiAuthorized } from "./auth";
-import { listCampaigns, onAllPosts, type Campaign } from "./campaigns";
-import type { Ctx } from "./context";
+import { getCampaign, listCampaigns, onAllPosts, saveCampaign, type Campaign } from "./campaigns";
+import { log, type Ctx } from "./context";
 import { listLeads } from "./export";
 import { webhookConfig } from "./leadwebhook";
+import { campaignFromRequest, checkCaption, waitingWithVideoId, type NewCampaignRequest } from "./newcampaign";
 import { attachmentOf, campaignWarnings } from "./readiness";
 import { listPosts, readMediaStats, type MediaStats } from "./insights";
 import { campaignCounts, listActivity } from "./stats";
@@ -69,8 +70,79 @@ function parseSince(v: string | null): number | undefined {
  * Read-only JSON for integrations (a knowledge base, a newsletter sync, a script).
  * Every request needs `Authorization: Bearer <token>` from Settings.
  */
+/** Requests bigger than this are refused before parsing: a campaign is a few kilobytes. */
+const MAX_BODY = 32 * 1024;
+
+async function readBody(request: Request): Promise<Record<string, unknown> | string> {
+  const raw = await request.text();
+  if (raw.length > MAX_BODY) return "The request body is too large.";
+  try {
+    const body = JSON.parse(raw) as unknown;
+    return body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : "Send a JSON object.";
+  } catch {
+    return "Send a JSON object, with Content-Type: application/json.";
+  }
+}
+
+/**
+ * The write side: POST /api/campaigns creates a campaign that waits for the next
+ * post, from that post's caption; POST /api/campaigns/check says whether a caption
+ * would attach a campaign, and saves nothing. Creating needs the write token;
+ * checking takes either token, since it shows nothing the read token can't.
+ */
+async function handleWrite(ctx: Ctx, request: Request, path: string): Promise<Response> {
+  if (path !== "/api/campaigns" && path !== "/api/campaigns/check") {
+    return json({ error: "Only POST /api/campaigns and POST /api/campaigns/check take a POST. GET /api lists the rest." }, 405);
+  }
+  const write = await apiAuthorized(ctx, request, "write");
+  if (!write && !(path === "/api/campaigns/check" && (await apiAuthorized(ctx, request, "read")))) {
+    return json({ error: "Send Authorization: Bearer <write token>. Create one in the dashboard under Settings, API write token." }, 401);
+  }
+  const body = await readBody(request);
+  if (typeof body === "string") return json({ error: body }, 400);
+
+  if (path === "/api/campaigns/check") {
+    const caption = typeof body.caption === "string" ? body.caption : "";
+    if (!caption.trim()) return json({ error: "Send the post's caption as `caption`." }, 400);
+    const given = Array.isArray(body.keywords) ? body.keywords.filter((k): k is string => typeof k === "string") : null;
+    if (body.campaign_id !== undefined) {
+      const c = await getCampaign(ctx.db, Number(body.campaign_id));
+      if (!c) return json({ error: "No campaign with that id." }, 404);
+      return json({ campaign_id: c.id, keywords: c.keywords, ...(await checkCaption(ctx, caption, c.keywords, c.id)) });
+    }
+    const keywords = given ?? [];
+    return json({ keywords, ...(await checkCaption(ctx, caption, keywords)) });
+  }
+
+  const { input, caption, errors } = campaignFromRequest(ctx, body as NewCampaignRequest);
+  if (!input) return json({ error: errors.join(" "), errors }, 422);
+  const check = await checkCaption(ctx, caption, input.keywords);
+  const campaigns = await listCampaigns(ctx.db);
+  const same = waitingWithVideoId(campaigns, input.videoId);
+  if (same) {
+    return json({ error: `Campaign ${same.id} (${same.name}) already waits for the next post with video id ${input.videoId}. Edit it in the dashboard instead.`, campaign_id: same.id }, 409);
+  }
+  if (check.waiting_campaigns_it_would_attach.length) {
+    const names = check.waiting_campaigns_it_would_attach.map((c) => `${c.id} (${c.name})`).join(", ");
+    return json(
+      { error: `This caption would also attach campaign ${names}, which waits already, so the new one would answer nobody. Use another keyword, or edit that campaign.`, check },
+      409,
+    );
+  }
+  const leadWebhookOn = !!webhookConfig(ctx);
+  const preview = { ...input, id: 0, replyCursor: -1, createdAt: ctx.now(), updatedAt: ctx.now() };
+  if (body.dry_run === true) {
+    return json({ dry_run: true, campaign: { ...campaignJson(preview, leadWebhookOn), id: null }, check });
+  }
+  const id = await saveCampaign(ctx.db, input, null, ctx.now());
+  await log(ctx, { kind: "api", outcome: "saved", reason: `Campaign created through the API, waiting for the next post`, campaignId: id });
+  const saved = (await getCampaign(ctx.db, id))!;
+  return json({ campaign: campaignJson(saved, leadWebhookOn), check }, 201);
+}
+
 export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<Response> {
-  if (request.method !== "GET") return json({ error: "The API is read-only: use GET." }, 405);
+  if (request.method === "POST") return handleWrite(ctx, request, url.pathname.replace(/\/+$/, ""));
+  if (request.method !== "GET") return json({ error: "Use GET, or POST to create a campaign." }, 405);
   if (!(await apiAuthorized(ctx, request))) {
     return json({ error: "Send Authorization: Bearer <token>. Create a token in the dashboard under Settings." }, 401);
   }
@@ -86,6 +158,8 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
         "GET /api/posts?since=ISO-8601&limit=": "the account's posts from the last 90 days with Instagram's numbers, newest first",
         "GET /api/account": "follower, following and post counts",
         "GET /api/stats": "totals and connection health",
+        "POST /api/campaigns": "write token: create a campaign that waits for the next post, from its caption (dry_run: true saves nothing)",
+        "POST /api/campaigns/check": "either token: whether a caption would attach a campaign with these keywords (or campaign_id), and what else it would touch",
       },
     });
   }

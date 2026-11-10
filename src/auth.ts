@@ -95,9 +95,14 @@ export function handleLogout(): Response {
   return redirect("/login", { "set-cookie": `${COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0` });
 }
 
-/** Bearer token for /api, stored as a SHA-256 hash. */
-export async function apiAuthorized(ctx: Ctx, request: Request): Promise<boolean> {
-  const stored = ctx.settings.api_token_hash;
+/**
+ * Bearer tokens for /api, each stored as a SHA-256 hash. The read token reads; the
+ * write token (`ocw_...`) creates campaigns and checks captions, and reads nothing.
+ * Two tokens, so a tool that only reads can never change what DMs go out, and the
+ * agent that sets up campaigns never holds a token that reads leads.
+ */
+export async function apiAuthorized(ctx: Ctx, request: Request, scope: "read" | "write" = "read"): Promise<boolean> {
+  const stored = scope === "write" ? ctx.settings.api_write_token_hash : ctx.settings.api_token_hash;
   const header = request.headers.get("authorization") ?? "";
   if (!stored || !header.startsWith("Bearer ")) return false;
   return safeEqual(await sha256Hex(header.slice(7).trim()), stored);

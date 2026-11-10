@@ -83,7 +83,7 @@ At the end, help me run the test with my second account.
 - **Link clicks:** on by default; switch them off under Settings, Link clicks, to send links as they are.
 - **Time zone:** Settings, Time zone. Pages show times in UTC until you pick yours.
 - **Google Sheets:** Settings, Create link, then paste the `=IMPORTDATA("...")` formula it shows into cell A1 of a sheet. It refreshes about once an hour. Anyone with the link can read your leads, so you can regenerate or turn it off at any time.
-- **API:** Settings, Create token. Then `GET /api/campaigns` (with each campaign's counts, clicks included), `/api/leads`, `/api/activity`, `/api/posts` (your posts from the last 90 days with Instagram's numbers), `/api/account` (your follower count) and `/api/stats` with `Authorization: Bearer <token>`. `GET /api` lists them. It's read-only.
+- **API:** Settings, Create token. Then `GET /api/campaigns` (with each campaign's counts, clicks included), `/api/leads`, `/api/activity`, `/api/posts` (your posts from the last 90 days with Instagram's numbers), `/api/account` (your follower count) and `/api/stats` with `Authorization: Bearer <token>`. `GET /api` lists them. That token only reads. A separate **API write token** (Settings) lets a tool or agent set up the campaign for your next post from its caption, so the keyword can't differ from the caption: see [docs/campaign-api.md](docs/campaign-api.md).
 - **Someone asks for their data to be deleted:** Leads, "Delete someone's data", enter their username, then Find their data. It shows what OwnChats stores about them; Delete their data removes it.
 
 ## Instagram's rules, which OwnChats follows
