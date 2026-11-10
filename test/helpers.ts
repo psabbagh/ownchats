@@ -91,6 +91,7 @@ export async function setupWorld(opts: { connected?: boolean } = {}) {
     async campaign(overrides: Partial<CampaignInput> = {}): Promise<number> {
       const input: CampaignInput = {
         name: "Agents library",
+        videoId: "",
         keywords: ["AGENTS", "AGENT"],
         anyComment: false,
         mediaId: REEL,

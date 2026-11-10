@@ -16,6 +16,8 @@ export interface Link {
 export interface Campaign {
   id: number;
   name: string;
+  /** The video this campaign is for, in the owner's own numbering (for example SF-14). Empty: none. */
+  videoId: string;
   keywords: string[];
   anyComment: boolean;
   /** The one post this campaign watches; null for all posts, or while it waits for the next post. */
@@ -65,6 +67,7 @@ export interface Campaign {
 interface CampaignRow {
   id: number;
   name: string;
+  video_id: string;
   keywords: string;
   any_comment: number;
   media_id: string | null;
@@ -99,6 +102,7 @@ function fromRow(r: CampaignRow): Campaign {
   return {
     id: r.id,
     name: r.name,
+    videoId: r.video_id ?? "",
     keywords: JSON.parse(r.keywords) as string[],
     anyComment: !!r.any_comment,
     mediaId: r.media_id,
@@ -210,6 +214,9 @@ const MAX_BUTTON = 20;
 const MAX_LINKS = 3;
 const MAX_EMAIL_TAG = 100;
 const MAX_LINK_TITLE = 200;
+const MAX_VIDEO_ID = 40;
+/** A video id: letters, digits, dots, dashes and underscores, starting with a letter or digit ("SF-14"). */
+const VIDEO_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 /**
  * Room kept for each link in a text message: with click counting on, the link goes
  * out as the Worker's own /go/ address, which may be longer than the link itself.
@@ -240,6 +247,7 @@ export function campaignFromForm(form: FormData, now: number): { input: Campaign
   }
   const input: CampaignInput = {
     name: text("name"),
+    videoId: text("video_id"),
     keywords: parseKeywords(text("keywords")),
     anyComment: form.get("any_comment") === "on",
     mediaId,
@@ -320,6 +328,8 @@ export function validateCampaign(c: CampaignInput): string[] {
   }
   if (c.publicReplies.some((r) => r.length > 300)) errors.push("Keep each public reply under 300 characters.");
   if (c.emailTag.length > MAX_EMAIL_TAG) errors.push(`Keep the email tag under ${MAX_EMAIL_TAG} characters.`);
+  if (c.videoId.length > MAX_VIDEO_ID) errors.push(`Keep the video id under ${MAX_VIDEO_ID} characters.`);
+  else if (c.videoId && !VIDEO_ID.test(c.videoId)) errors.push(`The video id can use letters, digits, dots, dashes and underscores, like SF-14 ("${c.videoId}").`);
   if (c.linkTitle.length > MAX_LINK_TITLE) errors.push(`Keep the link's title under ${MAX_LINK_TITLE} characters.`);
   return errors;
 }
@@ -327,6 +337,7 @@ export function validateCampaign(c: CampaignInput): string[] {
 export async function saveCampaign(db: D1Database, c: CampaignInput, id: number | null, now: number): Promise<number> {
   const values = [
     c.name,
+    c.videoId,
     JSON.stringify(c.keywords),
     c.anyComment ? 1 : 0,
     c.mediaId,
@@ -352,7 +363,7 @@ export async function saveCampaign(db: D1Database, c: CampaignInput, id: number 
     c.dmKeyword ? 1 : 0,
     c.active ? 1 : 0,
   ];
-  const columns = `name, keywords, any_comment, media_id, media_label, public_replies, opening_text, opening_button, email_mode,
+  const columns = `name, video_id, keywords, any_comment, media_id, media_label, public_replies, opening_text, opening_button, email_mode,
     email_prompt, email_reask, email_thanks, optional_prompt, optional_thanks, consent_text, email_tag, link_text, links, link_title,
     follow_check, follow_prompt, follow_reask, follow_button, dm_keyword, active`;
   if (id === null) {
