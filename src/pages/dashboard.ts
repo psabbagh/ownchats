@@ -36,6 +36,7 @@ function newCampaignDefaults(settings: Settings, flow: StartFlow): CampaignInput
   const lines = emailLines(senderOf(settings));
   return {
     name: "",
+    videoId: "",
     keywords: [],
     anyComment: false,
     mediaId: null,
@@ -164,7 +165,7 @@ export async function dashboardHome(ctx: Ctx): Promise<Response> {
     return html`<div class="card row campaign">
       <a class="cover" href="/dashboard/campaigns/${c.id}" aria-hidden="true" tabindex="-1">${cover ? html`<img src="${cover}" alt="" loading="lazy" onerror="this.remove()">` : ""}</a>
       <div class="body">
-      <div class="row"><h3 style="flex:1 1 auto"><a href="/dashboard/campaigns/${c.id}">${c.name}</a></h3><span class="muted small">Started ${fmtDate(c.createdAt, tz)}</span>
+      <div class="row"><h3 style="flex:1 1 auto"><a href="/dashboard/campaigns/${c.id}">${c.name}</a>${c.videoId ? html` <span class="muted small">${c.videoId}</span>` : ""}</h3><span class="muted small">Started ${fmtDate(c.createdAt, tz)}</span>
         ${campaignSwitch(c)}</div>
       <p class="muted small">${c.anyComment ? "Any comment" : `Keyword: ${c.keywords.join(", ")}`} on ${postWords(c)}, ${EMAIL_MODE_LABEL[c.emailMode]}</p>
       ${missed.get(c.id)?.length
@@ -253,6 +254,8 @@ async function campaignForm(ctx: Ctx, current: Campaign | null, input?: Campaign
       <form method="post" action="${action}">
         <div class="card">
           <label for="name">Name</label><input id="name" name="name" type="text" value="${v.name}" placeholder="Agents library" required>
+          <label for="video_id">Video id (optional)</label><input id="video_id" name="video_id" type="text" value="${v.videoId}" maxlength="40" placeholder="SF-14">
+          <p class="hint">The id of the video this campaign is for, in your own numbering. Served as <code>video_id</code> in <code>GET /api/campaigns</code>, so your other tools can link the video to its campaign without reading the name.</p>
           <label for="keywords">Keyword</label><input id="keywords" name="keywords" type="text" value="${v.keywords.join(", ")}" placeholder="AGENTS, AGENT">
           <p class="hint">Separate extra spellings with commas. Matching ignores case and needs the whole word: AGENTS matches "agents!" but not "agentsmith". A space also matches a hyphen, so SET UP matches "set-up" but not "setup".</p>
           <label class="inline"><input type="checkbox" name="any_comment" ${checked(v.anyComment)}> Any comment: answer every comment on the chosen post, keyword or not</label>

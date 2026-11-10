@@ -31,6 +31,7 @@ function campaignJson(c: Campaign) {
   return {
     id: c.id,
     name: c.name,
+    video_id: c.videoId || null,
     keywords: c.keywords,
     any_comment: c.anyComment,
     media_id: c.mediaId,

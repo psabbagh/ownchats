@@ -280,6 +280,7 @@ export async function testCampaign(ctx: Ctx, request: Request): Promise<Response
     ctx.db,
     {
       name: TEST_CAMPAIGN,
+      videoId: "",
       keywords: [TEST_KEYWORD],
       anyComment: false,
       mediaId: null,

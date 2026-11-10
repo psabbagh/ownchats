@@ -243,7 +243,7 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
   return page(
     campaign.name,
     html`${healthBanner(ctx)}
-      <div class="row"><h1 style="flex:1">${campaign.name}</h1>
+      <div class="row"><h1 style="flex:1">${campaign.name}${campaign.videoId ? html` <span class="muted small">${campaign.videoId}</span>` : ""}</h1>
         <span class="pill ${campaign.active ? "sent" : "skipped"}">${campaign.active ? "on" : "off"}</span>
         <a class="button secondary" href="${base}/edit">Edit</a></div>
       <div class="card row" style="align-items:flex-start;flex-wrap:nowrap">
