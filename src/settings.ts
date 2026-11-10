@@ -30,6 +30,7 @@ export type SettingKey =
   | "click_tracking"
   | "time_zone"
   | "api_token_hash"
+  | "api_write_token_hash"
   | "export_key"
   | "media_cache"
   | "media_cache_at"

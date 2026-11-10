@@ -19,7 +19,7 @@ import {
 export const EMAIL_MODE_LABEL: Record<EmailMode, string> = { none: "link only", optional: "link plus optional email", first: "email first" };
 
 /** The flows a new campaign can start from. Everything they set stays editable in the form. */
-type StartFlow = "link" | "email";
+export type StartFlow = "link" | "email";
 const START_FLOWS: Record<StartFlow, { openingButton: string; emailMode: EmailMode; label: string; hint: string }> = {
   link: { openingButton: "", emailMode: "none", label: "DM with the link", hint: "The first DM carries the link. No email ask." },
   // The tap brings the link with the email ask under it, so nobody has to give an email to get it.
@@ -31,7 +31,7 @@ const START_FLOWS: Record<StartFlow, { openingButton: string; emailMode: EmailMo
   },
 };
 
-function newCampaignDefaults(settings: Settings, flow: StartFlow): CampaignInput {
+export function newCampaignDefaults(settings: Settings, flow: StartFlow): CampaignInput {
   // The email lines name the sender and link to the privacy page, which shows their mailing address.
   const lines = emailLines(senderOf(settings));
   return {
@@ -377,6 +377,7 @@ export const KIND_LABEL: Record<string, string> = {
   link: "Link",
   click: "Link click",
   lead_webhook: "Lead webhook",
+  api: "API",
   follow: "Follow check",
   token: "Token",
 };
@@ -505,6 +506,7 @@ const SAVED_NOTE = {
   webhook: "Saved",
   "webhook-off": "Turned off",
   "api-token-off": "Revoked",
+  "api-write-token-off": "Revoked",
   clicks: "Saved",
   "time-zone": "Saved",
   contact: "Saved",
@@ -601,7 +603,7 @@ function webhookCard(ctx: Ctx, campaigns: Campaign[], deliveries: DeliveryRow[],
   </div>`;
 }
 
-export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string; webhookError?: string; testId?: string | null; saved?: string | null } = {}): Promise<Response> {
+export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string; apiWriteToken?: string; webhookError?: string; testId?: string | null; saved?: string | null } = {}): Promise<Response> {
   const s = ctx.settings;
   const exportUrl = s.export_key ? `${s.base_url}/export/leads.csv?key=${s.export_key}` : "";
   const campaigns = await listCampaigns(ctx.db);
@@ -630,6 +632,15 @@ export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string; webhook
           : html`<p class="muted">${s.api_token_hash ? "A token exists." : "No token yet."}</p>`}
         <form method="post" action="/dashboard/settings/api-token" class="row"><button name="do" value="new">${s.api_token_hash ? "Replace token" : "Create token"}</button>
           ${s.api_token_hash ? html`<button class="danger" name="do" value="revoke">Revoke</button>` : ""}${savedNote(fresh.saved, "api-token-off")}</form>
+      </div>
+      <div class="card" id="api-write-token">
+        <h3>API write token</h3>
+        <p>For a tool or agent that sets up campaigns for your next post, with <code>POST ${s.base_url ?? ""}/api/campaigns</code>. It can create campaigns and check captions, and nothing else: it can't read your leads, and the API token above can't create anything.</p>
+        ${fresh.apiWriteToken
+          ? html`<p class="ok">Copy it now; it is shown only once.</p>${copyField(fresh.apiWriteToken)}`
+          : html`<p class="muted">${s.api_write_token_hash ? "A write token exists." : "No write token yet."}</p>`}
+        <form method="post" action="/dashboard/settings/api-write-token" class="row"><button name="do" value="new">${s.api_write_token_hash ? "Replace write token" : "Create write token"}</button>
+          ${s.api_write_token_hash ? html`<button class="danger" name="do" value="revoke">Revoke</button>` : ""}${savedNote(fresh.saved, "api-write-token-off")}</form>
       </div>
       <div class="card" id="clicks">
         <h3>Link clicks</h3>
@@ -700,6 +711,17 @@ export async function settingsAction(ctx: Ctx, request: Request, what: string): 
     await saveSettings(ctx.db, pw, { api_token_hash: hash });
     ctx.settings.api_token_hash = hash;
     return settingsPage(ctx, { apiToken: token });
+  }
+  if (what === "api-write-token") {
+    if (action === "revoke") {
+      await deleteSettings(ctx.db, ["api_write_token_hash"]);
+      return saved("api-write-token-off", "api-write-token");
+    }
+    const token = `ocw_${randomToken(24)}`;
+    const hash = await sha256Hex(token);
+    await saveSettings(ctx.db, pw, { api_write_token_hash: hash });
+    ctx.settings.api_write_token_hash = hash;
+    return settingsPage(ctx, { apiWriteToken: token });
   }
   if (what === "webhook") {
     if (action === "off") {

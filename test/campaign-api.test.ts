@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { MetaError } from "../src/meta/client";
+import { captionKeywords } from "../src/newcampaign";
 import { saveSettings } from "../src/settings";
 import { BASE, FAN, FAN2, setupWorld, WEBHOOK_SECRET } from "./helpers";
 
@@ -96,5 +97,143 @@ describe("what the hub checks before a video goes up", () => {
     await w.sendComment(w.comment("agents", FAN2));
     const c = (await apiCampaigns()).find((x) => x.id === id)!;
     expect(c.counts).toMatchObject({ failed: 2, failedDms: 1, refusedPublicReplies: 1, failedLeadWebhooks: 0, dmsSent: 1 });
+  });
+});
+
+describe("captionKeywords", () => {
+  it("reads the keyword a caption asks for, as written", () => {
+    expect(captionKeywords("Check your SEO with Claude.\n\nComment SEO and I'll send the guide")).toEqual(["SEO"]);
+    expect(captionKeywords("Comment SET UP below 👇")).toEqual(["SET UP"]);
+    expect(captionKeywords("Comment SET-UP")).toEqual(["SET-UP"]);
+    expect(captionKeywords("comment 'set up' for the list")).toEqual(["set up"]);
+    expect(captionKeywords("Comment the word “AGENTS” 🙌")).toEqual(["AGENTS"]);
+    expect(captionKeywords("comment agents for the list")).toEqual(["agents"]);
+    expect(captionKeywords("Comment: TRAFFIC. Or comment SEO")).toEqual(["TRAFFIC", "SEO"]);
+  });
+
+  it("finds nothing in a caption that only mentions a word, or puts an emoji before a plain word", () => {
+    expect(captionKeywords("My agents bring the traffic")).toEqual([]);
+    expect(captionKeywords("Comment 🙌 and I'll send it")).toEqual([]);
+    expect(captionKeywords("Thanks for every comment!")).toEqual([]);
+  });
+});
+
+describe("POST /api/campaigns", () => {
+  let write: { authorization: string; "content-type": string };
+  const CAPTION = "Check your website's SEO with Claude.\n\nComment SEO and I'll send you the guide.";
+  const BODY = { caption: CAPTION, spellings: ["SEOO", "S E O", "🙌"], link: "https://example.com/guides/seo", link_title: "Check your website's SEO with Claude", email_tag: "guideRequested", video_id: "SF-15" };
+
+  beforeEach(async () => {
+    const page = await (await w.fetch("/dashboard/settings/api-write-token", form({ do: "new" }))).text();
+    write = { authorization: `Bearer ${page.match(/ocw_[A-Za-z0-9_-]+/)![0]}`, "content-type": "application/json" };
+  });
+  const create = (body: unknown, headers: Record<string, string> = write) => w.fetch("/api/campaigns", { method: "POST", headers, body: JSON.stringify(body) });
+  const check = (body: unknown, headers: Record<string, string> = write) => w.fetch("/api/campaigns/check", { method: "POST", headers, body: JSON.stringify(body) });
+
+  it("creates a campaign waiting for the next post, with the keyword read from the caption", async () => {
+    const res = await create(BODY);
+    expect(res.status).toBe(201);
+    const { campaign, check: c } = (await res.json()) as { campaign: Record<string, any>; check: Record<string, any> };
+    expect(campaign).toMatchObject({
+      name: "Check your website's SEO with Claude (SF-15)",
+      video_id: "SF-15",
+      keywords: ["SEO", "SEOO", "S E O", "🙌"],
+      attachment: "next_post",
+      waiting_since: "2026-11-04T12:00:00.000Z",
+      email_mode: "optional",
+      email_tag: "guideRequested",
+      opening_button: "Send me the link",
+      links: [{ url: "https://example.com/guides/seo", label: "Open" }],
+      link_title: "Check your website's SEO with Claude",
+      active: true,
+      dm_keyword: false,
+      follow_check: false,
+      warnings: [{ code: "email_ask_without_lead_webhook", message: expect.any(String) }],
+    });
+    expect(c).toMatchObject({ caption_keywords: ["SEO"], attaches: true, matched_keyword: "SEO", waiting_campaigns_it_would_attach: [], posts_already_up: [] });
+    expect((await apiCampaigns())[0]).toMatchObject({ id: campaign.id, attachment: "next_post" });
+    expect((await w.activity()).at(-1)).toMatchObject({ kind: "api", outcome: "saved" });
+  });
+
+  it("attaches to the post with that caption once it goes up", async () => {
+    const { campaign } = (await (await create(BODY)).json()) as { campaign: { id: number } };
+    w.clock.advance(60_000);
+    w.meta.media = [{ id: "18000000000000030", caption: CAPTION, permalink: "https://www.instagram.com/reel/18000000000000030/", timestamp: w.clock.now(), mediaType: "VIDEO" }];
+    await w.cron();
+    expect(await env.DB.prepare("SELECT media_id, next_post_after FROM campaigns WHERE id = ?").bind(campaign.id).first()).toEqual({ media_id: "18000000000000030", next_post_after: null });
+  });
+
+  it("refuses a keyword the caption doesn't ask for, so the two can't differ", async () => {
+    const res = await create({ ...BODY, keyword: "SEOGUIDE" });
+    expect(res.status).toBe(422);
+    expect(((await res.json()) as { error: string }).error).toContain('doesn\'t ask people to comment "SEOGUIDE"; it asks for "SEO"');
+    const none = await create({ ...BODY, caption: "Check your SEO with Claude" });
+    expect(((await none.json()) as { error: string }).error).toContain('Add a line such as "Comment SEO"');
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM campaigns").first()).toEqual({ n: 0 });
+  });
+
+  it("asks which keyword when the caption asks for several", async () => {
+    const res = await create({ ...BODY, caption: "Comment SEO or comment AUDIT" });
+    expect(res.status).toBe(422);
+    expect((await create({ ...BODY, caption: "Comment SEO or comment AUDIT", keyword: "AUDIT" })).status).toBe(201);
+  });
+
+  it("saves nothing on a dry run", async () => {
+    const res = await create({ ...BODY, dry_run: true });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ dry_run: true, campaign: { id: null, keywords: ["SEO", "SEOO", "S E O", "🙌"] }, check: { attaches: true } });
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM campaigns").first()).toEqual({ n: 0 });
+  });
+
+  it("leaves the email ask out when no email tag is given", async () => {
+    const { campaign } = (await (await create({ caption: CAPTION, link: "https://example.com/g" })).json()) as { campaign: Record<string, any> };
+    expect(campaign).toMatchObject({ name: "SEO", email_mode: "none", email_tag: null, asks_for_email: false, video_id: null });
+  });
+
+  it("refuses a second waiting campaign for the same video, or one the same caption would also attach", async () => {
+    expect((await create(BODY)).status).toBe(201);
+    const again = await create(BODY);
+    expect(again.status).toBe(409);
+    expect(await again.json()).toMatchObject({ campaign_id: expect.any(Number) });
+    const clash = await create({ ...BODY, video_id: "SF-16" });
+    expect(clash.status).toBe(409);
+    expect(((await clash.json()) as { error: string }).error).toContain("would also attach campaign");
+  });
+
+  it("needs the write token: the read token can't create, and the write token can't read", async () => {
+    expect((await create(BODY, { ...auth.headers, "content-type": "application/json" })).status).toBe(401);
+    expect((await create(BODY, { "content-type": "application/json" })).status).toBe(401);
+    expect((await w.fetch("/api/campaigns", { headers: { authorization: write.authorization } })).status).toBe(401);
+    expect((await w.fetch("/api/leads", { method: "POST", headers: write, body: "{}" })).status).toBe(405);
+    await w.fetch("/dashboard/settings/api-write-token", form({ do: "revoke" }));
+    expect((await create(BODY)).status).toBe(401);
+  });
+
+  it("refuses a body that isn't a JSON object, or a bad field, in plain words", async () => {
+    expect((await w.fetch("/api/campaigns", { method: "POST", headers: write, body: "not json" })).status).toBe(400);
+    const res = await create({ ...BODY, spellings: "SEOO", link: "example.com" });
+    expect(res.status).toBe(422);
+    const { errors } = (await res.json()) as { errors: string[] };
+    expect(errors).toContain("`spellings` must be a list of strings.");
+  });
+
+  describe("check", () => {
+    it("says whether a caption attaches a campaign with these keywords, with either token", async () => {
+      expect(await (await check({ caption: CAPTION, keywords: ["SEO", "SEOO"] })).json()).toMatchObject({ attaches: true, matched_keyword: "SEO", caption_keywords: ["SEO"] });
+      const read = await check({ caption: "Comment SE0 for the guide", keywords: ["SEO"] }, { ...auth.headers, "content-type": "application/json" });
+      expect(await read.json()).toMatchObject({ attaches: false, matched_keyword: null, caption_keywords: ["SE0"] });
+    });
+
+    it("checks a caption against an existing campaign, and names a post that is already up", async () => {
+      const id = await w.campaign({ name: "Waiting", keywords: ["SEO"], mediaId: null, mediaLabel: null, nextPostAfter: w.clock.now() });
+      const other = await check({ caption: CAPTION, keywords: ["AUDIT"] });
+      expect(await other.json()).toMatchObject({ attaches: false, waiting_campaigns_it_would_attach: [{ id, name: "Waiting", video_id: null }] });
+      expect(await (await check({ caption: CAPTION, campaign_id: id })).json()).toMatchObject({ campaign_id: id, attaches: true, waiting_campaigns_it_would_attach: [] });
+
+      await saveSettings(env.DB, env.ADMIN_PASSWORD, {
+        media_cache: JSON.stringify([{ id: "18000000000000031", caption: CAPTION, permalink: "https://www.instagram.com/reel/18000000000000031/", timestamp: w.clock.now() - 60_000, mediaType: "VIDEO" }]),
+      });
+      expect(await (await check({ caption: CAPTION, keywords: ["SEO"] })).json()).toMatchObject({ posts_already_up: [{ id: "18000000000000031" }] });
+    });
   });
 });
