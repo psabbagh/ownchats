@@ -132,6 +132,34 @@ describe("answering a missed comment", () => {
     expect(privateReplies()).toHaveLength(1);
   });
 
+  it("says why Meta refused: in plain words when the refusal is known, in Meta's own otherwise", async () => {
+    const id = await w.campaign();
+    const cookie = await w.signIn();
+    const answer = async (c: { id: string }) => {
+      const res = await post(cookie, `/dashboard/campaigns/${id}/answer`, { comment_id: c.id });
+      return (await w.fetch(res.headers.get("location")!, { headers: { cookie } })).text();
+    };
+
+    const gone = w.comment("agnets", FAN);
+    await w.sendComment(gone);
+    w.meta.failNext("sendPrivateReply", new MetaError("(#100) The requested user cannot be found.", 400, 100, 2534014));
+    const calls = w.meta.calls.length;
+    const first = await answer(gone);
+    expect(first).toContain(`The DM to @${FAN.username} did not go out: Meta can&#39;t find this person to message`);
+    expect(first).not.toContain("—");
+    // Not a refused button, so it is not sent again as text.
+    expect(w.meta.calls.slice(calls).filter((m) => m === "sendPrivateReply")).toHaveLength(1);
+    expect(await status(gone.id)).toMatchObject({ status: "failed" });
+
+    const odd = w.comment("agnets", FAN2);
+    await w.sendComment(odd);
+    w.meta.failNext("sendPrivateReply", new MetaError("An invented refusal", 400, 999));
+    const second = await answer(odd);
+    expect(second).toContain("Meta said &quot;An invented refusal (HTTP 400, code 999)&quot;. Nothing was sent.");
+    expect(second).not.toContain("did not go out: Meta refused");
+    expect(privateReplies()).toHaveLength(0);
+  });
+
   it("answers a comment written before the campaign started, only when asked", async () => {
     const id = await w.campaign();
     const c = w.comment("agents", FAN, { ago: 2 * HOUR });

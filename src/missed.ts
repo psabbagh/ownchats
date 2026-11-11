@@ -223,8 +223,18 @@ export async function answerOutcome(ctx: Ctx, commentId: string): Promise<{ ok: 
   switch (row.status) {
     case "done":
       return { ok: true, text: `Answered: the DM went to ${who}, and the public reply is posted.` };
-    case "failed":
-      return { ok: false, text: `Meta refused the DM to ${who}: ${row.reason ?? "no reason given"}. Nothing was sent.` };
+    case "failed": {
+      // A refusal OwnChats has no words for: show Meta's own, which the activity log kept.
+      const known = row.reason && row.reason !== "Meta refused" && row.reason !== "error" ? row.reason : null;
+      const said = known
+        ? null
+        : await ctx.db
+            .prepare("SELECT detail FROM activity WHERE comment_id = ? AND kind = 'private_reply' AND outcome = 'failed' ORDER BY at DESC, id DESC LIMIT 1")
+            .bind(commentId)
+            .first<{ detail: string | null }>();
+      const why = known ?? (said?.detail ? `Meta said "${said.detail}"` : "Meta gave no reason");
+      return { ok: false, text: `The DM to ${who} did not go out: ${why}. Nothing was sent.` };
+    }
     case "skipped":
       return { ok: false, text: `Not answered: ${row.reason ?? "no reason given"}.` };
     default:

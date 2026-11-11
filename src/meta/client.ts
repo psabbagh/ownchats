@@ -145,6 +145,7 @@ function knownReason(err: MetaError): string | null {
   if (err.code === 200 || sub === 2534048) return "Meta refused: the app may still be in Development mode, or the person has no role on it";
   if (err.code === 100 && sub === 33) return "the Instagram account is not assigned to this login: see Connect Instagram on /setup";
   if (err.code === 551 || sub === 2018108) return "this person can't be messaged right now";
+  if (sub === 2534014) return "Meta can't find this person to message: the account may be deactivated, or closed to messages from you";
   if (err.code === 10 && m.includes("business or creator")) return "the Instagram account must be a Business or Creator account";
   if (err.code === 10 && m.includes("permission")) return "a permission is missing from the app's configuration";
   return null;
@@ -154,7 +155,7 @@ function knownReason(err: MetaError): string | null {
 export function isTemplateRejection(err: unknown): boolean {
   if (!(err instanceof MetaError) || err.transient) return false;
   if (err.code !== 100) return false;
-  return ![33, 2534025, 2534023, 2534037, 2534022, 2018278].includes(err.subcode ?? -1);
+  return ![33, 2534014, 2534025, 2534023, 2534037, 2534022, 2018278].includes(err.subcode ?? -1);
 }
 
 /** The same content without buttons: link buttons become the link itself. */

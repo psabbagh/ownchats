@@ -101,6 +101,7 @@ describe("Meta message helpers", () => {
     expect(isTemplateRejection(new MetaError("Invalid parameter", 400, 100))).toBe(true);
     expect(isTemplateRejection(new MetaError("The comment is invalid for a private reply", 400, 100, 2534025))).toBe(false);
     expect(isTemplateRejection(new MetaError("rate", 400, 4))).toBe(false);
+    expect(isTemplateRejection(new MetaError("(#100) The requested user cannot be found.", 400, 100, 2534014))).toBe(false);
   });
 });
 
