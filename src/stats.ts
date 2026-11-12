@@ -29,7 +29,7 @@ const CLICKED = `SELECT campaign_id, COUNT(DISTINCT conversation_id) AS n FROM t
 export async function campaignCounts(ctx: Ctx): Promise<Map<number, CampaignCounts>> {
   const [conv, taps, leads, failed, clicks] = await ctx.db.batch<Record<string, number> & { kind?: string }>([
     ctx.db.prepare(
-      `SELECT campaign_id, COUNT(*) AS people, COUNT(first_sent_at) AS dms, SUM(state IN ('done', 'optional_email')) AS links
+      `SELECT campaign_id, COUNT(*) AS people, COUNT(first_sent_at) AS dms, SUM(state IN ('done', 'optional_email', 'awaiting_open')) AS links
        FROM conversations GROUP BY campaign_id`,
     ),
     ctx.db.prepare("SELECT campaign_id, COUNT(*) AS n FROM activity WHERE kind = 'tap' AND outcome = 'received' GROUP BY campaign_id"),
@@ -153,7 +153,7 @@ export async function campaignResults(ctx: Ctx, campaign: { id: number; mediaId:
       .prepare(
         `SELECT v.trigger, COUNT(v.first_sent_at) AS dms,
            SUM(v.first_sent_at IS NOT NULL AND v.state <> 'opened') AS opened,
-           SUM(v.first_sent_at IS NOT NULL AND v.state IN ('done', 'optional_email')) AS links,
+           SUM(v.first_sent_at IS NOT NULL AND v.state IN ('done', 'optional_email', 'awaiting_open')) AS links,
            SUM(v.follows = 1 AND v.follow_asked = 0) AS already, SUM(v.follow_asked > 0) AS asked,
            SUM(v.follow_asked > 0 AND v.follows = 1) AS followed,
            COUNT(l.id) AS emails,

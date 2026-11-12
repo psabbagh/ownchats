@@ -1,21 +1,25 @@
 import {
   afterOpening,
   consentFor,
+  emailAsk,
   fill,
   firstMessage,
   FOLLOW_PAYLOAD_PREFIX,
   followAsk,
   getCampaign,
   linkAfterEmail,
+  LINK_STATES,
   linkMessage,
   listCampaigns,
   matchDm,
   OPEN_PAYLOAD_PREFIX,
+  optionalThanksMessage,
+  privacyUrl,
   type Campaign,
   type ConversationState,
   type Person,
 } from "../campaigns";
-import { trackLinks } from "../clicks";
+import { trackingBase, trackLinks } from "../clicks";
 import { log, logStatement, type Ctx } from "../context";
 import { deliverNow, queueLeadCreated } from "../leadwebhook";
 import { extractEmail } from "../match";
@@ -35,6 +39,13 @@ export interface InboundEvent {
 }
 
 const person = (c: Conversation): Person => ({ name: c.name, username: c.username });
+
+/**
+ * Whether the optional email ask can wait for the link's first open: clicks are
+ * counted, so the open will be seen. Callers only use it right after the person
+ * tapped or wrote, when a second message is allowed.
+ */
+const askOnOpen = (ctx: Ctx): boolean => trackingBase(ctx) !== null;
 
 /**
  * The DM state machine. It only ever answers something the person just did, so
@@ -117,7 +128,7 @@ async function handleTap(ctx: Ctx, ev: InboundEvent, prefix: string): Promise<vo
 async function pastOpening(ctx: Ctx, conversation: Conversation, campaign: Campaign, reason: string): Promise<void> {
   if (campaign.followCheck) return followStep(ctx, conversation, campaign, reason);
   await learnProfile(ctx, conversation);
-  return advance(ctx, conversation, campaign, afterOpening(campaign, person(conversation)), reason);
+  return advance(ctx, conversation, campaign, afterOpening(campaign, person(conversation), askOnOpen(ctx)), reason);
 }
 
 /**
@@ -135,7 +146,7 @@ async function followStep(ctx: Ctx, conversation: Conversation, campaign: Campai
     return;
   }
   const why = follows ? reason : follows === null ? "follow check failed" : "link without a follow";
-  return advance(ctx, conversation, campaign, afterOpening(campaign, person(conversation)), why);
+  return advance(ctx, conversation, campaign, afterOpening(campaign, person(conversation), askOnOpen(ctx)), why);
 }
 
 /**
@@ -215,18 +226,36 @@ async function emailStep(ctx: Ctx, conversation: Conversation, campaign: Campaig
 async function optionalEmail(ctx: Ctx, conversation: Conversation, campaign: Campaign, email: string): Promise<void> {
   const delivery = await saveLead(ctx, conversation, campaign, email);
   if (campaign.optionalThanks) {
-    await send(ctx, conversation, campaign, { kind: "text", text: fill(campaign.optionalThanks, person(conversation)) }, "done", "thank-you", "message");
+    await send(ctx, conversation, campaign, optionalThanksMessage(campaign, person(conversation), privacyUrl(ctx.settings)), "done", "thank-you", "message");
   } else {
     await ctx.db.prepare("UPDATE conversations SET state = 'done', updated_at = ? WHERE id = ?").bind(ctx.now(), conversation.id).run();
   }
   await deliverNow(ctx, delivery);
 }
 
+/**
+ * The person opened their link for the first time: the optional email ask, if
+ * their conversation was waiting for that. Once per conversation, and only inside
+ * the 24-hour window their tap or message opened; later, nothing is sent.
+ */
+export async function askAfterOpen(ctx: Ctx, conversationId: number): Promise<void> {
+  if (!ctx.meta) return;
+  // Taken out of awaiting_open first, so a second link opened at the same moment can't ask twice.
+  const conversation = await ctx.db
+    .prepare("UPDATE conversations SET state = 'done' WHERE id = ? AND state = 'awaiting_open' RETURNING *")
+    .bind(conversationId)
+    .first<Conversation>();
+  if (!conversation) return;
+  const campaign = await getCampaign(ctx.db, conversation.campaign_id);
+  if (!campaign || !campaign.active || campaign.emailMode !== "optional" || !campaign.optionalPrompt) return;
+  await send(ctx, conversation, campaign, emailAsk(campaign, person(conversation)), "optional_email", "email ask after the first open", "message");
+}
+
 async function dmKeyword(ctx: Ctx, campaign: Campaign, ev: InboundEvent): Promise<void> {
   const existing = await getConversation(ctx.db, campaign.id, ev.senderId);
   if (existing) {
     // They asked again by DM; sending the link once more is what they want.
-    if (existing.state === "done" || existing.state === "optional_email") {
+    if (LINK_STATES.includes(existing.state)) {
       await touch(ctx, existing, ev.timestamp);
       await send(ctx, existing, campaign, linkMessage(campaign, person(existing)), existing.state, "link sent again on request", "link");
     }
@@ -243,7 +272,7 @@ async function dmKeyword(ctx: Ctx, campaign: Campaign, ev: InboundEvent): Promis
       profile = await ctx.meta!.getProfile(ev.senderId).catch(() => ({}));
     }
   }
-  const first = firstMessage(campaign, "dm", profile, follows);
+  const first = firstMessage(campaign, "dm", profile, follows, askOnOpen(ctx));
   const claimed = await claimConversation(ctx.db, {
     campaignId: campaign.id,
     igUserId: ev.senderId,
@@ -276,7 +305,7 @@ async function dmKeyword(ctx: Ctx, campaign: Campaign, ev: InboundEvent): Promis
   if (profile.name) await ctx.db.prepare("UPDATE conversations SET name = ? WHERE id = ?").bind(profile.name, claimed).run();
   const asked = first.state === "awaiting_follow";
   const reason = asked ? "DM keyword, asked to follow" : "DM keyword";
-  const ok = await send(ctx, conversation, campaign, first.message, first.state, reason, first.state === "done" || first.state === "optional_email" ? "link" : "message", { firstSent: true });
+  const ok = await send(ctx, conversation, campaign, first.message, first.state, reason, LINK_STATES.includes(first.state) ? "link" : "message", { firstSent: true });
   if (!ok) return releaseClaim(ctx.db, conversation.id);
   if (follows !== null) {
     await ctx.db.prepare("UPDATE conversations SET follows = ?, follow_asked = ? WHERE id = ?").bind(follows ? 1 : 0, asked ? 1 : 0, claimed).run();
@@ -305,7 +334,7 @@ function advance(
   next: { message: OutMessage; state: ConversationState },
   reason: string,
 ): Promise<void> {
-  const kind = next.state === "done" || next.state === "optional_email" ? "link" : "message";
+  const kind = LINK_STATES.includes(next.state) ? "link" : "message";
   return send(ctx, conversation, campaign, next.message, next.state, reason, kind).then(() => undefined);
 }
 

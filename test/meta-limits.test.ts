@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { OPEN_PAYLOAD_PREFIX, setCampaignActive } from "../src/campaigns";
 import { MetaError } from "../src/meta/client";
 import { DAY, HOUR, MINUTE, PRIVATE_REPLIES_PER_HOUR } from "../src/time";
-import { EMAIL_LINES, FAN, FAN2, OTHER_POST, OWNER, REEL, setupWorld } from "./helpers";
+import { saveSettings } from "../src/settings";
+import { BASE, EMAIL_LINES, FAN, FAN2, OTHER_POST, OWNER, REEL, setupWorld } from "./helpers";
 
 type World = Awaited<ReturnType<typeof setupWorld>>;
 let w: World;
@@ -125,7 +126,7 @@ describe("follow-ups only within 24 hours of the person's reply", () => {
     expect(await w.unwrap(toFan[1]!.message)).toMatchObject({ buttons: [{ type: "web_url", url: "https://example.com/library" }] });
     const lead = await env.DB.prepare("SELECT * FROM leads").first<{ email: string; consent_text: string; consented_at: number; username: string }>();
     expect(lead).toMatchObject({ email: "invented.fan@example.com", username: FAN.username, consented_at: w.clock.now() });
-    expect(lead!.consent_text).toContain("newsletter");
+    expect(lead!.consent_text).toBe(EMAIL_LINES.emailPrompt);
   });
 
   it("re-asks once, then sends the link anyway", async () => {
@@ -395,6 +396,8 @@ describe("polling", () => {
 });
 
 describe("email modes", () => {
+  const state = async () => (await env.DB.prepare("SELECT state FROM conversations").first<{ state: string }>())!.state;
+
   it("link only: the tap sends the link, and nothing asks for an email", async () => {
     const id = await w.campaign({ emailMode: "none" });
     await w.sendComment(w.comment("agents", FAN));
@@ -405,26 +408,97 @@ describe("email modes", () => {
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM leads").first()).toMatchObject({ n: 0 });
   });
 
-  it("link plus optional email: link and the email line at once, an email reply is saved and thanked", async () => {
-    const id = await w.campaign({ emailMode: "optional", consentText: "Newsletter from test_creator" });
+  it("link plus optional email: the link alone, the email ask once they open it, an email reply saved and thanked with a privacy button", async () => {
+    const id = await w.campaign({ emailMode: "optional", consentText: "Guides by email from test_creator" });
     await w.sendComment(w.comment("agents", FAN));
     await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
+    expect(w.meta.sentTo(FAN.id)).toHaveLength(1);
     const [link] = w.meta.sentTo(FAN.id);
-    expect(link!.message).toMatchObject({ kind: "buttons", text: expect.stringContaining("Reply with your email") });
-    expect(await w.unwrap(link!.message)).toMatchObject({ buttons: [{ type: "web_url", url: "https://example.com/library" }] });
+    expect(await w.unwrap(link!.message)).toEqual({ kind: "buttons", text: "Here you go:", buttons: [{ type: "web_url", title: "Open", url: "https://example.com/library" }] });
+    expect(await state()).toBe("awaiting_open");
+
+    await w.openLink(FAN.id);
+    expect(w.meta.sentTo(FAN.id)[1]!.message).toEqual({ kind: "text", text: EMAIL_LINES.optionalPrompt });
+    expect(await state()).toBe("optional_email");
+    expect((await w.activity()).at(-1)).toMatchObject({ kind: "message", outcome: "sent", reason: "email ask after the first open" });
+
     await w.sendDm(FAN.id, "ok here: fan@example.com");
-    expect(await env.DB.prepare("SELECT email, consent_text FROM leads").first()).toEqual({ email: "fan@example.com", consent_text: "Newsletter from test_creator" });
-    expect(w.meta.sentTo(FAN.id)[1]!.message).toEqual({ kind: "text", text: "Thanks, you're on the list!" });
+    expect(await env.DB.prepare("SELECT email, consent_text FROM leads").first()).toEqual({ email: "fan@example.com", consent_text: "Guides by email from test_creator" });
+    expect(w.meta.sentTo(FAN.id)[2]!.message).toEqual({
+      kind: "buttons",
+      text: "Thanks, you're on the list!",
+      buttons: [{ type: "web_url", title: "Privacy", url: `${BASE}/privacy` }],
+    });
+    expect(await state()).toBe("done");
+  });
+
+  it("link plus optional email: the ask goes out once, however often and whichever link they open", async () => {
+    const id = await w.campaign({ emailMode: "optional", links: [{ label: "Library", url: "https://example.com/1" }, { label: "Bonus", url: "https://example.com/2" }] });
+    await w.sendComment(w.comment("agents", FAN));
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
+    const link = w.meta.sentTo(FAN.id)[0]!.message as { buttons: Array<{ url: string }> };
+    const ua = { headers: { "user-agent": "Mozilla/5.0 (iPhone) Mobile/15E148 Instagram 400.0.0.27.92" }, redirect: "manual" as const };
+    for (const b of [...link.buttons, ...link.buttons]) await w.fetch(new URL(b.url).pathname, ua);
+    expect(w.meta.sentTo(FAN.id)).toHaveLength(2);
+  });
+
+  it("link plus optional email: a link preview is not an open, and brings no ask", async () => {
+    const id = await w.campaign({ emailMode: "optional" });
+    await w.sendComment(w.comment("agents", FAN));
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
+    const link = w.meta.sentTo(FAN.id)[0]!.message as { buttons: Array<{ url: string }> };
+    await w.fetch(new URL(link.buttons[0]!.url).pathname, { headers: { "user-agent": "facebookexternalhit/1.1" }, redirect: "manual" });
+    expect(w.meta.sentTo(FAN.id)).toHaveLength(1);
+    expect(await state()).toBe("awaiting_open");
+  });
+
+  it("link plus optional email: an open more than 24 hours after the tap brings no ask", async () => {
+    const id = await w.campaign({ emailMode: "optional" });
+    await w.sendComment(w.comment("agents", FAN));
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
+    w.clock.advance(25 * HOUR);
+    await w.openLink(FAN.id);
+    expect(w.meta.sentTo(FAN.id)).toHaveLength(1);
+    expect(w.meta.calls.filter((c) => c === "sendMessage")).toHaveLength(1);
+    expect(await state()).toBe("done");
+  });
+
+  it("link plus optional email: an email sent before the ask is not saved", async () => {
+    const id = await w.campaign({ emailMode: "optional" });
+    await w.sendComment(w.comment("agents", FAN));
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
+    await w.sendDm(FAN.id, "fan@example.com");
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM leads").first()).toEqual({ n: 0 });
+    expect(w.meta.sentTo(FAN.id)).toHaveLength(1);
+  });
+
+  it("link plus optional email: with click counting off, the ask goes under the link", async () => {
+    await saveSettings(env.DB, env.ADMIN_PASSWORD, { click_tracking: "off" });
+    const id = await w.campaign({ emailMode: "optional" });
+    await w.sendComment(w.comment("agents", FAN));
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
+    expect(w.meta.sentTo(FAN.id)[0]!.message).toMatchObject({ kind: "buttons", text: `Here you go:\n\n${EMAIL_LINES.optionalPrompt}` });
+    expect(await state()).toBe("optional_email");
+  });
+
+  it("link plus optional email: a thank-you without a button label is plain text", async () => {
+    const id = await w.campaign({ emailMode: "optional", optionalThanksButton: "" });
+    await w.sendComment(w.comment("agents", FAN));
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
+    await w.openLink(FAN.id);
+    await w.sendDm(FAN.id, "fan@example.com");
+    expect(w.meta.sentTo(FAN.id).at(-1)!.message).toEqual({ kind: "text", text: "Thanks, you're on the list!" });
   });
 
   it("link plus optional email: other replies get no re-ask, and silence is fine", async () => {
     const id = await w.campaign({ emailMode: "optional" });
     await w.sendComment(w.comment("agents", FAN));
     await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
+    await w.openLink(FAN.id);
     await w.sendDm(FAN.id, "thanks!");
     w.clock.advance(3 * HOUR);
     await w.cron();
-    expect(w.meta.sentTo(FAN.id)).toHaveLength(1);
+    expect(w.meta.sentTo(FAN.id)).toHaveLength(2);
     // The link counts as sent even though the conversation stays open for an email.
     const counts = await env.DB.prepare("SELECT state FROM conversations").first();
     expect(counts).toEqual({ state: "optional_email" });
@@ -445,6 +519,7 @@ describe("email modes", () => {
     await w.campaign({ name: "Prompts", keywords: ["PROMPTS"], mediaId: OTHER_POST, openingButton: "", links: [{ label: "Get it", url: "https://example.com/prompts" }] });
     await w.sendComment(w.comment("agents", FAN));
     await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${a}`);
+    await w.openLink(FAN.id);
     await w.sendDm(FAN.id, "PROMPTS please");
     expect(await w.unwrap(w.meta.sentTo(FAN.id).at(-1)!.message)).toMatchObject({ buttons: [{ url: "https://example.com/prompts" }] });
   });

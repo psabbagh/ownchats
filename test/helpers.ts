@@ -1,6 +1,6 @@
 import { createExecutionContext, createScheduledController, waitOnExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { DEFAULTS, emailLines, saveCampaign, senderOf, type CampaignInput } from "../src/campaigns";
+import { DEFAULTS, saveCampaign, type CampaignInput } from "../src/campaigns";
 import { buildCtx } from "../src/context";
 import { hmacSha256Hex } from "../src/crypto";
 import { createApp } from "../src/index";
@@ -28,8 +28,8 @@ export class Clock {
 
 const TABLES = ["settings", "campaigns", "comments", "conversations", "leads", "inbound", "activity", "login_attempts", "media_stats", "deliveries", "tracked_links"];
 
-/** The default email lines for the test account, which has no sender name set. */
-export const EMAIL_LINES = emailLines(senderOf({ ig_username: OWNER.username, base_url: BASE }));
+/** The default email lines. */
+export const EMAIL_LINES = { emailPrompt: DEFAULTS.emailPrompt, optionalPrompt: DEFAULTS.optionalPrompt };
 
 export interface Received {
   url: string;
@@ -106,6 +106,7 @@ export async function setupWorld(opts: { connected?: boolean } = {}) {
         emailThanks: DEFAULTS.emailThanks,
         optionalPrompt: EMAIL_LINES.optionalPrompt,
         optionalThanks: DEFAULTS.optionalThanks,
+        optionalThanksButton: DEFAULTS.optionalThanksButton,
         consentText: "",
         emailTag: "",
         linkText: DEFAULTS.linkText,
@@ -190,6 +191,20 @@ export async function setupWorld(opts: { connected?: boolean } = {}) {
           { id: OWNER.id, time: at, messaging: [{ sender: { id: senderId }, recipient: { id: OWNER.id }, timestamp: at, postback: { mid: `mid.pb.${seq}`, title: "Send me the link", payload } }] },
         ],
       });
+    },
+
+    /**
+     * The person opens the link in the last message they got that carries one, in
+     * Instagram's in-app browser. Does nothing when it isn't a /go/ link.
+     */
+    async openLink(igUserId: string): Promise<void> {
+      const urls = meta
+        .sentTo(igUserId)
+        .flatMap((s) => (typeof s.message === "string" ? [] : s.message.kind === "buttons" ? s.message.buttons.flatMap((b) => (b.type === "web_url" ? [b.url] : [])) : s.message.text.split("\n")))
+        .filter((u) => u.startsWith(`${BASE}/go/`));
+      const url = urls.at(-1);
+      if (!url) return;
+      await world.fetch(new URL(url).pathname, { headers: { "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 400.0.0.27.92" }, redirect: "manual" });
     },
 
     /** Where a /go/ link leads, read from the database without counting a click; any other URL as it is. */

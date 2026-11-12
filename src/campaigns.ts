@@ -40,6 +40,8 @@ export interface Campaign {
   emailThanks: string;
   optionalPrompt: string;
   optionalThanks: string;
+  /** Label of the button under the thank-you that opens the privacy page. Empty: no button. */
+  optionalThanksButton: string;
   consentText: string;
   /** Sent to the lead webhook as campaign.email_tag, so the owner's email tool can pick the sequence. Empty: none. */
   emailTag: string;
@@ -83,6 +85,7 @@ interface CampaignRow {
   email_thanks: string;
   optional_prompt: string;
   optional_thanks: string;
+  optional_thanks_button: string;
   consent_text: string;
   email_tag: string;
   link_text: string;
@@ -118,6 +121,7 @@ function fromRow(r: CampaignRow): Campaign {
     emailThanks: r.email_thanks,
     optionalPrompt: r.optional_prompt,
     optionalThanks: r.optional_thanks,
+    optionalThanksButton: r.optional_thanks_button ?? "",
     consentText: r.consent_text,
     emailTag: r.email_tag,
     linkText: r.link_text,
@@ -170,7 +174,12 @@ export const DEFAULTS = {
   openingButton: "Send me the link",
   emailReask: "Hmm, that doesn't look like an email address. Could you type it again? (Or reply anything and I'll just send the link.)",
   emailThanks: "Thanks! Here it is:",
+  // The email questions say what people will get and that they can unsubscribe. They
+  // don't name the sender: the DM comes from the sender's own account.
+  emailPrompt: "What's your email? I'll send you the link here, and my next ones as they come out. Unsubscribe anytime.",
+  optionalPrompt: "Want more like this? Reply with your email and I'll send you my next ones as they come out. Unsubscribe anytime.",
   optionalThanks: "Thanks, you're on the list!",
+  optionalThanksButton: "Privacy",
   linkText: "Here you go:",
   linkLabel: "Open",
   followPrompt: "Almost there, {name}! Follow me first, then tap the button and I'll send it over.",
@@ -178,32 +187,12 @@ export const DEFAULTS = {
   followButton: "I'm following",
 };
 
-/** Who the email lines name, and a page with their mailing address. */
-export interface Sender {
-  name: string;
-  aboutUrl: string;
-}
-
 /**
- * The sender a new campaign's email lines name: the name chosen in Settings, else
- * the Instagram handle. The page is OwnChats' own privacy page, which shows the
- * name and mailing address from Settings.
+ * OwnChats' own privacy page, which shows the sender's name and mailing address
+ * from Settings. Null until the Worker's address is known.
  */
-export function senderOf(s: { sender_name?: string; ig_username?: string; base_url?: string }): Sender {
-  return { name: s.sender_name || (s.ig_username ? `@${s.ig_username}` : "me"), aboutUrl: `${s.base_url ?? ""}/privacy` };
-}
-
-/**
- * The default email questions. Anti-spam laws such as Canada's CASL ask the line
- * people answer to say what they will get, who is asking, where to find a mailing
- * address, and that they can unsubscribe, so the defaults say all four.
- */
-export function emailLines(s: Sender): { emailPrompt: string; optionalPrompt: string } {
-  const who = `From ${s.name}, unsubscribe anytime. Who I am and my address: ${s.aboutUrl}`;
-  return {
-    emailPrompt: `What's your email? I'll send you the link here, and you'll also get my newsletter. ${who}`,
-    optionalPrompt: `Want more like this? Reply with your email and I'll add you to my newsletter. ${who}`,
-  };
+export function privacyUrl(s: { base_url?: string }): string | null {
+  return s.base_url ? `${s.base_url}/privacy` : null;
 }
 
 // Meta's limits: 640 characters of text in a button template, 1000 in a text
@@ -262,6 +251,7 @@ export function campaignFromForm(form: FormData, now: number): { input: Campaign
     emailThanks: text("email_thanks"),
     optionalPrompt: text("optional_prompt"),
     optionalThanks: text("optional_thanks"),
+    optionalThanksButton: text("optional_thanks_button"),
     consentText: text("consent_text"),
     emailTag: text("email_tag"),
     linkText: text("link_text"),
@@ -315,7 +305,10 @@ export function validateCampaign(c: CampaignInput): string[] {
   }
   if (c.emailMode === "optional") {
     if (!c.optionalPrompt) errors.push("Write the optional email line, and say what people will receive.");
-    if (longest(c.optionalThanks) > MAX_TEXT) errors.push(`The thank-you must be ${MAX_TEXT} characters or fewer.`);
+    const thanksLimit = c.optionalThanksButton ? MAX_TEMPLATE_TEXT : MAX_TEXT;
+    if (longest(c.optionalPrompt) > MAX_TEXT) errors.push(`The email ask must be ${MAX_TEXT} characters or fewer.`);
+    if (longest(c.optionalThanks) > thanksLimit) errors.push(`The thank-you must be ${thanksLimit} characters or fewer.`);
+    if (c.optionalThanksButton.length > MAX_BUTTON) errors.push(`The thank-you's button label must be ${MAX_BUTTON} characters or fewer.`);
   }
   if (c.followCheck) {
     if (!c.openingButton) {
@@ -351,6 +344,7 @@ export async function saveCampaign(db: D1Database, c: CampaignInput, id: number 
     c.emailThanks,
     c.optionalPrompt,
     c.optionalThanks,
+    c.optionalThanksButton,
     c.consentText,
     c.emailTag,
     c.linkText,
@@ -364,7 +358,7 @@ export async function saveCampaign(db: D1Database, c: CampaignInput, id: number 
     c.active ? 1 : 0,
   ];
   const columns = `name, video_id, keywords, any_comment, media_id, media_label, public_replies, opening_text, opening_button, email_mode,
-    email_prompt, email_reask, email_thanks, optional_prompt, optional_thanks, consent_text, email_tag, link_text, links, link_title,
+    email_prompt, email_reask, email_thanks, optional_prompt, optional_thanks, optional_thanks_button, consent_text, email_tag, link_text, links, link_title,
     follow_check, follow_prompt, follow_reask, follow_button, dm_keyword, active`;
   if (id === null) {
     const row = await db
@@ -431,10 +425,22 @@ export function fill(text: string, p: Person): string {
 
 /**
  * opened: first DM with the button sent. awaiting_follow, follow_reasked: asked to
- * follow, once or twice. awaiting_email, reasked: email first. optional_email: link
- * sent, an email reply still welcome. done: link sent.
+ * follow, once or twice. awaiting_email, reasked: email first. awaiting_open: link
+ * sent, the optional email ask follows its first open. optional_email: link sent
+ * and email asked for, an email reply still welcome. done: link sent.
  */
-export type ConversationState = "opened" | "awaiting_follow" | "follow_reasked" | "awaiting_email" | "reasked" | "optional_email" | "done";
+export type ConversationState =
+  | "opened"
+  | "awaiting_follow"
+  | "follow_reasked"
+  | "awaiting_email"
+  | "reasked"
+  | "awaiting_open"
+  | "optional_email"
+  | "done";
+
+/** The states in which the person has the link. */
+export const LINK_STATES: ConversationState[] = ["awaiting_open", "optional_email", "done"];
 
 function usesButtons(links: Link[]): boolean {
   return links.length > 0 && links.length <= MAX_LINKS && links.every((l) => l.label);
@@ -450,9 +456,14 @@ export function linkMessage(c: Campaign, p: Person, text = c.linkText): OutMessa
   return { kind: "text", text: [body, ...c.links.map((l) => l.url)].filter(Boolean).join("\n") };
 }
 
-/** The link, with the optional email line under it in "link plus optional email" mode. */
-function linkStep(c: Campaign, p: Person): { message: OutMessage; state: ConversationState } {
+/**
+ * The link. In "link plus optional email" mode the email ask comes with it: as a
+ * message of its own once the person opens the link (`askOnOpen`), or, when no
+ * second message can follow, as a line under the link.
+ */
+function linkStep(c: Campaign, p: Person, askOnOpen: boolean): { message: OutMessage; state: ConversationState } {
   if (c.emailMode === "optional") {
+    if (askOnOpen) return { message: linkMessage(c, p), state: "awaiting_open" };
     const text = [c.linkText, c.optionalPrompt].filter(Boolean).join("\n\n");
     return { message: linkMessage(c, p, text), state: "optional_email" };
   }
@@ -462,15 +473,30 @@ function linkStep(c: Campaign, p: Person): { message: OutMessage; state: Convers
 export const OPEN_PAYLOAD_PREFIX = "OWNCHATS_OPEN:";
 export const FOLLOW_PAYLOAD_PREFIX = "OWNCHATS_FOLLOW:";
 
+/** The optional email ask as a message of its own, sent once the person has opened the link. */
+export function emailAsk(c: Campaign, p: Person): OutMessage {
+  return { kind: "text", text: fill(c.optionalPrompt, p) };
+}
+
+/** The reply to an optional email, with a button to the privacy page when the campaign has one. */
+export function optionalThanksMessage(c: Campaign, p: Person, privacy: string | null): OutMessage {
+  const text = fill(c.optionalThanks, p);
+  if (!c.optionalThanksButton || !privacy) return { kind: "text", text };
+  return { kind: "buttons", text, buttons: [{ type: "web_url", title: c.optionalThanksButton, url: privacy }] };
+}
+
 /**
  * The first DM, and the state it leaves the conversation in. `follows` is what Meta
  * said when the person started by DM; a comment's first DM comes before any check.
+ * `askOnOpen`: see afterOpening. Never for a comment's first DM, a private reply,
+ * which no second message can follow until the person answers.
  */
 export function firstMessage(
   c: Campaign,
   trigger: "comment" | "dm",
   p: Person,
   follows: boolean | null = null,
+  askOnOpen = false,
 ): { message: OutMessage; state: ConversationState } {
   if (trigger === "comment" && c.openingButton) {
     return {
@@ -483,7 +509,7 @@ export function firstMessage(
     };
   }
   if (c.followCheck && follows === false) return followAsk(c, p, false);
-  return afterOpening(c, p);
+  return afterOpening(c, p, trigger === "dm" && askOnOpen);
 }
 
 /** "Follow me first", with the button that checks again; `again` for the second ask. */
@@ -498,10 +524,14 @@ export function followAsk(c: Campaign, p: Person, again: boolean): { message: Ou
   };
 }
 
-/** What follows the tap (or the first DM when there is no button). */
-export function afterOpening(c: Campaign, p: Person): { message: OutMessage; state: ConversationState } {
+/**
+ * What follows the tap (or the first DM when there is no button). `askOnOpen`: the
+ * person has just tapped or written and the link's first open will be seen, so the
+ * optional email ask can wait for it.
+ */
+export function afterOpening(c: Campaign, p: Person, askOnOpen = false): { message: OutMessage; state: ConversationState } {
   if (c.emailMode === "first") return { message: { kind: "text", text: fill(c.emailPrompt, p) }, state: "awaiting_email" };
-  return linkStep(c, p);
+  return linkStep(c, p, askOnOpen);
 }
 
 /** Email first: the link once the email is saved, with the thank-you as its text. */

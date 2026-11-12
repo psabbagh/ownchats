@@ -99,10 +99,15 @@ export async function personalLink(ctx: Ctx, conversationId: number | null, camp
 
 /**
  * /go/<id>: a 302 to the real link. A person's first click on it is recorded;
- * HEAD requests and link previews are sent on without counting.
+ * HEAD requests and link previews are sent on without counting. `opened` is the
+ * conversation whose link was just opened for the first time, if any, so the
+ * caller can send what waits on that after the redirect.
  */
-export async function followLink(ctx: Ctx, request: Request, id: string): Promise<Response> {
-  if (request.method !== "GET" && request.method !== "HEAD") return new Response("Method not allowed", { status: 405, headers: { allow: "GET, HEAD" } });
+export async function followLink(ctx: Ctx, request: Request, id: string): Promise<{ response: Response; opened: number | null }> {
+  let opened: number | null = null;
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return { response: new Response("Method not allowed", { status: 405, headers: { allow: "GET, HEAD" } }), opened };
+  }
   // With counting off, links already sent still lead where they did, and count nothing.
   const counts = request.method === "GET" && ctx.settings.click_tracking !== "off" && !isPreviewFetch(request.headers.get("user-agent"));
   const now = ctx.now();
@@ -121,16 +126,18 @@ export async function followLink(ctx: Ctx, request: Request, id: string): Promis
         )
         .bind(now, `first click on link ${clicked.link_index + 1}`, clicked.conversation_id)
         .run();
+      opened = clicked.conversation_id;
     }
     row = clicked;
   } else {
     row = await ctx.db.prepare("SELECT url FROM tracked_links WHERE id = ?").bind(id).first<{ url: string }>();
   }
-  if (!row) return linkGone();
-  return new Response(null, {
+  if (!row) return { response: linkGone(), opened };
+  const response = new Response(null, {
     status: 302,
     headers: { location: row.url, "cache-control": "private, no-store", "referrer-policy": "no-referrer", "x-robots-tag": "noindex" },
   });
+  return { response, opened };
 }
 
 function linkGone(): Response {

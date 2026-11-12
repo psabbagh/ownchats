@@ -32,13 +32,14 @@ export function getConversation(db: D1Database, campaignId: number, personId: st
 /**
  * The person's most recent conversation that still expects something from them,
  * on a campaign that is on. One untouched for a week is treated as abandoned, so
- * a later unrelated DM does not restart it.
+ * a later unrelated DM does not restart it. One whose link has not been opened
+ * expects nothing yet: the email ask has not been sent.
  */
 export function openConversation(db: D1Database, igUserId: string, since: number): Promise<Conversation | null> {
   return db
     .prepare(
       `SELECT c.* FROM conversations c JOIN campaigns k ON k.id = c.campaign_id
-       WHERE c.ig_user_id = ? AND c.state != 'done' AND c.first_sent_at IS NOT NULL AND c.updated_at >= ? AND k.active = 1
+       WHERE c.ig_user_id = ? AND c.state NOT IN ('done', 'awaiting_open') AND c.first_sent_at IS NOT NULL AND c.updated_at >= ? AND k.active = 1
        ORDER BY c.updated_at DESC, c.id DESC LIMIT 1`,
     )
     .bind(igUserId, since)

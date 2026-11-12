@@ -26,10 +26,11 @@ async function signedCorrectly(r: Received, secret = WEBHOOK_SECRET): Promise<bo
   return r.headers["x-ownchats-signature"] === `v1=${await hmacSha256Hex(secret, `${ts}.${r.body}`)}`;
 }
 
-/** A comment, a tap and an email reply on a "link plus optional email" campaign. */
+/** A comment, a tap, the link opened (which brings the email ask) and an email reply, on a "link plus optional email" campaign. */
 async function giveEmail(w: World, campaign: number, who = FAN, email = "fan@example.com") {
   await w.sendComment(w.comment("agents", who));
   await w.tap(who.id, `${OPEN_PAYLOAD_PREFIX}${campaign}`);
+  await w.openLink(who.id);
   await w.sendDm(who.id, `here: ${email}`);
 }
 
@@ -78,11 +79,11 @@ describe("lead webhook", () => {
       campaign: { id, name: "SETUP", email_tag: "setupGuide", link: dmLink, link_title: "Turn YouTube videos into Claude skills" },
       consent: { wording: lead!.consent_text, given_at: at, channel: "instagram_dm" },
     });
-    // The consent wording is the line the person answered, which names the sender and links to the address page.
-    expect(lead!.consent_text).toContain(`From @test_creator, unsubscribe anytime. Who I am and my address: ${BASE}/privacy`);
+    // The consent wording is the line the person answered.
+    expect(lead!.consent_text).toBe("Want more like this? Reply with your email and I'll send you my next ones as they come out. Unsubscribe anytime.");
 
     // The person got their thank-you, and the attempt is in the log under them.
-    expect(w.meta.sentTo(FAN.id).at(-1)!.message).toEqual({ kind: "text", text: "Thanks, you're on the list!" });
+    expect(w.meta.sentTo(FAN.id).at(-1)!.message).toMatchObject({ kind: "buttons", text: "Thanks, you're on the list!", buttons: [{ title: "Privacy", url: `${BASE}/privacy` }] });
     expect(await webhookLog()).toEqual([
       expect.objectContaining({ outcome: "sent", reason: "lead.created delivered (HTTP 200)", campaign_id: id, ig_user_id: FAN.id }),
     ]);
@@ -300,11 +301,12 @@ describe("lead webhook settings", () => {
     expect(edit).toContain('name="link_title" type="text" value="The setup guide"');
   });
 
-  it("start new campaigns with email lines that name the sender, link to the privacy page, and say people can unsubscribe", async () => {
+  it("start new campaigns with email lines that say people can unsubscribe, and a thank-you button to the privacy page, which names the sender", async () => {
     const cookie = await w.signIn();
     await w.fetch("/dashboard/settings/contact", form(cookie, { sender_name: "Invented Creator", sender_address: "PO Box 123\nInvented City", contact: "" }));
     const page = await (await w.fetch("/dashboard/campaigns/new", { headers: { cookie } })).text();
-    expect(page).toContain(`From Invented Creator, unsubscribe anytime. Who I am and my address: ${BASE}/privacy`);
+    expect(page).toContain("I&#39;ll send you my next ones as they come out. Unsubscribe anytime.</textarea>");
+    expect(page).toContain('name="optional_thanks_button" type="text" value="Privacy"');
     const privacy = await (await w.fetch("/privacy")).text();
     expect(privacy).toContain("Invented Creator (@test_creator on Instagram)<br>PO Box 123<br>Invented City");
     expect(privacy).toContain("unsubscribe");

@@ -3,13 +3,11 @@ import {
   consentFor,
   DEFAULTS,
   fill,
-  emailLines,
   getCampaign,
   listCampaigns,
   NEXT_POST,
   postLabel,
   saveCampaign,
-  senderOf,
   setCampaignActive,
   type Campaign,
   type CampaignInput,
@@ -22,18 +20,16 @@ export const EMAIL_MODE_LABEL: Record<EmailMode, string> = { none: "link only", 
 export type StartFlow = "link" | "email";
 const START_FLOWS: Record<StartFlow, { openingButton: string; emailMode: EmailMode; label: string; hint: string }> = {
   link: { openingButton: "", emailMode: "none", label: "DM with the link", hint: "The first DM carries the link. No email ask." },
-  // The tap brings the link with the email ask under it, so nobody has to give an email to get it.
+  // The tap brings the link, and the email ask follows once they open it, so nobody has to give an email to get it.
   email: {
     openingButton: DEFAULTS.openingButton,
     emailMode: "optional",
     label: "DM with a button, then ask for their email",
-    hint: "The first DM has a button. The tap brings the link, with a line asking for their email.",
+    hint: "The first DM has a button. The tap brings the link, and once they open it, a message asks for their email.",
   },
 };
 
 export function newCampaignDefaults(settings: Settings, flow: StartFlow): CampaignInput {
-  // The email lines name the sender and link to the privacy page, which shows their mailing address.
-  const lines = emailLines(senderOf(settings));
   return {
     name: "",
     videoId: "",
@@ -46,11 +42,12 @@ export function newCampaignDefaults(settings: Settings, flow: StartFlow): Campai
     openingText: DEFAULTS.openingText,
     openingButton: START_FLOWS[flow].openingButton,
     emailMode: START_FLOWS[flow].emailMode,
-    emailPrompt: lines.emailPrompt,
+    emailPrompt: DEFAULTS.emailPrompt,
     emailReask: DEFAULTS.emailReask,
     emailThanks: DEFAULTS.emailThanks,
-    optionalPrompt: lines.optionalPrompt,
+    optionalPrompt: DEFAULTS.optionalPrompt,
     optionalThanks: DEFAULTS.optionalThanks,
+    optionalThanksButton: DEFAULTS.optionalThanksButton,
     consentText: "",
     emailTag: "",
     linkText: DEFAULTS.linkText,
@@ -300,13 +297,15 @@ async function campaignForm(ctx: Ctx, current: Campaign | null, input?: Campaign
         <div class="card">
           <h3>Email</h3>
           ${mode("none", "Link only", "no email ask")}
-          ${mode("optional", "Link plus optional email", "the link comes right away, with a line inviting them to reply with their email")}
+          ${mode("optional", "Link plus optional email", "the link comes right away, and once they open it, a message invites them to reply with their email")}
           ${mode("first", "Email first", "ask for the email, re-ask once, then send the link either way")}
           <h3 style="margin-top:16px">Link plus optional email</h3>
-          <label for="optional_prompt">Line added under the link</label><textarea id="optional_prompt" name="optional_prompt">${v.optionalPrompt}</textarea>
-          <p class="hint">Say what people will receive. Replies that aren't an email are left alone: no re-ask.</p>
+          <label for="optional_prompt">Email ask</label><textarea id="optional_prompt" name="optional_prompt">${v.optionalPrompt}</textarea>
+          <p class="hint">Say what people will receive. Sent as its own message when they first open the link, within 24 hours of their tap. Without the first DM's button, or with click counting off, it goes under the link instead. Replies that aren't an email are left alone: no re-ask.</p>
           <label for="optional_thanks">Reply once the email is saved</label><textarea id="optional_thanks" name="optional_thanks">${v.optionalThanks}</textarea>
           <p class="hint">Leave empty to say nothing.</p>
+          <label for="optional_thanks_button">Button under that reply</label><input id="optional_thanks_button" name="optional_thanks_button" type="text" value="${v.optionalThanksButton}" maxlength="20" placeholder="${DEFAULTS.optionalThanksButton}">
+          <p class="hint">Opens your <a href="/privacy">privacy page</a>. Leave empty for no button.</p>
           <h3 style="margin-top:16px">Email first</h3>
           <label for="email_prompt">Question</label><textarea id="email_prompt" name="email_prompt">${v.emailPrompt}</textarea>
           <p class="hint">Say what people will receive.</p>
@@ -314,9 +313,10 @@ async function campaignForm(ctx: Ctx, current: Campaign | null, input?: Campaign
           <label for="email_thanks">Message with the link once the email is saved</label><textarea id="email_thanks" name="email_thanks">${v.emailThanks}</textarea>
           <p class="hint">Leave empty to use the link message above. After a second answer that isn't an email, the link is sent anyway with the link message.</p>
           <p class="hint">Anti-spam laws ask the line people answer to say what they'll get, who you are, where to find your mailing address,
-            and that they can unsubscribe. The defaults say all four, and link to your <a href="/privacy">privacy page</a>, which shows your name and address
+            and that they can unsubscribe. The defaults say what they'll get and that they can unsubscribe. They don't name you or link your address:
+            the DM comes from your own account, and the thank-you's button opens your <a href="/privacy">privacy page</a>, which shows your name and address
             ${s.sender_name && s.sender_address ? "from Settings" : html`once you add them under <a href="/dashboard/settings#sender">Settings</a>`}.
-            Check the rules where you and your audience live.</p>
+            Check the rules where you and your audience live, and add to the wording if they ask for more.</p>
           <h3 style="margin-top:16px">Consent</h3>
           <label for="consent_text">Wording saved with each email</label><textarea id="consent_text" name="consent_text" placeholder="Leave empty to save the question they answered">${v.consentText}</textarea>
           <p class="hint">Stored with every lead, with the date, as the record of what they agreed to.</p>
@@ -742,7 +742,7 @@ export async function settingsAction(ctx: Ctx, request: Request, what: string): 
     const chosen = await getCampaign(ctx.db, Number(form.get("campaign_id")) || 0);
     // With no campaign yet, a stand-in, so the webhook can be checked before the first campaign exists.
     const campaign = chosen ?? { id: 0, name: "Test", emailTag: "", linkTitle: "", links: [] };
-    const consentText = chosen ? fill(consentFor(chosen), { name }) : emailLines(senderOf(ctx.settings)).optionalPrompt;
+    const consentText = chosen ? fill(consentFor(chosen), { name }) : DEFAULTS.optionalPrompt;
     const id = await sendTestLead(ctx, { email, name, campaign, consentText });
     return redirect(`/dashboard/settings?test=${encodeURIComponent(id)}#webhook`);
   }
