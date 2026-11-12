@@ -389,3 +389,94 @@ describe("Send a test lead", () => {
     expect(w.receiver.bodies()[0]).toMatchObject({ test: true, lead: { name: "Sam" }, campaign: { id: 0, name: "Test", email_tag: null, link: null, link_title: null } });
   });
 });
+
+describe("POST /api/test-lead", () => {
+  let cookie: string;
+  let write: Record<string, string>;
+  beforeEach(async () => {
+    cookie = await w.signIn();
+    const page = await (await w.fetch("/dashboard/settings/api-write-token", form(cookie, { do: "new" }))).text();
+    write = { authorization: `Bearer ${page.match(/ocw_[A-Za-z0-9_-]+/)![0]}`, "content-type": "application/json" };
+  });
+  const send = (body: unknown, headers = write) => w.fetch("/api/test-lead", { method: "POST", headers, body: JSON.stringify(body) });
+
+  it("sends the same test lead as Settings and answers with the delivery id, the HTTP status and the receiver's reply", async () => {
+    await w.lead_webhook();
+    const id = await w.campaign({ name: "SETUP", emailMode: "optional", emailTag: "setupGuide", consentText: "Guide by email from Invented Creator", linkTitle: "A guide" });
+    const res = await send({ email: "Owner@Example.org", name: "Sam", campaign_id: id });
+    expect(res.status).toBe(200);
+    const [req] = w.receiver.received as [Received];
+    const out = await res.json();
+    expect(out).toEqual({
+      delivery_id: req.headers["x-ownchats-delivery"],
+      status: "delivered",
+      message: "Test lead delivered (HTTP 200).",
+      http_status: 200,
+      result: "HTTP 200",
+      reply: "ok",
+      attempts: 1,
+      next_attempt_at: null,
+      campaign_id: id,
+    });
+    expect(await signedCorrectly(req)).toBe(true);
+    expect(JSON.parse(req.body)).toMatchObject({
+      test: true,
+      lead: { id: 0, email: "owner@example.org", name: "Sam" },
+      campaign: { id, name: "SETUP", email_tag: "setupGuide", link_title: "A guide" },
+      consent: { wording: "Guide by email from Invented Creator", channel: "instagram_dm" },
+    });
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM leads").first()).toEqual({ n: 0 });
+    expect(await webhookLog()).toEqual([expect.objectContaining({ outcome: "sent", reason: "Test lead.created delivered (HTTP 200)", campaign_id: null })]);
+  });
+
+  it("builds the payload exactly as the dashboard's button does", async () => {
+    await w.lead_webhook();
+    const id = await w.campaign({ name: "SETUP", emailMode: "optional", emailTag: "setupGuide", linkTitle: "A guide" });
+    await w.fetch("/dashboard/settings/test-lead", form(cookie, { email: "owner@example.org", name: "Sam", campaign_id: String(id) }));
+    await send({ email: "owner@example.org", name: "Sam", campaign_id: id });
+    const [fromDashboard, fromApi] = w.receiver.bodies() as [Record<string, any>, Record<string, any>];
+    const strip = (b: Record<string, any>) => ({ ...b, delivery_id: null, campaign: { ...b.campaign, link: null } });
+    expect(strip(fromApi)).toEqual(strip(fromDashboard));
+  });
+
+  it("works with no campaign, and says when the receiver fails and the lead will be retried or was refused", async () => {
+    await w.lead_webhook();
+    w.receiver.replies = [502, 401];
+    const retried = await (await send({ email: "owner@example.org" })).json<Record<string, unknown>>();
+    expect(retried).toMatchObject({ status: "pending", http_status: 502, result: "HTTP 502", reply: "refused with 502", attempts: 1, campaign_id: null });
+    expect(retried.next_attempt_at).toBe(new Date(w.clock.now() + RETRY_DELAYS[0]!).toISOString());
+    expect(retried.message).toContain("The test lead didn't get through yet (HTTP 502)");
+    expect(w.receiver.bodies()[0]).toMatchObject({ campaign: { id: 0, name: "Test" } });
+    const refused = await (await send({ email: "owner@example.org" })).json();
+    expect(refused).toMatchObject({ status: "failed", http_status: 401, message: "The test lead was refused (HTTP 401) and won't be retried.", next_attempt_at: null });
+  });
+
+  it("refuses what the form refuses: no webhook, a bad address, an unknown campaign", async () => {
+    let res = await send({ email: "owner@example.org" });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "Set the webhook's URL and secret first.", problem: "no_webhook" });
+    await w.lead_webhook();
+    res = await send({ email: "not an email" });
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ problem: "bad_email" });
+    expect((await send({})).status).toBe(422);
+    expect((await send({ email: "a@example.org, b@example.org" })).status).toBe(422);
+    res = await send({ email: "owner@example.org", campaign_id: 999 });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ problem: "no_campaign" });
+    expect((await send({ email: "owner@example.org", campaign_id: "abc" })).status).toBe(400);
+    expect((await send({ email: 5 })).status).toBe(400);
+    expect(w.receiver.received).toHaveLength(0);
+  });
+
+  it("needs the write token", async () => {
+    await w.lead_webhook();
+    expect((await send({ email: "owner@example.org" }, { "content-type": "application/json" })).status).toBe(401);
+    const page = await (await w.fetch("/dashboard/settings/api-token", form(cookie, { do: "new" }))).text();
+    const read = { authorization: `Bearer ${page.match(/oc_[A-Za-z0-9_-]+/)![0]}`, "content-type": "application/json" };
+    expect((await send({ email: "owner@example.org" }, read)).status).toBe(401);
+    expect(w.receiver.received).toHaveLength(0);
+    const index = await (await w.fetch("/api", { headers: { authorization: read.authorization } })).json<{ endpoints: Record<string, string> }>();
+    expect(index.endpoints["POST /api/test-lead"]).toBeDefined();
+  });
+});

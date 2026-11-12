@@ -1,7 +1,6 @@
 import {
   answersShortcuts,
   campaignFromForm,
-  consentFor,
   DEFAULT_LIMITS,
   DEFAULTS,
   fill,
@@ -71,8 +70,8 @@ import type { Ctx } from "../context";
 import { trackingBase } from "../clicks";
 import { randomToken, sha256Hex } from "../crypto";
 import { leadsCsv, listLeads } from "../export";
-import { getDelivery, MIN_SECRET_LENGTH, recentDeliveries, sendTestLead, webhookConfig, type DeliveryRow } from "../leadwebhook";
-import { extractEmail, parseKeywords } from "../match";
+import { checkTestLead, getDelivery, MIN_SECRET_LENGTH, recentDeliveries, sendTestLead, webhookConfig, type DeliveryRow } from "../leadwebhook";
+import { parseKeywords } from "../match";
 import type { Media } from "../meta/client";
 import { recentMedia } from "../pipeline/poll";
 import { MISSING_PERMISSION, readMediaStats } from "../insights";
@@ -667,7 +666,7 @@ export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string; apiWrit
       </div>
       <div class="card" id="api-write-token">
         <h3>API write token</h3>
-        <p>For a tool or agent that sets up campaigns for your next post, with <code>POST ${s.base_url ?? ""}/api/campaigns</code>. It can create campaigns and check captions, and nothing else: it can't read your leads, and the API token above can't create anything.</p>
+        <p>For a tool or agent that sets up campaigns for your next post, with <code>POST ${s.base_url ?? ""}/api/campaigns</code>. It can create campaigns, check captions and send a test lead to the lead webhook, and nothing else: it can't read your leads, and the API token above can't create anything.</p>
         ${fresh.apiWriteToken
           ? html`<p class="ok">Copy it now; it is shown only once.</p>${copyField(fresh.apiWriteToken)}`
           : html`<p class="muted">${s.api_write_token_hash ? "A write token exists." : "No write token yet."}</p>`}
@@ -784,16 +783,13 @@ export async function settingsAction(ctx: Ctx, request: Request, what: string): 
     return saved("webhook", "webhook");
   }
   if (what === "test-lead") {
-    if (!webhookConfig(ctx)) return settingsPage(ctx, { webhookError: "Set the webhook's URL and secret first." });
-    const typed = String(form.get("email") ?? "").trim();
-    const email = extractEmail(typed);
-    if (!email || email !== typed.toLowerCase()) return settingsPage(ctx, { webhookError: "Enter one email address to send the test lead to." });
-    const name = String(form.get("name") ?? "").trim().slice(0, 100) || null;
-    const chosen = await getCampaign(ctx.db, Number(form.get("campaign_id")) || 0);
-    // With no campaign yet, a stand-in, so the webhook can be checked before the first campaign exists.
-    const campaign = chosen ?? { id: 0, name: "Test", emailTag: "", linkTitle: "", links: [] };
-    const consentText = chosen ? fill(consentFor(chosen), { name }) : DEFAULTS.optionalPrompt;
-    const id = await sendTestLead(ctx, { email, name, campaign, consentText });
+    const checked = await checkTestLead(ctx, {
+      email: String(form.get("email") ?? ""),
+      name: String(form.get("name") ?? ""),
+      campaignId: Number(form.get("campaign_id")) || 0,
+    });
+    if ("error" in checked) return settingsPage(ctx, { webhookError: checked.error });
+    const { id } = await sendTestLead(ctx, checked);
     return redirect(`/dashboard/settings?test=${encodeURIComponent(id)}#webhook`);
   }
   if (what === "clicks") {

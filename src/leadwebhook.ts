@@ -1,7 +1,8 @@
-import type { Campaign } from "./campaigns";
+import { consentFor, DEFAULTS, fill, getCampaign, type Campaign } from "./campaigns";
 import { personalLink } from "./clicks";
 import { logStatement, type Ctx } from "./context";
 import { hmacSha256Hex } from "./crypto";
+import { extractEmail } from "./match";
 import { DAY, HOUR, iso, MINUTE, SECOND } from "./time";
 
 /**
@@ -171,7 +172,14 @@ async function claim(ctx: Ctx, limit: number, id?: string): Promise<DeliveryRow[
  * connection means retry later, up to MAX_ATTEMPTS; any other reply is final.
  * Every attempt goes in the activity log.
  */
-async function attempt(ctx: Ctx, row: DeliveryRow): Promise<void> {
+/** What one attempt got back: the HTTP status (0 with no reply), the result in words, and the start of the receiver's reply. */
+export interface Attempt {
+  status: number;
+  result: string;
+  reply: string;
+}
+
+async function attempt(ctx: Ctx, row: DeliveryRow): Promise<Attempt | null> {
   const now = ctx.now();
   const n = row.attempts + 1;
   const label = `${row.test ? "Test " : ""}${row.event}`;
@@ -182,12 +190,12 @@ async function attempt(ctx: Ctx, row: DeliveryRow): Promise<void> {
       settleStatement(ctx, row.id, "failed", row.attempts, null, "the lead webhook was turned off"),
       logStatement(ctx, { kind: "lead_webhook", outcome: "failed", reason: `${label}: the lead webhook was turned off`, ...who, detail: row.id }),
     ]);
-    return;
+    return null;
   }
   if (!ctx.budget.take()) {
     // No outgoing request left in this invocation: the next Cron run takes it.
     await ctx.db.prepare("UPDATE deliveries SET next_attempt_at = ? WHERE id = ?").bind(now, row.id).run();
-    return;
+    return null;
   }
 
   const body = eventBody(row, now);
@@ -221,13 +229,14 @@ async function attempt(ctx: Ctx, row: DeliveryRow): Promise<void> {
         : `could not connect (${err instanceof Error ? err.message : String(err)})`.slice(0, 200);
   }
 
+  const got = { status, result, reply };
   const detail = `${row.id}, attempt ${n} of ${MAX_ATTEMPTS}${status >= 300 && status < 400 ? ": the URL redirects, use the address it redirects to" : reply ? `: ${reply}` : ""}`;
   if (status >= 200 && status < 300) {
     await ctx.db.batch([
       settleStatement(ctx, row.id, "delivered", n, null, result),
       logStatement(ctx, { kind: "lead_webhook", outcome: "sent", reason: `${label} delivered (${result})`, ...who, detail }),
     ]);
-    return;
+    return got;
   }
   const retryable = status === 0 || status === 429 || status >= 500;
   if (retryable && n < MAX_ATTEMPTS) {
@@ -236,13 +245,14 @@ async function attempt(ctx: Ctx, row: DeliveryRow): Promise<void> {
       settleStatement(ctx, row.id, "pending", n, now + wait, result),
       logStatement(ctx, { kind: "lead_webhook", outcome: "queued", reason: `${label}: ${result}, retrying in ${inWords(wait)}`, ...who, detail }),
     ]);
-    return;
+    return got;
   }
   const why = retryable ? `${result}, gave up after ${n} attempts` : `${result}, not retried`;
   await ctx.db.batch([
     settleStatement(ctx, row.id, "failed", n, null, result),
     logStatement(ctx, { kind: "lead_webhook", outcome: "failed", reason: `${label}: ${why}`, ...who, detail }),
   ]);
+  return got;
 }
 
 /** Records an attempt. Once a delivery is settled its payload is emptied: the lead stays in Leads, and a deleted person's email goes. */
@@ -255,10 +265,14 @@ function settleStatement(ctx: Ctx, id: string, status: DeliveryRow["status"], at
     .bind(status, attempts, next, result, ctx.now(), id);
 }
 
-/** Sends one delivery now, if it is due and the invocation has room; otherwise the Cron sends it within a minute. */
-export async function deliverNow(ctx: Ctx, id: string | null): Promise<void> {
-  if (!id || ctx.budget.left < 1 || ctx.budget.queriesLeft < 3) return;
-  for (const row of await claim(ctx, 1, id)) await attempt(ctx, row);
+/**
+ * Sends one delivery now, if it is due and the invocation has room; otherwise the
+ * Cron sends it within a minute. Returns what the attempt got, or null when none was made.
+ */
+export async function deliverNow(ctx: Ctx, id: string | null): Promise<Attempt | null> {
+  if (!id || ctx.budget.left < 1 || ctx.budget.queriesLeft < 3) return null;
+  const [row] = await claim(ctx, 1, id);
+  return row ? attempt(ctx, row) : null;
 }
 
 /** The Cron's part: the deliveries that are due, a few per run. */
@@ -269,11 +283,38 @@ export async function deliverDue(ctx: Ctx): Promise<void> {
   for (const row of await claim(ctx, room)) await attempt(ctx, row);
 }
 
+/** A test lead ready to send, or why it can't be: the same checks for the dashboard's form and POST /api/test-lead. */
+export type TestLeadCheck =
+  | { error: string; problem: "no_webhook" | "bad_email" | "no_campaign" }
+  | { email: string; name: string | null; campaign: LeadCampaign; consentText: string };
+
+/**
+ * Checks what the owner typed for a test lead: the webhook must be set up, the
+ * email one well-formed address, and a campaign id, when given, an existing
+ * campaign. With no campaign id, a stand-in, so the webhook can be checked
+ * before the first campaign exists.
+ */
+export async function checkTestLead(ctx: Ctx, input: { email: string; name?: string | null; campaignId?: number | null }): Promise<TestLeadCheck> {
+  if (!webhookConfig(ctx)) return { problem: "no_webhook", error: "Set the webhook's URL and secret first." };
+  const typed = input.email.trim();
+  const email = extractEmail(typed);
+  if (!email || email !== typed.toLowerCase()) return { problem: "bad_email", error: "Enter one email address to send the test lead to." };
+  const name = (input.name ?? "").trim().slice(0, 100) || null;
+  if (!input.campaignId) return { email, name, campaign: { id: 0, name: "Test", emailTag: "", linkTitle: "", links: [] }, consentText: DEFAULTS.optionalPrompt };
+  const chosen = await getCampaign(ctx.db, input.campaignId);
+  if (!chosen) return { problem: "no_campaign", error: "No campaign with that id." };
+  return { email, name, campaign: chosen, consentText: fill(consentFor(chosen), { name }) };
+}
+
 /**
  * Sends a lead marked as a test, built exactly as a real one, and returns its
- * delivery id. Its /go/ link leads where the campaign's does and counts nowhere.
+ * delivery id and what the first attempt got (null when the Cron sends it
+ * instead). Its /go/ link leads where the campaign's does and counts nowhere.
  */
-export async function sendTestLead(ctx: Ctx, t: { email: string; name: string | null; campaign: LeadCampaign; consentText: string }): Promise<string> {
+export async function sendTestLead(
+  ctx: Ctx,
+  t: { email: string; name: string | null; campaign: LeadCampaign; consentText: string },
+): Promise<{ id: string; attempt: Attempt | null }> {
   const link = await personalLink(ctx, null, t.campaign);
   const { id, statement } = queueStatement(ctx, {
     event: "lead.created",
@@ -281,8 +322,7 @@ export async function sendTestLead(ctx: Ctx, t: { email: string; name: string | 
     payload: leadCreatedPayload({ id: 0, email: t.email, name: t.name, createdAt: ctx.now(), campaign: t.campaign, link, consentText: t.consentText }),
   });
   await statement.run();
-  await deliverNow(ctx, id);
-  return id;
+  return { id, attempt: await deliverNow(ctx, id) };
 }
 
 export async function recentDeliveries(ctx: Ctx, limit = 10): Promise<DeliveryRow[]> {

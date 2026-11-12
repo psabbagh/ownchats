@@ -2,7 +2,7 @@ import { apiAuthorized } from "./auth";
 import { getCampaign, listCampaigns, onAllPosts, saveCampaign, type Campaign } from "./campaigns";
 import { log, type Ctx } from "./context";
 import { listLeads } from "./export";
-import { webhookConfig } from "./leadwebhook";
+import { checkTestLead, getDelivery, sendTestLead, webhookConfig } from "./leadwebhook";
 import { campaignFromRequest, checkCaption, waitingWithVideoId, type NewCampaignRequest } from "./newcampaign";
 import { attachmentOf, campaignWarnings } from "./readiness";
 import { listPosts, readMediaStats, type MediaStats } from "./insights";
@@ -91,9 +91,46 @@ async function readBody(request: Request): Promise<Record<string, unknown> | str
  * would attach a campaign, and saves nothing. Creating needs the write token;
  * checking takes either token, since it shows nothing the read token can't.
  */
+const TEST_LEAD_STATUS = { no_webhook: 409, bad_email: 422, no_campaign: 404 } as const;
+
+/**
+ * POST /api/test-lead: what Settings, "Send a test lead" does. Sends a lead marked
+ * as a test to the lead webhook, through the same checks and code, and answers
+ * with what the receiver said, so a script can check the chain end to end.
+ */
+async function testLead(ctx: Ctx, body: Record<string, unknown>): Promise<Response> {
+  if (body.email !== undefined && typeof body.email !== "string") return json({ error: "Send `email` as a string." }, 400);
+  if (body.name !== undefined && body.name !== null && typeof body.name !== "string") return json({ error: "Send `name` as a string." }, 400);
+  const campaignId = body.campaign_id === undefined || body.campaign_id === null ? null : Number(body.campaign_id);
+  if (campaignId !== null && !(Number.isInteger(campaignId) && campaignId > 0)) return json({ error: "Send `campaign_id` as a campaign's id, or leave it out." }, 400);
+  const checked = await checkTestLead(ctx, { email: (body.email as string | undefined) ?? "", name: body.name as string | null | undefined, campaignId });
+  if ("error" in checked) return json({ error: checked.error, problem: checked.problem }, TEST_LEAD_STATUS[checked.problem]);
+  const { id, attempt } = await sendTestLead(ctx, checked);
+  const d = (await getDelivery(ctx, id))!;
+  const message =
+    d.status === "delivered"
+      ? `Test lead delivered (${d.last_result}).`
+      : d.status === "failed"
+        ? `The test lead was refused (${d.last_result}) and won't be retried.`
+        : attempt
+          ? `The test lead didn't get through yet (${d.last_result}). OwnChats tries again at ${iso(d.next_attempt_at!)}, as it would for a real lead.`
+          : "The test lead is queued and goes out within a minute.";
+  return json({
+    delivery_id: id,
+    status: d.status,
+    message,
+    http_status: attempt?.status || null,
+    result: attempt?.result ?? null,
+    reply: attempt?.reply || null,
+    attempts: d.attempts,
+    next_attempt_at: d.status === "pending" && d.next_attempt_at ? iso(d.next_attempt_at) : null,
+    campaign_id: checked.campaign.id || null,
+  });
+}
+
 async function handleWrite(ctx: Ctx, request: Request, path: string): Promise<Response> {
-  if (path !== "/api/campaigns" && path !== "/api/campaigns/check") {
-    return json({ error: "Only POST /api/campaigns and POST /api/campaigns/check take a POST. GET /api lists the rest." }, 405);
+  if (path !== "/api/campaigns" && path !== "/api/campaigns/check" && path !== "/api/test-lead") {
+    return json({ error: "Only POST /api/campaigns, POST /api/campaigns/check and POST /api/test-lead take a POST. GET /api lists the rest." }, 405);
   }
   const write = await apiAuthorized(ctx, request, "write");
   if (!write && !(path === "/api/campaigns/check" && (await apiAuthorized(ctx, request, "read")))) {
@@ -101,6 +138,8 @@ async function handleWrite(ctx: Ctx, request: Request, path: string): Promise<Re
   }
   const body = await readBody(request);
   if (typeof body === "string") return json({ error: body }, 400);
+
+  if (path === "/api/test-lead") return testLead(ctx, body);
 
   if (path === "/api/campaigns/check") {
     const caption = typeof body.caption === "string" ? body.caption : "";
@@ -143,7 +182,7 @@ async function handleWrite(ctx: Ctx, request: Request, path: string): Promise<Re
 
 export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<Response> {
   if (request.method === "POST") return handleWrite(ctx, request, url.pathname.replace(/\/+$/, ""));
-  if (request.method !== "GET") return json({ error: "Use GET, or POST to create a campaign." }, 405);
+  if (request.method !== "GET") return json({ error: "Use GET, or POST to create a campaign or send a test lead." }, 405);
   if (!(await apiAuthorized(ctx, request))) {
     return json({ error: "Send Authorization: Bearer <token>. Create a token in the dashboard under Settings." }, 401);
   }
@@ -161,6 +200,7 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
         "GET /api/stats": "totals and connection health",
         "POST /api/campaigns": "write token: create a campaign that waits for the next post, from its caption (dry_run: true saves nothing)",
         "POST /api/campaigns/check": "either token: whether a caption would attach a campaign with these keywords (or campaign_id), and what else it would touch",
+        "POST /api/test-lead": "write token: send a lead marked as a test to the lead webhook, as Settings does (email, optional name and campaign_id), and see what the receiver answered",
       },
     });
   }

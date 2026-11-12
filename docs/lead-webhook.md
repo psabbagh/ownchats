@@ -2,7 +2,7 @@
 
 OwnChats can send each new email it saves to a web address you choose, so your email tool can send what the person asked for. It knows nothing about any particular tool. Point it at your tool's incoming webhook, at Zapier or Make, or at a small script of your own that checks the signature and calls your tool's API.
 
-Set it up in the dashboard under **Settings, Lead webhook**: the URL, and a signing secret of at least 16 characters (make it with a password manager and keep it there). The secret can instead be a Worker secret named `LEAD_WEBHOOK_SECRET`, which then wins over the one in Settings. **Send a test lead** posts a lead marked as a test to the address you type, so you can check the whole chain, through to the email arriving, without anyone commenting.
+Set it up in the dashboard under **Settings, Lead webhook**: the URL, and a signing secret of at least 16 characters (make it with a password manager and keep it there). The secret can instead be a Worker secret named `LEAD_WEBHOOK_SECRET`, which then wins over the one in Settings. **Send a test lead** posts a lead marked as a test to the address you type, so you can check the whole chain, through to the email arriving, without anyone commenting. A script or agent can do the same with `POST /api/test-lead` (see below).
 
 ## When it sends
 
@@ -76,6 +76,54 @@ The fields:
 - `consent.wording`: the exact line the person answered (or the campaign's consent wording, if it has one), and `given_at` when they answered it. Keep both if your tool can: they are your proof of consent.
 
 New fields may be added; existing ones won't change.
+
+## Send a test lead through the API
+
+`POST /api/test-lead` does what **Send a test lead** in Settings does, through the same checks and the same code, so a script or agent can check the whole chain without the dashboard. It needs the API write token (`ocw_`, Settings, API write token); the read token can't send anything.
+
+```http
+POST /api/test-lead
+Authorization: Bearer ocw_...
+Content-Type: application/json
+
+{ "email": "you@example.com", "name": "Sam", "campaign_id": 12 }
+```
+
+| Field | Required | |
+|---|---|---|
+| `email` | yes | One email address, where the test lead goes. |
+| `name` | no | Sent as `lead.name`. |
+| `campaign_id` | no | Builds the lead with this campaign's name, email tag, link and consent wording. Without it, a stand-in campaign named "Test" with no tag or link. |
+
+OwnChats sends it at once and answers `200` with what the receiver said:
+
+```json
+{
+  "delivery_id": "0b7e6a54-2f0c-4c55-9a0e-3d1c2b4a5f60",
+  "status": "delivered",
+  "message": "Test lead delivered (HTTP 200).",
+  "http_status": 200,
+  "result": "HTTP 200",
+  "reply": "ok",
+  "attempts": 1,
+  "next_attempt_at": null,
+  "campaign_id": 12
+}
+```
+
+- `status`: `delivered` (a 2xx reply), `pending` (it will be retried like a real lead, at `next_attempt_at`), or `failed` (refused, not retried).
+- `http_status`, `result`, `reply`: the receiver's HTTP status, the result in words (`HTTP 502`, or `timed out after 10 seconds`), and the first 200 characters of its reply. `null` when no attempt could be made yet; the Cron then sends it within a minute, and `status` is `pending`.
+- `delivery_id` is the `delivery_id` in the request body and the `X-OwnChats-Delivery` header, so you can find it in your receiver's logs.
+
+Refusals, each with `error` in plain words and `problem` as a code:
+
+- `409`, `no_webhook`: the webhook's URL or secret isn't set.
+- `422`, `bad_email`: `email` is missing or isn't one well-formed address.
+- `404`, `no_campaign`: no campaign has that `campaign_id`.
+- `400`: a field has the wrong type, or the body isn't a JSON object.
+- `401`: no write token, or the read token.
+
+A `delivered` status means your receiver accepted the request. Whether the email then arrives is up to your email tool, so check the inbox too.
 
 ## Checking the signature
 

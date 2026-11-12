@@ -214,7 +214,8 @@ async function emailStep(ctx: Ctx, conversation: Conversation, campaign: Campaig
     const delivery = await saveLead(ctx, conversation, campaign, email);
     await advance(ctx, conversation, campaign, { message: linkAfterEmail(campaign, p), state: "done" }, "after the email");
     // After the DM, so the person's link never waits on the webhook.
-    return deliverNow(ctx, delivery);
+    await deliverNow(ctx, delivery);
+    return;
   }
   if (conversation.state === "awaiting_email") {
     return advance(ctx, conversation, campaign, { message: { kind: "text", text: fill(campaign.emailReask, p) }, state: "reasked" }, "re-ask");

@@ -97,7 +97,7 @@ export function handleLogout(): Response {
 
 /**
  * Bearer tokens for /api, each stored as a SHA-256 hash. The read token reads; the
- * write token (`ocw_...`) creates campaigns and checks captions, and reads nothing.
+ * write token (`ocw_...`) creates campaigns, checks captions and sends test leads, and reads nothing.
  * Two tokens, so a tool that only reads can never change what DMs go out, and the
  * agent that sets up campaigns never holds a token that reads leads.
  */

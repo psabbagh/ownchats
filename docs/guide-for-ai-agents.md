@@ -84,7 +84,7 @@ It sends each new email to the person's email tool, signed. The format is in [le
 
 1. They choose where it goes: their email tool's incoming webhook if it has one, Zapier or Make, or a small script of their own (for example another Worker) that checks the signature and calls their tool's API.
 2. They make the signing secret with their password manager and type it into Settings, Lead webhook, with the URL, or set it as a Worker secret named `LEAD_WEBHOOK_SECRET` (`npx wrangler secret put LEAD_WEBHOOK_SECRET`, which prompts for it). The receiver needs the same secret, typed by them too. Never see, type or print it; to check two copies match, compare truncated SHA-256 hashes.
-3. They click **Send a test lead** with their own email address and pick a campaign. The page says what the receiver answered. Check the email arrives in their inbox.
+3. They click **Send a test lead** with their own email address and pick a campaign. The page says what the receiver answered. Check the email arrives in their inbox. With the API write token, you can send it yourself instead with `POST /api/test-lead` (`email`, optional `name` and `campaign_id`), which answers with the receiver's HTTP status and reply (see lead-webhook.md); use an address they gave you for it.
 
 A failed delivery is retried for about a day (see lead-webhook.md). Every attempt is in Activity as "Lead webhook", and Settings lists the recent deliveries. Only emails saved after the webhook was set up are sent; earlier ones are in the CSV.
 
