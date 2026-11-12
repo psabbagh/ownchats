@@ -188,6 +188,26 @@ export const DEFAULTS = {
 };
 
 /**
+ * The wording a new campaign starts with where the owner chose their own in
+ * Settings ("Defaults for new campaigns"): the optional email ask, its thank-you
+ * and button, and the first link's button label. Anything left empty there is
+ * OwnChats' own.
+ */
+export function ownDefaults(s: {
+  default_optional_prompt?: string;
+  default_optional_thanks?: string;
+  default_thanks_button?: string;
+  default_link_label?: string;
+}): { optionalPrompt: string; optionalThanks: string; optionalThanksButton: string; linkLabel: string } {
+  return {
+    optionalPrompt: s.default_optional_prompt || DEFAULTS.optionalPrompt,
+    optionalThanks: s.default_optional_thanks || DEFAULTS.optionalThanks,
+    optionalThanksButton: s.default_thanks_button || DEFAULTS.optionalThanksButton,
+    linkLabel: s.default_link_label || DEFAULTS.linkLabel,
+  };
+}
+
+/**
  * OwnChats' own privacy page, which shows the sender's name and mailing address
  * from Settings. Null until the Worker's address is known.
  */
@@ -201,6 +221,8 @@ const MAX_TEMPLATE_TEXT = 640;
 const MAX_TEXT = 1000;
 const MAX_BUTTON = 20;
 const MAX_LINKS = 3;
+/** Limits for the owner's own defaults in Settings, the same as a campaign's. */
+export const DEFAULT_LIMITS = { optionalPrompt: MAX_TEXT, optionalThanks: MAX_TEMPLATE_TEXT, button: MAX_BUTTON };
 const MAX_EMAIL_TAG = 100;
 const MAX_LINK_TITLE = 200;
 const MAX_VIDEO_ID = 40;

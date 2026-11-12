@@ -59,7 +59,7 @@ Content-Type: application/json
 | `keyword` | no | Only when the caption asks for several keywords. It must be one of them. |
 | `spellings` | no | Extra spellings, as a list. They don't have to be in the caption. |
 | `link` | yes | The link the DM delivers. |
-| `link_label` | no | Its button label. Default "Open". |
+| `link_label` | no | Its button label. Default: the one in Settings, Defaults for new campaigns, or "Open". |
 | `link_title` | no | What the link leads to, sent to the lead webhook. |
 | `email_tag` | no | Sent to the lead webhook. With one, the campaign asks for an email ("link plus optional email"); without one, it sends the link only. |
 | `email_mode` | no | `"none"`, `"optional"` or `"first"`, to choose explicitly. |
@@ -69,7 +69,7 @@ Content-Type: application/json
 | `active` | no | Default `true`. |
 | `dry_run` | no | `true` checks everything and saves nothing. |
 
-Everything else starts as in the dashboard's "DM with a button, then ask for their email" flow: the default public replies, the first DM, the default email ask and its thank-you. The follow check and the DM keyword are off. All of it can be edited in the dashboard afterwards.
+Everything else starts as in the dashboard's "DM with a button, then ask for their email" flow: the default public replies, the first DM, the default email ask and its thank-you (the owner's own from Settings, Defaults for new campaigns, where set). The follow check and the DM keyword are off. All of it can be edited in the dashboard afterwards.
 
 The answer is `201` with the campaign as `GET /api/campaigns` shows it (`counts` and `post` left out) and the caption check. With `dry_run`, it is `200` with `"dry_run": true` and `"id": null`. Read `campaign.warnings` before the post goes up: `email_ask_without_lead_webhook`, for example, means emails would stay in OwnChats.
 

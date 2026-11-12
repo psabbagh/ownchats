@@ -60,7 +60,7 @@ async function adminRoutes(ctx: Ctx, request: Request, url: URL): Promise<Respon
   if (path === "/dashboard/people/delete" && post) return deletePersonForm(ctx, request);
   if (path === "/dashboard/activity") return activityPage(ctx, url);
   if (path === "/dashboard/settings") return settingsPage(ctx, { testId: url.searchParams.get("test"), saved: url.searchParams.get("saved") });
-  const setting = path.match(/^\/dashboard\/settings\/(export|api-token|api-write-token|contact|time-zone|webhook|test-lead|clicks|shortcuts)$/);
+  const setting = path.match(/^\/dashboard\/settings\/(export|api-token|api-write-token|contact|time-zone|webhook|test-lead|clicks|defaults|shortcuts)$/);
   if (setting && post) return settingsAction(ctx, request, setting[1]!);
   return null;
 }
