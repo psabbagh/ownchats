@@ -6,6 +6,7 @@ import { webhookConfig } from "./leadwebhook";
 import { campaignFromRequest, checkCaption, waitingWithVideoId, type NewCampaignRequest } from "./newcampaign";
 import { attachmentOf, campaignWarnings } from "./readiness";
 import { listPosts, readMediaStats, type MediaStats } from "./insights";
+import { shortcutKeywords } from "./settings";
 import { campaignCounts, listActivity } from "./stats";
 import { iso } from "./time";
 
@@ -152,7 +153,7 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
   if (path === "/api") {
     return json({
       endpoints: {
-        "GET /api/campaigns": "campaigns with their counts (clicks: people who clicked a link; failed split into failedDms, refusedPublicReplies, failedLeadWebhooks), their post's views, and what would stop them working (warnings)",
+        "GET /api/campaigns": "campaigns with their counts (clicks: people who clicked a link; failed split into failedDms, refusedPublicReplies, failedLeadWebhooks), their post's views, and what would stop them working (warnings), with the shortcut keywords from Settings that every keyword campaign on one post also answers",
         "GET /api/leads?campaign_id=&since=ISO-8601&limit=": "emails collected, newest first",
         "GET /api/activity?campaign_id=&outcome=sent|skipped|failed&limit=": "what happened and why, newest first",
         "GET /api/posts?since=ISO-8601&limit=": "the account's posts from the last 90 days with Instagram's numbers, newest first",
@@ -169,6 +170,7 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
     const stats = await readMediaStats(ctx, campaigns.flatMap((c) => (c.mediaId ? [c.mediaId] : [])));
     return json({
       campaigns: campaigns.map((c) => ({ ...campaignJson(c, !!webhookConfig(ctx)), counts: counts.get(c.id) ?? null, post: postJson(c.mediaId ? stats.get(c.mediaId) : undefined) })),
+      shortcut_keywords: shortcutKeywords(ctx.settings),
     });
   }
   if (path === "/api/leads") {

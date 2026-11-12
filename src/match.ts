@@ -23,10 +23,15 @@ export function matchesKeyword(text: string, keywords: string[]): boolean {
 /** Compiled keyword patterns, kept between requests: each keyword is compiled once. */
 const PATTERNS = new Map<string, RegExp | null>();
 
+/** A keyword as matching reads it: NFKC, lower case, each run of spaces and dashes as one space. */
+function canonical(raw: string): string {
+  return normalise(raw).replace(GAP, " ").trim();
+}
+
 function keywordPattern(raw: string): RegExp | null {
   let pattern = PATTERNS.get(raw);
   if (pattern === undefined) {
-    const keyword = normalise(raw).replace(GAP, " ").trim();
+    const keyword = canonical(raw);
     pattern = keyword
       ? new RegExp(`(?<![\\p{L}\\p{N}_])${escapeRegExp(keyword).replace(/ /g, "[\\s\\p{Pd}]+")}(?![\\p{L}\\p{N}_])`, "u")
       : null;
@@ -56,6 +61,13 @@ export function captionAsksFor(caption: string, keywords: string[]): boolean {
     if (keywords.some((k) => keywordPattern(k)?.exec(after)?.index === 0)) return true;
   }
   return false;
+}
+
+/** The keywords without those in `remove`, compared the way matching compares them: "set-up" removes SET UP. */
+export function withoutKeywords(keywords: string[], remove: string[]): string[] {
+  if (!remove.length) return keywords;
+  const drop = new Set(remove.map(canonical));
+  return keywords.filter((k) => !drop.has(canonical(k)));
 }
 
 /** Splits a keyword field typed as "AGENTS, AGENT" into a clean list. */

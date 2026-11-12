@@ -24,6 +24,7 @@ import { log, logStatement, type Ctx } from "../context";
 import { deliverNow, queueLeadCreated } from "../leadwebhook";
 import { extractEmail } from "../match";
 import { explainError, sendWithFallback, type OutMessage } from "../meta/client";
+import { shortcutKeywords } from "../settings";
 import { DAY, MESSAGING_WINDOW } from "../time";
 import { claimConversation, getConversation, openConversation, releaseClaim, type Conversation } from "./conversations";
 
@@ -85,7 +86,7 @@ export async function handleInbound(ctx: Ctx, ev: InboundEvent): Promise<void> {
     }
   }
 
-  const keywordCampaign = matchDm(await listCampaigns(ctx.db, true), text);
+  const keywordCampaign = matchDm(await listCampaigns(ctx.db, true), text, shortcutKeywords(ctx.settings));
   if (!keywordCampaign) return; // an ordinary DM, none of OwnChats' business
   return dmKeyword(ctx, keywordCampaign, ev);
 }

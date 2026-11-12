@@ -1,4 +1,4 @@
-import { matchesKeyword, parseKeywords } from "./match";
+import { matchesKeyword, parseKeywords, withoutKeywords } from "./match";
 import { plainText, type Button, type OutMessage } from "./meta/client";
 
 /**
@@ -389,22 +389,46 @@ export async function setCampaignActive(db: D1Database, id: number, active: bool
 }
 
 /**
+ * Whether the shortcut keywords from Settings apply to this campaign: a keyword
+ * campaign on one post, or waiting for one. A shortcut is shared by every campaign,
+ * so it can't tell which link someone wants on its own: on a post it means that
+ * post's campaign, and an all-posts campaign would answer it on every post.
+ */
+export function answersShortcuts(c: Pick<Campaign, "anyComment" | "mediaId" | "nextPostAfter">): boolean {
+  return !c.anyComment && !onAllPosts(c);
+}
+
+/**
+ * A campaign's own keywords, less the shortcuts, even when it lists one itself: what
+ * comments are first matched against, what attaches it to its next post, and what
+ * counts as its DM keyword. A shortcut picks out no campaign, so it does none of that.
+ */
+export function ownKeywords(c: Pick<Campaign, "keywords">, shortcuts: string[]): string[] {
+  return withoutKeywords(c.keywords, shortcuts);
+}
+
+/**
  * The campaign a comment belongs to. A one-post campaign wins over an all-posts
  * one, and a keyword campaign wins over an any-comment one; then the oldest wins.
  * A campaign waiting for the next post matches nothing until it is attached.
+ * Only when no campaign takes the comment this way are the shortcut keywords
+ * (`shortcuts`, from Settings) tried, and then only for a keyword campaign on this
+ * very post: so "AGENTS 🙌" still goes to the AGENTS campaign.
  */
-export function matchComment(campaigns: Campaign[], mediaId: string, text: string): Campaign | null {
-  const candidates = campaigns.filter(
-    (c) => c.active && (c.mediaId === mediaId || onAllPosts(c)) && (c.anyComment || matchesKeyword(text, c.keywords)),
-  );
+export function matchComment(campaigns: Campaign[], mediaId: string, text: string, shortcuts: string[] = []): Campaign | null {
+  const on = campaigns.filter((c) => c.active && (c.mediaId === mediaId || onAllPosts(c)));
+  const candidates = on.filter((c) => c.anyComment || matchesKeyword(text, ownKeywords(c, shortcuts)));
+  if (!candidates.length && shortcuts.length && matchesKeyword(text, shortcuts)) {
+    candidates.push(...on.filter((c) => c.mediaId === mediaId && answersShortcuts(c)));
+  }
   const rank = (c: Campaign) => (c.mediaId ? 0 : 2) + (c.anyComment ? 1 : 0);
   candidates.sort((a, b) => rank(a) - rank(b) || a.id - b.id);
   return candidates[0] ?? null;
 }
 
-/** The campaign a DM keyword belongs to (any-comment campaigns have no DM keyword). */
-export function matchDm(campaigns: Campaign[], text: string): Campaign | null {
-  return campaigns.find((c) => c.active && c.dmKeyword && !c.anyComment && matchesKeyword(text, c.keywords)) ?? null;
+/** The campaign a DM keyword belongs to (any-comment campaigns have no DM keyword, and shortcuts are never one). */
+export function matchDm(campaigns: Campaign[], text: string, shortcuts: string[] = []): Campaign | null {
+  return campaigns.find((c) => c.active && c.dmKeyword && !c.anyComment && matchesKeyword(text, ownKeywords(c, shortcuts))) ?? null;
 }
 
 /** Who a message is for, as far as OwnChats knows. */

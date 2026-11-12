@@ -1,4 +1,5 @@
 import {
+  answersShortcuts,
   campaignFromForm,
   consentFor,
   DEFAULTS,
@@ -67,13 +68,13 @@ import { trackingBase } from "../clicks";
 import { randomToken, sha256Hex } from "../crypto";
 import { leadsCsv, listLeads } from "../export";
 import { getDelivery, MIN_SECRET_LENGTH, recentDeliveries, sendTestLead, webhookConfig, type DeliveryRow } from "../leadwebhook";
-import { extractEmail } from "../match";
+import { extractEmail, parseKeywords } from "../match";
 import type { Media } from "../meta/client";
 import { recentMedia } from "../pipeline/poll";
 import { MISSING_PERMISSION, readMediaStats } from "../insights";
 import { missedComments, timeLeft, type MissedComment } from "../missed";
 import { untakenPosts } from "../nextpost";
-import { deleteSettings, saveSettings, type Settings } from "../settings";
+import { deleteSettings, saveSettings, shortcutKeywords, type Settings } from "../settings";
 import { campaignCounts, deletePerson, failuresSince, findPersonByUsername, listActivity, storedAboutPeople, type ActivityRow } from "../stats";
 import { copyField, fmtCount, fmtDate, fmtTime, html, page, plural, redirect, type Html } from "./html";
 import { DAY, isTimeZone, timeZoneOf } from "../time";
@@ -82,6 +83,15 @@ import { DAY, isTimeZone, timeZoneOf } from "../time";
 export function postWords(c: Campaign): string {
   if (c.mediaId) return c.mediaLabel || `post ${c.mediaId}`;
   return c.nextPostAfter !== null ? "your next post (waiting for it)" : "all posts";
+}
+
+/** Whether a campaign answers the shortcut keywords from Settings, in a sentence, or nothing when none are set. */
+export function shortcutNote(c: Campaign, shortcuts: string[]): Html {
+  if (!shortcuts.length || c.anyComment) return html``;
+  const link = html`<a href="/dashboard/settings#shortcuts">shortcut keywords</a>`;
+  return answersShortcuts(c)
+    ? html`Also answers your ${link}: ${shortcuts.join(", ")}.`
+    : html`Your ${link} (${shortcuts.join(", ")}) don't apply to a campaign on all posts.`;
 }
 
 export function healthBanner(ctx: Ctx): Html {
@@ -230,6 +240,7 @@ async function campaignForm(ctx: Ctx, current: Campaign | null, input?: Campaign
   }
   const v: CampaignInput = input ?? current ?? newCampaignDefaults(ctx.settings, flow);
   const s = ctx.settings;
+  const shortcuts = shortcutKeywords(s);
   const action = current ? `/dashboard/campaigns/${current.id}` : "/dashboard/campaigns/new";
   const checked = (b: boolean) => (b ? "checked" : "");
   const mode = (m: EmailMode, label: string, hint: string) =>
@@ -254,7 +265,9 @@ async function campaignForm(ctx: Ctx, current: Campaign | null, input?: Campaign
           <label for="video_id">Video id (optional)</label><input id="video_id" name="video_id" type="text" value="${v.videoId}" maxlength="40" placeholder="SF-14">
           <p class="hint">The id of the video this campaign is for, in your own numbering. Served as <code>video_id</code> in <code>GET /api/campaigns</code>, so your other tools can link the video to its campaign without reading the name.</p>
           <label for="keywords">Keyword</label><input id="keywords" name="keywords" type="text" value="${v.keywords.join(", ")}" placeholder="AGENTS, AGENT">
-          <p class="hint">Separate extra spellings with commas. Matching ignores case and needs the whole word: AGENTS matches "agents!" but not "agentsmith". A space also matches a hyphen, so SET UP matches "set-up" but not "setup".</p>
+          <p class="hint">Separate extra spellings with commas. Matching ignores case and needs the whole word: AGENTS matches "agents!" but not "agentsmith". A space also matches a hyphen, so SET UP matches "set-up" but not "setup".${shortcuts.length
+            ? html` On one post, or the next post, it also answers your <a href="/dashboard/settings#shortcuts">shortcut keywords</a> (${shortcuts.join(", ")}); no need to add them here.`
+            : ""}</p>
           <label class="inline"><input type="checkbox" name="any_comment" ${checked(v.anyComment)}> Any comment: answer every comment on the chosen post, keyword or not</label>
           ${mediaProblem ? html`<p class="warn small">Could not load your posts: ${mediaProblem}</p>` : ""}
           ${mediaPicker(media, current, timeZoneOf(ctx.settings), input)}
@@ -510,6 +523,7 @@ const SAVED_NOTE = {
   clicks: "Saved",
   "time-zone": "Saved",
   contact: "Saved",
+  shortcuts: "Saved",
 } as const;
 type SavedForm = keyof typeof SAVED_NOTE;
 
@@ -613,6 +627,19 @@ export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string; apiWrit
   return page(
     "Settings",
     html`<h1>Settings</h1>
+      <div class="card" id="shortcuts">
+        <h3>Shortcut keywords</h3>
+        <p>What your audience comments to mean "send it", such as 🙌. Every keyword campaign on one post answers them too, on top of its own keywords, so they don't need adding to each campaign.</p>
+        <form method="post" action="/dashboard/settings/shortcuts">
+          <label for="shortcut_keywords">Shortcuts</label>
+          <input id="shortcut_keywords" name="shortcut_keywords" type="text" value="${s.shortcut_keywords ?? ""}" placeholder="🙌">
+          <p class="hint">Separate them with commas, as in a campaign's keywords. Leave empty for none.
+            A comment that has a campaign's own keyword still goes to that campaign. Campaigns on all posts don't answer shortcuts, since a 🙌 under any of your posts would get their link.
+            Shortcuts never attach a campaign waiting for your next post (its caption still needs "Comment" and its own keyword), and never count as a DM keyword.
+            Like any keyword, they match anywhere in a comment, so "love this 🙌" gets the link too.</p>
+          <p class="row"><button>Save</button>${savedNote(fresh.saved, "shortcuts")}</p>
+        </form>
+      </div>
       <div class="card" id="sheets">
         <h3>Google Sheets</h3>
         ${exportUrl
@@ -756,6 +783,12 @@ export async function settingsAction(ctx: Ctx, request: Request, what: string): 
     if (!isTimeZone(tz)) return redirect("/dashboard/settings#time-zone");
     await saveSettings(ctx.db, pw, { time_zone: tz });
     return saved("time-zone", "time-zone");
+  }
+  if (what === "shortcuts") {
+    const shortcuts = parseKeywords(String(form.get("shortcut_keywords") ?? "").slice(0, 300));
+    if (shortcuts.length) await saveSettings(ctx.db, pw, { shortcut_keywords: shortcuts.join(", ") });
+    else await deleteSettings(ctx.db, ["shortcut_keywords"]);
+    return saved("shortcuts", "shortcuts");
   }
   if (what === "contact") {
     const field = (k: string, max: number) => String(form.get(k) ?? "").trim().slice(0, max);

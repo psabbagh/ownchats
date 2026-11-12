@@ -1,7 +1,8 @@
-import { getCampaign, onAllPosts, type Campaign } from "./campaigns";
+import { answersShortcuts, getCampaign, onAllPosts, ownKeywords, type Campaign } from "./campaigns";
 import type { Ctx } from "./context";
 import { CommentText, KeywordSet, matchesKeyword, parseKeywords } from "./match";
 import { handleComment } from "./pipeline/comments";
+import { shortcutKeywords } from "./settings";
 import { DAY, HOUR, PRIVATE_REPLY_WINDOW } from "./time";
 
 /**
@@ -60,19 +61,22 @@ function onItsPosts(c: Candidate, campaign: Campaign): boolean {
 /**
  * Why a skipped comment is worth answering for this campaign, or null. The
  * comment's text is read once per request (`read`), and the campaign's keywords
- * prepared once (`keywords`), because this runs for every candidate and every
- * campaign on each dashboard load, inside the free plan's 10 ms of CPU.
+ * prepared once (`keywords`, its own; `shortcuts`, from Settings, or null where
+ * they don't apply), because this runs for every candidate and every campaign on
+ * each dashboard load, inside the free plan's 10 ms of CPU.
  */
 function judge(
   c: Candidate,
   read: (c: Candidate) => CommentText,
   campaign: Campaign,
   keywords: KeywordSet,
+  shortcuts: KeywordSet | null,
 ): Pick<MissedComment, "why" | "keyword" | "spelling"> | null {
   if (c.reason !== NO_MATCH) return c.campaign_id === campaign.id ? { why: "before", keyword: null, spelling: null } : null;
   if (!onItsPosts(c, campaign)) return null;
-  // It matched no active campaign when it came in. It may match now: the campaign was off, or the spelling is new.
-  if (campaign.anyComment || keywords.matches(read(c))) return { why: "matches", keyword: null, spelling: null };
+  // It matched no active campaign when it came in. It may match now: the campaign was off, or the spelling or shortcut is new.
+  if (campaign.anyComment || keywords.matches(read(c)) || shortcuts?.matches(read(c))) return { why: "matches", keyword: null, spelling: null };
+  // Near misses are looked for against the campaign's own keywords only: a spelling is added to the campaign.
   const near = keywords.closeTo(read(c));
   return near ? { why: "close", keyword: near.keyword, spelling: near.spelling } : null;
 }
@@ -123,12 +127,14 @@ export async function missedComments(ctx: Ctx, campaigns: Campaign[]): Promise<M
     if (!t) texts.set(c.id, (t = new CommentText(c.text)));
     return t;
   };
+  const shortcutList = shortcutKeywords(ctx.settings);
+  const shortcuts = shortcutList.length ? new KeywordSet(shortcutList) : null;
   for (const campaign of campaigns) {
     const list: MissedComment[] = [];
-    const keywords = new KeywordSet(campaign.keywords);
+    const keywords = new KeywordSet(ownKeywords(campaign, shortcutList));
     for (const c of rows) {
       if (answered.has(`${campaign.id}:${c.from_id}`)) continue;
-      const verdict = judge(c, read, campaign, keywords);
+      const verdict = judge(c, read, campaign, keywords, answersShortcuts(campaign) ? shortcuts : null);
       if (!verdict) continue;
       list.push({
         id: c.id,

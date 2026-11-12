@@ -2,6 +2,7 @@ import { fill, firstMessage, listCampaigns, matchComment, pickPublicReply, plain
 import { trackLinks } from "../clicks";
 import { logStatement, type ActivityEntry, type Ctx } from "../context";
 import { explainError, explainReplyError, isTemplateRejection, MetaError, type IgComment } from "../meta/client";
+import { shortcutKeywords } from "../settings";
 import { HOUR, MINUTE, PRIVATE_REPLIES_PER_HOUR, PRIVATE_REPLY_WINDOW } from "../time";
 import { claimConversation, getConversation, releaseClaim } from "./conversations";
 
@@ -115,7 +116,7 @@ function decide(ctx: Ctx, c: CommentFacts, campaigns: Campaign[]): Decision {
   }
   // A campaign chosen earlier is kept while it is on, whatever the text says now.
   const chosen = c.campaignId ? campaigns.find((x) => x.id === c.campaignId && x.active) : undefined;
-  const campaign = chosen ?? matchComment(campaigns, c.mediaId, c.text);
+  const campaign = chosen ?? matchComment(campaigns, c.mediaId, c.text, shortcutKeywords(ctx.settings));
   if (!campaign) return { skip: "no matching campaign", campaignId: null };
   if (!chosen && c.timestamp < campaign.createdAt) return { skip: "written before the campaign started", campaignId: campaign.id };
   if (ctx.now() - c.timestamp > PRIVATE_REPLY_WINDOW) return { skip: "older than 7 days, Meta no longer allows a DM", campaignId: campaign.id };
