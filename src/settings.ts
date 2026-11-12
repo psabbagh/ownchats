@@ -1,4 +1,5 @@
 import { decryptText, encryptText } from "./crypto";
+import { parseKeywords } from "./match";
 
 /** Settings stored encrypted with a key derived from ADMIN_PASSWORD. */
 const SECRET_KEYS = new Set(["meta_app_secret", "access_token", "export_key", "lead_webhook_secret"]);
@@ -33,6 +34,7 @@ export type SettingKey =
   | "default_thanks_button"
   | "default_link_label"
   | "time_zone"
+  | "shortcut_keywords"
   | "api_token_hash"
   | "api_write_token_hash"
   | "export_key"
@@ -95,6 +97,15 @@ export async function saveSettings(
     );
   }
   if (statements.length) await db.batch(statements);
+}
+
+/**
+ * The shortcut keywords from Settings, such as 🙌: every keyword campaign on one post
+ * answers them on top of its own keywords. Stored as typed, comma-separated. Empty
+ * unless the owner set some.
+ */
+export function shortcutKeywords(s: Settings): string[] {
+  return s.shortcut_keywords ? parseKeywords(s.shortcut_keywords) : [];
 }
 
 export async function deleteSettings(db: D1Database, keys: SettingKey[]): Promise<void> {

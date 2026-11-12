@@ -5,6 +5,7 @@ import type { Media } from "../meta/client";
 import { MISSING_PERMISSION, readMediaStats, type MediaStats } from "../insights";
 import { ANSWER_PROBLEM, answerMissed, answerOutcome, missedComments, timeLeft, type AnswerProblem, type MissedComment } from "../missed";
 import { recentMedia } from "../pipeline/poll";
+import { shortcutKeywords } from "../settings";
 import {
   campaignResults,
   COMMENT_DAYS,
@@ -15,7 +16,7 @@ import {
   type CommentLine,
   type CommentTally,
 } from "../stats";
-import { activityTable, EMAIL_MODE_LABEL, healthBanner, KIND_LABEL } from "./dashboard";
+import { activityTable, EMAIL_MODE_LABEL, healthBanner, KIND_LABEL, shortcutNote } from "./dashboard";
 import { fmtCount, fmtTime, html, page, plural, redirect, type Html } from "./html";
 import { timeZoneOf } from "../time";
 
@@ -231,6 +232,7 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
 
   const base = `/dashboard/campaigns/${campaign.id}`;
   const tz = timeZoneOf(ctx.settings);
+  const shortcuts = shortcutNote(campaign, shortcutKeywords(ctx.settings));
   const { fromComments: fc, fromDms: fd, lastDay } = results;
   const dmColumn = campaign.dmKeyword || fd.dmsSent > 0;
   const emailRow = campaign.emailMode !== "none" || fc.emails > 0 || fd.emails > 0;
@@ -255,6 +257,7 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
             ${EMAIL_MODE_LABEL[campaign.emailMode]}. Started ${fmtTime(campaign.createdAt, tz)}.
             ${media?.timestamp ? html`Posted ${fmtTime(media.timestamp, tz)}.` : ""}
             ${media?.permalink ? html`<a href="${media.permalink}" rel="noopener noreferrer" target="_blank">Open on Instagram</a>` : ""}</p>
+          ${shortcuts.value ? html`<p class="muted small" id="shortcuts" style="margin:4px 0 0">${shortcuts}</p>` : ""}
         </div>
       </div>
 
