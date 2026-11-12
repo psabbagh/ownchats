@@ -2,7 +2,7 @@
 
 A tool or agent can set up the campaign for the next post without the dashboard. Give it the caption the post will carry, and OwnChats reads the keyword from that caption, so the keyword in the caption and the campaign's keyword can't differ.
 
-It needs the **API write token**: dashboard, Settings, API write token, Create write token. It is shown once and starts with `ocw_`. It creates campaigns and checks captions, and nothing else. It can't read leads, and the read token (`oc_`) can't create anything. Keep it in your password manager and give it only to the tool that sets up campaigns.
+It needs the **API write token**: dashboard, Settings, API write token, Create write token. It is shown once and starts with `ocw_`. It creates campaigns, checks captions and sends test leads to the lead webhook ([lead-webhook.md](lead-webhook.md#send-a-test-lead-through-the-api)), and nothing else. It can't read leads, and the read token (`oc_`) can't create anything. Keep it in your password manager and give it only to the tool that sets up campaigns.
 
 ## Check a caption
 
