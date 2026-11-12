@@ -1,4 +1,4 @@
-import { DEFAULTS, EMAIL_MODES, listCampaigns, validateCampaign, type Campaign, type CampaignInput, type EmailMode } from "./campaigns";
+import { DEFAULTS, EMAIL_MODES, ownDefaults, listCampaigns, validateCampaign, type Campaign, type CampaignInput, type EmailMode } from "./campaigns";
 import type { Ctx } from "./context";
 import { listPosts } from "./insights";
 import { captionAsksFor, parseKeywords } from "./match";
@@ -158,7 +158,7 @@ export function campaignFromRequest(ctx: Ctx, body: NewCampaignRequest): { input
     openingButton: typeof body.opening_button === "string" ? body.opening_button.trim() : DEFAULTS.openingButton,
     emailMode: (EMAIL_MODES as string[]).includes(mode) ? (mode as EmailMode) : "none",
     emailTag: tag,
-    links: link ? [{ url: link, label: str(body.link_label) || DEFAULTS.linkLabel }] : [],
+    links: link ? [{ url: link, label: str(body.link_label) || ownDefaults(ctx.settings).linkLabel }] : [],
     linkTitle,
     active: body.active !== false,
   };

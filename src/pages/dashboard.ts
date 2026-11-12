@@ -1,11 +1,13 @@
 import {
   campaignFromForm,
   consentFor,
+  DEFAULT_LIMITS,
   DEFAULTS,
   fill,
   getCampaign,
   listCampaigns,
   NEXT_POST,
+  ownDefaults,
   postLabel,
   saveCampaign,
   setCampaignActive,
@@ -30,6 +32,8 @@ const START_FLOWS: Record<StartFlow, { openingButton: string; emailMode: EmailMo
 };
 
 export function newCampaignDefaults(settings: Settings, flow: StartFlow): CampaignInput {
+  // The owner's own wording from Settings, where they chose one.
+  const own = ownDefaults(settings);
   return {
     name: "",
     videoId: "",
@@ -45,13 +49,13 @@ export function newCampaignDefaults(settings: Settings, flow: StartFlow): Campai
     emailPrompt: DEFAULTS.emailPrompt,
     emailReask: DEFAULTS.emailReask,
     emailThanks: DEFAULTS.emailThanks,
-    optionalPrompt: DEFAULTS.optionalPrompt,
-    optionalThanks: DEFAULTS.optionalThanks,
-    optionalThanksButton: DEFAULTS.optionalThanksButton,
+    optionalPrompt: own.optionalPrompt,
+    optionalThanks: own.optionalThanks,
+    optionalThanksButton: own.optionalThanksButton,
     consentText: "",
     emailTag: "",
     linkText: DEFAULTS.linkText,
-    links: [{ label: DEFAULTS.linkLabel, url: "" }],
+    links: [{ label: own.linkLabel, url: "" }],
     linkTitle: "",
     followCheck: false,
     followPrompt: DEFAULTS.followPrompt,
@@ -510,6 +514,7 @@ const SAVED_NOTE = {
   clicks: "Saved",
   "time-zone": "Saved",
   contact: "Saved",
+  defaults: "Saved",
 } as const;
 type SavedForm = keyof typeof SAVED_NOTE;
 
@@ -661,10 +666,26 @@ export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string; apiWrit
           <textarea id="sender_address" name="sender_address" rows="3" placeholder="A PO box or mailbox service works">${s.sender_address ?? ""}</textarea>
           <label for="contact">Contact</label>
           <input id="contact" name="contact" type="text" value="${s.contact ?? ""}" placeholder="an email address, or leave empty to use a DM to your account">
-          <p class="hint">Shown on <a href="/privacy">/privacy</a>, which the default email questions link to as "who I am and my address", and on <a href="/data-deletion">/data-deletion</a>.
-            Anti-spam laws such as Canada's CASL ask for a name and a mailing address wherever you ask for an email.
-            New campaigns name you in their email questions; existing ones keep their wording until you edit it.</p>
+          <p class="hint">Shown on <a href="/privacy">/privacy</a>, which the button under a campaign's thank-you opens, and on <a href="/data-deletion">/data-deletion</a>.
+            Anti-spam laws such as Canada's CASL ask for a name and a mailing address wherever you ask for an email.</p>
           <p class="row"><button>Save</button>${savedNote(fresh.saved, "contact")}</p>
+        </form>
+      </div>
+      <div class="card" id="defaults">
+        <h3>Defaults for new campaigns</h3>
+        <p class="muted">Your own wording for the texts a new campaign starts with, in the dashboard and through the API. Leave one empty to use OwnChats' own, shown in grey.
+          Existing campaigns keep their wording until you edit it.</p>
+        <form method="post" action="/dashboard/settings/defaults">
+          <label for="default_link_label">Link button label</label>
+          <input id="default_link_label" name="default_link_label" type="text" value="${s.default_link_label ?? ""}" maxlength="${DEFAULT_LIMITS.button}" placeholder="${DEFAULTS.linkLabel}">
+          <label for="default_optional_prompt">Email ask (link plus optional email)</label>
+          <textarea id="default_optional_prompt" name="default_optional_prompt" maxlength="${DEFAULT_LIMITS.optionalPrompt}" placeholder="${DEFAULTS.optionalPrompt}">${s.default_optional_prompt ?? ""}</textarea>
+          <p class="hint">Say what people will receive, and only promise what your emails deliver: "I'll send it to your email" needs a <a href="#webhook">lead webhook</a> and an email that sends the link.</p>
+          <label for="default_optional_thanks">Reply once the email is saved</label>
+          <textarea id="default_optional_thanks" name="default_optional_thanks" maxlength="${DEFAULT_LIMITS.optionalThanks}" placeholder="${DEFAULTS.optionalThanks}">${s.default_optional_thanks ?? ""}</textarea>
+          <label for="default_thanks_button">Button under that reply</label>
+          <input id="default_thanks_button" name="default_thanks_button" type="text" value="${s.default_thanks_button ?? ""}" maxlength="${DEFAULT_LIMITS.button}" placeholder="${DEFAULTS.optionalThanksButton}">
+          <p class="row"><button>Save</button>${savedNote(fresh.saved, "defaults")}</p>
         </form>
       </div>`,
     { nav: true },
@@ -761,6 +782,19 @@ export async function settingsAction(ctx: Ctx, request: Request, what: string): 
     const field = (k: string, max: number) => String(form.get(k) ?? "").trim().slice(0, max);
     await saveSettings(ctx.db, pw, { contact: field("contact", 200), sender_name: field("sender_name", 100), sender_address: field("sender_address", 300) });
     return saved("contact", "sender");
+  }
+  if (what === "defaults") {
+    const values = {
+      default_link_label: String(form.get("default_link_label") ?? "").trim().slice(0, DEFAULT_LIMITS.button),
+      default_optional_prompt: String(form.get("default_optional_prompt") ?? "").trim().slice(0, DEFAULT_LIMITS.optionalPrompt),
+      default_optional_thanks: String(form.get("default_optional_thanks") ?? "").trim().slice(0, DEFAULT_LIMITS.optionalThanks),
+      default_thanks_button: String(form.get("default_thanks_button") ?? "").trim().slice(0, DEFAULT_LIMITS.button),
+    };
+    const keys = Object.keys(values) as Array<keyof typeof values>;
+    // An emptied field goes back to OwnChats' own wording.
+    await deleteSettings(ctx.db, keys.filter((k) => !values[k]));
+    await saveSettings(ctx.db, pw, Object.fromEntries(keys.filter((k) => values[k]).map((k) => [k, values[k]])));
+    return saved("defaults", "defaults");
   }
   return new Response("Not found", { status: 404 });
 }
