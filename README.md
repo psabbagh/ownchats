@@ -11,7 +11,7 @@ I built this for my own Instagram account and I'm sharing it as-is. Take it, cha
 - **Keyword, then link.** Someone comments AGENTS on your Reel. OwnChats replies under the comment ("Sent! Check your DMs") and sends a DM with the link, or with a "Send me the link" button whose tap sends it.
 - **Email, three ways, per campaign:**
   - **Link only.**
-  - **Link plus optional email:** the link comes right away with "Reply with your email if you want more". An email reply is saved; anything else is left alone.
+  - **Link plus optional email:** the link comes right away, and once they open it, a message invites them to reply with their email. An email reply is saved; anything else is left alone.
   - **Email first:** it asks for their email and says what they'll get. A valid email is saved and the link goes out. Anything else gets one re-ask, then the link goes out anyway, so nobody leaves empty-handed.
 - **Follow check, per campaign.** After the tap, OwnChats asks Instagram whether the person follows you. If not, they get "Follow me first" with an "I'm following" button, then one more ask, then the link either way, so nobody who commented leaves empty-handed. If Instagram doesn't answer, the link goes out. Off by default and not recommended: [Meta's spam policy](https://transparency.meta.com/policies/community-standards/spam/) doesn't allow requiring people to follow you to get access to specific content, so it can put your account at risk.
 - **Every word is yours.** Each campaign's public replies, DMs, button labels, links (up to three) and consent wording are editable, with defaults that work as they are. Write `{name}` to greet people by name.
@@ -119,7 +119,7 @@ Your copy on GitHub is yours, and Cloudflare redeploys it each time it changes. 
 
 Database changes apply themselves on the next deploy.
 
-Set up before the 2026-11-07 update? Your campaigns keep their email wording. To name yourself and link to your address as the new defaults do, add your name and mailing address under Settings, then edit each campaign's email lines; a new campaign's form shows the new defaults to copy from.
+Set up before the 2026-11-11 update? Your campaigns keep their email wording, and their thank-you has no button. To use the shorter ask and the Privacy button under the thank-you, add your name and mailing address under Settings, then edit each campaign's email lines; a new campaign's form shows the new defaults to copy from. The email ask now follows the first open of the link on every campaign, with no change needed.
 
 Set up before 2026-11-06? To see views on each campaign, add `instagram_manage_insights` to your Meta login configuration, then click Reconnect on `/setup`. The [guide](docs/guide-for-ai-agents.md#views-on-each-campaign) says where.
 

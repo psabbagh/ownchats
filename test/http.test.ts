@@ -393,8 +393,8 @@ describe("the flows a new campaign starts from", () => {
     expect(page).toMatch(/name="opening_button" type="text" value="Send me the link"/);
     expect(page).toMatch(/name="email_mode" value="optional" checked/);
     expect(page).not.toMatch(/name="email_mode" value="first" checked/);
-    // The line people answer says who is asking, that they can unsubscribe, and where the address is.
-    expect(page).toContain(`unsubscribe anytime. Who I am and my address: ${BASE}/privacy`);
+    // The line people answer says what they will get and that they can unsubscribe.
+    expect(page).toContain("my next ones as they come out. Unsubscribe anytime.");
   });
 
   it("offers the choice only on a new, untouched form", async () => {

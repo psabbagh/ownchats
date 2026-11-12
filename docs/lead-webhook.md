@@ -45,7 +45,7 @@ A new lead:
     "link_title": "Turn YouTube videos into Claude skills"
   },
   "consent": {
-    "wording": "Want more like this? Reply with your email and I'll add you to my newsletter. From Sam Lee, unsubscribe anytime. Who I am and my address: https://ownchats.example.workers.dev/privacy",
+    "wording": "Want more like this? Reply with your email and I'll send you my next ones as they come out. Unsubscribe anytime.",
     "given_at": "2026-11-07T14:03:22.000Z",
     "channel": "instagram_dm"
   }

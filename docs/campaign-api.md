@@ -69,7 +69,7 @@ Content-Type: application/json
 | `active` | no | Default `true`. |
 | `dry_run` | no | `true` checks everything and saves nothing. |
 
-Everything else starts as in the dashboard's "DM with a button, then ask for their email" flow: the default public replies, the first DM, the default email line naming the sender. The follow check and the DM keyword are off. All of it can be edited in the dashboard afterwards.
+Everything else starts as in the dashboard's "DM with a button, then ask for their email" flow: the default public replies, the first DM, the default email ask and its thank-you. The follow check and the DM keyword are off. All of it can be edited in the dashboard afterwards.
 
 The answer is `201` with the campaign as `GET /api/campaigns` shows it (`counts` and `post` left out) and the caption check. With `dry_run`, it is `200` with `"dry_run": true` and `"id": null`. Read `campaign.warnings` before the post goes up: `email_ask_without_lead_webhook`, for example, means emails would stay in OwnChats.
 

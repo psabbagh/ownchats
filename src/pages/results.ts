@@ -29,7 +29,8 @@ const PROGRESS: Record<string, string> = {
   follow_reasked: "asked to follow again",
   awaiting_email: "asked for their email",
   reasked: "asked for their email again",
-  optional_email: "link sent",
+  awaiting_open: "link sent",
+  optional_email: "link sent, asked for their email",
   done: "link sent",
 };
 

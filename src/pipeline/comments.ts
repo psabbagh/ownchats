@@ -29,6 +29,7 @@ const FIRST_DM_REASON: Record<ConversationState, string> = {
   follow_reasked: "follow ask",
   awaiting_email: "email question",
   reasked: "email question",
+  awaiting_open: "link",
   optional_email: "link with the optional email line",
   done: "link",
 };
