@@ -323,6 +323,7 @@ describe("the Settings forms say when they've saved", () => {
   it.each([
     ["contact", { sender_name: "Sam Lee", sender_address: "PO Box 1, Testville", contact: "" }, "contact", "sender", "Saved"],
     ["time-zone", { time_zone: "America/Toronto" }, "time-zone", "time-zone", "Saved"],
+    ["defaults", { default_link_label: "Open the guide" }, "defaults", "defaults", "Saved"],
     ["clicks", { do: "off" }, "clicks", "clicks", "Saved"],
     ["export", { do: "new" }, "export", "sheets", "New link made"],
     ["export", { do: "revoke" }, "export-off", "sheets", "Turned off"],
@@ -395,6 +396,46 @@ describe("the flows a new campaign starts from", () => {
     expect(page).not.toMatch(/name="email_mode" value="first" checked/);
     // The line people answer says what they will get and that they can unsubscribe.
     expect(page).toContain("my next ones as they come out. Unsubscribe anytime.");
+  });
+
+  it("starts from the owner's own wording in Settings, in the form and through the API, and from OwnChats' own for what is left empty", async () => {
+    const cookie = await w.signIn();
+    const own = {
+      default_link_label: "Open the guide",
+      default_optional_prompt: "Reply with your email and I'll write when the next one is out. Unsubscribe anytime.",
+      default_optional_thanks: "",
+      default_thanks_button: "About me",
+    };
+    await w.fetch("/dashboard/settings/defaults", form(cookie, own));
+    const settings = await (await w.fetch("/dashboard/settings", { headers: { cookie } })).text();
+    expect(settings).toContain('name="default_link_label" type="text" value="Open the guide"');
+
+    const page = await start("?flow=email");
+    expect(page).toContain('name="link_label_0" type="text" value="Open the guide"');
+    expect(page).toContain("I&#39;ll write when the next one is out. Unsubscribe anytime.</textarea>");
+    expect(page).toContain('name="optional_thanks_button" type="text" value="About me"');
+    // Left empty in Settings: OwnChats' own thank-you.
+    expect(page).toContain("Thanks, you&#39;re on the list!</textarea>");
+
+    const made = await w.fetch("/dashboard/settings/api-write-token", form(cookie, { do: "new" }));
+    const token = (await made.text()).match(/ocw_[A-Za-z0-9_-]+/)![0];
+    const res = await w.fetch("/api/campaigns", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ caption: "Comment SEO and I'll send it over.", link: "https://example.com/seo", email_tag: "seoGuide" }),
+    });
+    expect(res.status).toBe(201);
+    const row = await env.DB.prepare("SELECT links, optional_prompt, optional_thanks, optional_thanks_button FROM campaigns").first();
+    expect(row).toEqual({
+      links: JSON.stringify([{ url: "https://example.com/seo", label: "Open the guide" }]),
+      optional_prompt: own.default_optional_prompt,
+      optional_thanks: "Thanks, you're on the list!",
+      optional_thanks_button: "About me",
+    });
+
+    // Emptied again: back to OwnChats' own.
+    await w.fetch("/dashboard/settings/defaults", form(cookie, { default_link_label: "", default_optional_prompt: "", default_optional_thanks: "", default_thanks_button: "" }));
+    expect(await start("?flow=email")).toContain('name="link_label_0" type="text" value="Open"');
   });
 
   it("offers the choice only on a new, untouched form", async () => {
