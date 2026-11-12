@@ -401,6 +401,7 @@ describe("the flows a new campaign starts from", () => {
   it("starts from the owner's own wording in Settings, in the form and through the API, and from OwnChats' own for what is left empty", async () => {
     const cookie = await w.signIn();
     const own = {
+      default_link_text: "Here's the guide from my video:",
       default_link_label: "Open the guide",
       default_optional_prompt: "Reply with your email and I'll write when the next one is out. Unsubscribe anytime.",
       default_optional_thanks: "",
@@ -412,6 +413,7 @@ describe("the flows a new campaign starts from", () => {
 
     const page = await start("?flow=email");
     expect(page).toContain('name="link_label_0" type="text" value="Open the guide"');
+    expect(page).toContain("Here&#39;s the guide from my video:</textarea>");
     expect(page).toContain("I&#39;ll write when the next one is out. Unsubscribe anytime.</textarea>");
     expect(page).toContain('name="optional_thanks_button" type="text" value="About me"');
     // Left empty in Settings: OwnChats' own thank-you.
@@ -425,8 +427,9 @@ describe("the flows a new campaign starts from", () => {
       body: JSON.stringify({ caption: "Comment SEO and I'll send it over.", link: "https://example.com/seo", email_tag: "seoGuide" }),
     });
     expect(res.status).toBe(201);
-    const row = await env.DB.prepare("SELECT links, optional_prompt, optional_thanks, optional_thanks_button FROM campaigns").first();
+    const row = await env.DB.prepare("SELECT link_text, links, optional_prompt, optional_thanks, optional_thanks_button FROM campaigns").first();
     expect(row).toEqual({
+      link_text: own.default_link_text,
       links: JSON.stringify([{ url: "https://example.com/seo", label: "Open the guide" }]),
       optional_prompt: own.default_optional_prompt,
       optional_thanks: "Thanks, you're on the list!",
@@ -434,7 +437,7 @@ describe("the flows a new campaign starts from", () => {
     });
 
     // Emptied again: back to OwnChats' own.
-    await w.fetch("/dashboard/settings/defaults", form(cookie, { default_link_label: "", default_optional_prompt: "", default_optional_thanks: "", default_thanks_button: "" }));
+    await w.fetch("/dashboard/settings/defaults", form(cookie, { default_link_text: "", default_link_label: "", default_optional_prompt: "", default_optional_thanks: "", default_thanks_button: "" }));
     expect(await start("?flow=email")).toContain('name="link_label_0" type="text" value="Open"');
   });
 
