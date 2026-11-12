@@ -33,6 +33,7 @@ export type SettingKey =
   | "default_optional_thanks"
   | "default_thanks_button"
   | "default_link_label"
+  | "default_link_text"
   | "time_zone"
   | "shortcut_keywords"
   | "api_token_hash"

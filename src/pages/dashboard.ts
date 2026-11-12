@@ -55,7 +55,7 @@ export function newCampaignDefaults(settings: Settings, flow: StartFlow): Campai
     optionalThanksButton: own.optionalThanksButton,
     consentText: "",
     emailTag: "",
-    linkText: DEFAULTS.linkText,
+    linkText: own.linkText,
     links: [{ label: own.linkLabel, url: "" }],
     linkTitle: "",
     followCheck: false,
@@ -703,6 +703,8 @@ export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string; apiWrit
         <p class="muted">Your own wording for the texts a new campaign starts with, in the dashboard and through the API. Leave one empty to use OwnChats' own, shown in grey.
           Existing campaigns keep their wording until you edit it.</p>
         <form method="post" action="/dashboard/settings/defaults">
+          <label for="default_link_text">Message with the link</label>
+          <textarea id="default_link_text" name="default_link_text" maxlength="${DEFAULT_LIMITS.linkText}" placeholder="${DEFAULTS.linkText}">${s.default_link_text ?? ""}</textarea>
           <label for="default_link_label">Link button label</label>
           <input id="default_link_label" name="default_link_label" type="text" value="${s.default_link_label ?? ""}" maxlength="${DEFAULT_LIMITS.button}" placeholder="${DEFAULTS.linkLabel}">
           <label for="default_optional_prompt">Email ask (link plus optional email)</label>
@@ -818,6 +820,7 @@ export async function settingsAction(ctx: Ctx, request: Request, what: string): 
   }
   if (what === "defaults") {
     const values = {
+      default_link_text: String(form.get("default_link_text") ?? "").trim().slice(0, DEFAULT_LIMITS.linkText),
       default_link_label: String(form.get("default_link_label") ?? "").trim().slice(0, DEFAULT_LIMITS.button),
       default_optional_prompt: String(form.get("default_optional_prompt") ?? "").trim().slice(0, DEFAULT_LIMITS.optionalPrompt),
       default_optional_thanks: String(form.get("default_optional_thanks") ?? "").trim().slice(0, DEFAULT_LIMITS.optionalThanks),

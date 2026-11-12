@@ -189,8 +189,8 @@ export const DEFAULTS = {
 
 /**
  * The wording a new campaign starts with where the owner chose their own in
- * Settings ("Defaults for new campaigns"): the optional email ask, its thank-you
- * and button, and the first link's button label. Anything left empty there is
+ * Settings ("Defaults for new campaigns"): the message with the link, the first
+ * link's button label, the optional email ask, and its thank-you and button. Anything left empty there is
  * OwnChats' own.
  */
 export function ownDefaults(s: {
@@ -198,8 +198,10 @@ export function ownDefaults(s: {
   default_optional_thanks?: string;
   default_thanks_button?: string;
   default_link_label?: string;
-}): { optionalPrompt: string; optionalThanks: string; optionalThanksButton: string; linkLabel: string } {
+  default_link_text?: string;
+}): { optionalPrompt: string; optionalThanks: string; optionalThanksButton: string; linkLabel: string; linkText: string } {
   return {
+    linkText: s.default_link_text || DEFAULTS.linkText,
     optionalPrompt: s.default_optional_prompt || DEFAULTS.optionalPrompt,
     optionalThanks: s.default_optional_thanks || DEFAULTS.optionalThanks,
     optionalThanksButton: s.default_thanks_button || DEFAULTS.optionalThanksButton,
@@ -222,7 +224,7 @@ const MAX_TEXT = 1000;
 const MAX_BUTTON = 20;
 const MAX_LINKS = 3;
 /** Limits for the owner's own defaults in Settings, the same as a campaign's. */
-export const DEFAULT_LIMITS = { optionalPrompt: MAX_TEXT, optionalThanks: MAX_TEMPLATE_TEXT, button: MAX_BUTTON };
+export const DEFAULT_LIMITS = { linkText: MAX_TEMPLATE_TEXT, optionalPrompt: MAX_TEXT, optionalThanks: MAX_TEMPLATE_TEXT, button: MAX_BUTTON };
 const MAX_EMAIL_TAG = 100;
 const MAX_LINK_TITLE = 200;
 const MAX_VIDEO_ID = 40;
