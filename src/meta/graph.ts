@@ -1,5 +1,5 @@
 import type { Env } from "../env";
-import { INSIGHT_METRICS, MetaError, type AccountStats, type IgComment, type Media, type MediaInsights, type MetaClient, type OutMessage, type ReelMetric, type TokenInfo } from "./client";
+import { INSIGHT_METRICS, MetaError, REPOSTS, type AccountDay, type AccountStats, type IgComment, type Media, type MediaInsights, type MetaClient, type OutMessage, type ReelMetric, type TokenInfo } from "./client";
 
 /** Pinned so Meta's changes arrive when OwnChats is updated, not by surprise. */
 export const GRAPH_VERSION = "v26.0";
@@ -274,7 +274,13 @@ export class GraphMetaClient implements MetaClient {
   async mediaInsights(mediaId: string): Promise<MediaInsights> {
     let res: { data?: InsightRow[] };
     try {
-      res = await this.get(`${mediaId}/insights`, { metric: INSIGHT_METRICS.join(",") });
+      try {
+        res = await this.get(`${mediaId}/insights`, { metric: MEDIA_METRICS.join(",") });
+      } catch (err) {
+        // Reposts is the newest metric here: should Meta refuse it, ask as before.
+        if (!(err instanceof MetaError) || err.code !== 100 || err.subcode === 33) throw err;
+        res = await this.get(`${mediaId}/insights`, { metric: INSIGHT_METRICS.join(",") });
+      }
     } catch (err) {
       // Meta refuses the whole request when one metric doesn't apply to the post's type: ask again for the ones every post has.
       if (!(err instanceof MetaError) || err.code !== 100 || err.subcode === 33) throw err;
@@ -283,7 +289,7 @@ export class GraphMetaClient implements MetaClient {
     const out: MediaInsights = {};
     for (const row of res.data ?? []) {
       const value = insightValue(row);
-      const name = INSIGHT_METRICS.find((m) => m === row.name);
+      const name = MEDIA_METRICS.find((m) => m === row.name);
       if (name && value !== undefined) out[name] = value;
     }
     return out;
@@ -294,9 +300,76 @@ export class GraphMetaClient implements MetaClient {
     const row = res.data?.find((r) => r.name === metric);
     return row ? insightValue(row) : undefined;
   }
+
+  async accountDay(day: string): Promise<AccountDay> {
+    const read = (metric: string) =>
+      this.get<{ data?: InsightRow[] }>(`${this.igUserId}/insights`, {
+        metric,
+        period: "day",
+        metric_type: "total_value",
+        breakdown: "follow_type",
+        ...accountDayWindow(day),
+      });
+    let res: { data?: InsightRow[] };
+    try {
+      res = await read("reach,follows_and_unfollows");
+    } catch (err) {
+      // Should Meta refuse follows_and_unfollows (it has no number below 100 followers), keep the reach.
+      if (!(err instanceof MetaError) || err.code !== 100 || err.subcode === 33) throw err;
+      res = await read("reach");
+    }
+    const rows = res.data ?? [];
+    const reachRow = rows.find((r) => r.name === "reach");
+    const reach = reachRow ? (insightValue(reachRow) ?? null) : null;
+    const r = byType(reachRow, ["FOLLOWER", "NON_FOLLOWER", "UNKNOWN"]);
+    // With no reach at all, there is none to split.
+    const split = (n: number | null | undefined) => n ?? (reach === 0 ? 0 : null);
+    const f = byType(rows.find((x) => x.name === "follows_and_unfollows"), ["FOLLOWER", "NON_FOLLOWER"]);
+    return {
+      reach,
+      reachFollowers: split(r.FOLLOWER),
+      reachNonFollowers: split(r.NON_FOLLOWER),
+      reachUnknown: split(r.UNKNOWN),
+      follows: f.FOLLOWER ?? null,
+      unfollows: f.NON_FOLLOWER ?? null,
+    };
+  }
 }
 
-type InsightRow = { name?: string; values?: Array<{ value?: unknown }>; total_value?: { value?: unknown } };
+/** What mediaInsights asks for first. */
+const MEDIA_METRICS = [...INSIGHT_METRICS, REPOSTS] as const;
+
+type InsightRow = {
+  name?: string;
+  values?: Array<{ value?: unknown }>;
+  total_value?: { value?: unknown; breakdowns?: Array<{ results?: Array<{ dimension_values?: string[]; value?: unknown }> }> };
+};
+
+/**
+ * Meta's account insights count whole days, midnight to midnight Pacific time, and
+ * a total_value read sums every day whose end falls between since and until. A
+ * window from noon to noon (1 pm in summer) holds exactly one day's end in every
+ * season: the midnight that ends `day`.
+ */
+export function accountDayWindow(day: string): { since: string; until: string } {
+  const [y, m, d] = day.split("-").map(Number) as [number, number, number];
+  const since = Date.UTC(y, m - 1, d, 20) / 1000;
+  return { since: String(since), until: String(since + 86400) };
+}
+
+/**
+ * A breakdown's values by type. Meta leaves out a type with nothing in it, so once
+ * the breakdown has any result a missing type is 0; with no result at all (a day
+ * Meta hasn't counted yet) every type is null.
+ */
+function byType(row: InsightRow | undefined, types: string[]): Record<string, number | null> {
+  const found = new Map<string, number>();
+  for (const r of row?.total_value?.breakdowns?.[0]?.results ?? []) {
+    const type = r.dimension_values?.[0];
+    if (type && typeof r.value === "number" && Number.isFinite(r.value)) found.set(type, r.value);
+  }
+  return Object.fromEntries(types.map((t) => [t, found.get(t) ?? (found.size ? 0 : null)]));
+}
 
 /** Meta answers an insight in one of two shapes. */
 function insightValue(row: InsightRow): number | undefined {

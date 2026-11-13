@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { refreshMediaStatsSoon, STATS_EVERY } from "../src/insights";
+import { metaDay, refreshMediaStatsSoon, STATS_EVERY } from "../src/insights";
+import { cleanup } from "../src/cron";
 import { MetaError } from "../src/meta/client";
-import { GraphMetaClient } from "../src/meta/graph";
+import { accountDayWindow, GraphMetaClient } from "../src/meta/graph";
 import { BASE, FAN, OTHER_POST, OWNER, REEL, setupWorld } from "./helpers";
 import { DAY, HOUR, MINUTE } from "../src/time";
 import { env } from "cloudflare:workers";
@@ -311,6 +312,125 @@ describe("every recent post and the account", () => {
     await w.cron();
     expect(await api("/api/account")).toMatchObject({ followers: 1234, media_count: 41 });
   });
+
+  it("serve reposts for every post type, with the post's other numbers", async () => {
+    post("18000000000000501", 1);
+    post("18000000000000502", 1, "FEED");
+    const id = await w.campaign({ mediaId: "18000000000000501" });
+    w.meta.insights.set("18000000000000501", { ...NUMBERS, reposts: 3 });
+    w.meta.insights.set("18000000000000502", { views: 70, reposts: 0 });
+    await w.cron();
+    const posts = new Map(((await api("/api/posts")) as { posts: Array<Record<string, unknown>> }).posts.map((p) => [p.id, p]));
+    expect(posts.get("18000000000000501")).toMatchObject({ views: 12345, saves: 300, reposts: 3 });
+    expect(posts.get("18000000000000502")).toMatchObject({ views: 70, reposts: 0 });
+    const campaigns = (await api("/api/campaigns")) as { campaigns: Array<{ id: number; post: Record<string, unknown> | null }> };
+    expect(campaigns.campaigns.find((c) => c.id === id)!.post).toMatchObject({ views: 12345, reposts: 3 });
+  });
+});
+
+describe("the account's days", () => {
+  // The test clock starts at 2026-11-04 12:00 UTC, 4 am in Pacific time, so Meta's yesterday is 2026-11-03.
+  // Invented numbers.
+  const DAY_3 = { reach: 500, reachFollowers: 120, reachNonFollowers: 370, reachUnknown: 10, follows: 9, unfollows: 2 };
+  const asked = () => w.meta.daysAsked;
+
+  async function api(path: string): Promise<any> {
+    const cookie = await w.signIn();
+    const tokenPage = await (
+      await w.fetch("/dashboard/settings/api-token", {
+        method: "POST",
+        headers: { cookie, origin: BASE, "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ do: "new" }),
+      })
+    ).text();
+    const token = tokenPage.match(/oc_[A-Za-z0-9_-]+/)![0];
+    const res = await w.fetch(path, { headers: { authorization: `Bearer ${token}` } });
+    return { status: res.status, ...((await res.json()) as object) };
+  }
+
+  it("are read newest first, one a minute, back 30 days, and served with nulls where Meta has no number yet", async () => {
+    w.meta.accountDays.set("2026-11-03", DAY_3);
+    w.meta.accountDays.set("2026-11-02", { ...DAY_3, reach: 450, follows: null, unfollows: null });
+    await w.cron();
+    expect(asked()).toEqual(["2026-11-03"]);
+    await w.cron();
+    expect(asked()).toEqual(["2026-11-03", "2026-11-02"]);
+    for (let i = 0; i < 29; i++) await w.cron();
+    expect(asked()).toHaveLength(30);
+    expect(asked().at(-1)).toBe("2026-10-05");
+
+    const all = await api("/api/account/days");
+    expect(all.time_zone).toBe("America/Los_Angeles");
+    expect(all.days).toHaveLength(30);
+    expect(all.days[0]).toEqual({
+      day: "2026-11-03",
+      reach: 500,
+      reach_followers: 120,
+      reach_non_followers: 370,
+      reach_unknown: 10,
+      follows: 9,
+      unfollows: 2,
+      updated_at: new Date(w.clock.now()).toISOString(),
+      problem: null,
+    });
+    expect(all.days[1]).toMatchObject({ day: "2026-11-02", reach: 450, follows: null, unfollows: null });
+    expect(all.days[29]).toMatchObject({ day: "2026-10-05", reach: null });
+
+    const recent = await api("/api/account/days?since=2026-11-02");
+    expect(recent.days.map((d: { day: string }) => d.day)).toEqual(["2026-11-03", "2026-11-02"]);
+    expect((await api("/api/account/days?since=yesterday")).status).toBe(400);
+  });
+
+  it("are read again every 6 hours until 3 days after they end, as Meta fills them in, then left alone", async () => {
+    for (let i = 0; i < 31; i++) await w.cron();
+    expect(asked()).toHaveLength(30);
+
+    // 10 am Pacific on 2026-11-04: the three days that ended less than 3 days ago.
+    asked().length = 0;
+    w.clock.advance(6 * HOUR);
+    for (let i = 0; i < 4; i++) await w.cron();
+    expect(asked()).toEqual(["2026-11-03", "2026-11-02", "2026-11-01"]);
+
+    // Three days on: the new days, then one last read of each day still unsettled.
+    asked().length = 0;
+    w.clock.advance(3 * DAY);
+    for (let i = 0; i < 8; i++) await w.cron();
+    expect(asked()).toEqual(["2026-11-06", "2026-11-05", "2026-11-04", "2026-11-03", "2026-11-02", "2026-11-01"]);
+  });
+
+  it("keep a day's numbers when a read fails, say why, and try again 6 hours later", async () => {
+    w.meta.accountDays.set("2026-11-03", DAY_3);
+    await w.cron();
+    w.clock.advance(6 * HOUR);
+    w.meta.failNext("accountDay", new MetaError("Please reduce the amount of data you're asking for", 500, 1));
+    await w.cron();
+    expect(asked()).toEqual(["2026-11-03", "2026-11-03"]);
+    const days = await api("/api/account/days?since=2026-11-03");
+    expect(days.days[0]).toMatchObject({ reach: 500, follows: 9, problem: "Meta rate limit or outage, will retry" });
+
+    await w.cron();
+    expect(asked().at(-1)).toBe("2026-11-02");
+    w.clock.advance(6 * HOUR);
+    await w.cron();
+    expect(asked().at(-1)).toBe("2026-11-03");
+    expect((await api("/api/account/days?since=2026-11-03")).days[0].problem).toBeNull();
+  });
+
+  it("are dropped by the daily cleanup after 90 days", async () => {
+    const insert = (day: string) => env.DB.prepare("INSERT INTO account_days (day, reach, fetched_at, updated_at) VALUES (?, 1, 1, 1)").bind(day).run();
+    await insert("2026-08-05");
+    await insert("2026-08-06");
+    await cleanup(await w.ctx());
+    const { results } = await env.DB.prepare("SELECT day FROM account_days").all<{ day: string }>();
+    expect(results.map((r) => r.day)).toEqual(["2026-08-06"]);
+  });
+
+  it("use Meta's day, in Pacific time, in summer and in winter", () => {
+    expect(metaDay(Date.parse("2026-11-04T07:30:00Z"))).toBe("2026-11-03");
+    expect(metaDay(Date.parse("2026-11-04T08:30:00Z"))).toBe("2026-11-04");
+    expect(metaDay(Date.parse("2026-07-01T06:30:00Z"))).toBe("2026-06-30");
+    expect(metaDay(Date.parse("2026-07-01T07:30:00Z"))).toBe("2026-07-01");
+  });
 });
 
 describe("Graph client insights", () => {
@@ -339,7 +459,7 @@ describe("Graph client insights", () => {
     });
     const client = new GraphMetaClient("https://graph.example", "test-token", "17841400000000001", "1000000000000001", "test-secret");
     expect(await client.mediaInsights(REEL)).toEqual({ reach: 90, likes: 8, comments: 3, saved: 2 });
-    expect(asked).toEqual(["views,reach,likes,comments,shares,saved", "reach,likes,comments,saved"]);
+    expect(asked).toEqual(["views,reach,likes,comments,shares,saved,reposts", "views,reach,likes,comments,shares,saved", "reach,likes,comments,saved"]);
   });
 
   it("pages through the account's posts until they are older than asked, and reads its counts", async () => {
@@ -378,6 +498,76 @@ describe("Graph client insights", () => {
     expect(await client.reelInsight(REEL, "ig_reels_avg_watch_time")).toBe(14250);
     await expect(client.reelInsight(REEL, "reels_skip_rate")).rejects.toMatchObject({ code: 100 });
     expect(asked).toEqual(["ig_reels_avg_watch_time", "reels_skip_rate"]);
+  });
+
+  it("asks for reposts with the other numbers, and only drops reposts when Meta refuses it", async () => {
+    const asked: string[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const metric = url.searchParams.get("metric") ?? "";
+      asked.push(metric);
+      if (metric.includes("reposts")) {
+        return Response.json({ error: { message: "(#100) The Media Insights API does not support the reposts metric for this media product type", code: 100 } }, { status: 400 });
+      }
+      // Invented numbers.
+      return Response.json({ data: [{ name: "views", values: [{ value: 2000 }] }, { name: "shares", values: [{ value: 12 }] }] });
+    });
+    const client = new GraphMetaClient("https://graph.example", "test-token", "17841400000000001", "1000000000000001", "test-secret");
+    expect(await client.mediaInsights(REEL)).toEqual({ views: 2000, shares: 12 });
+    expect(asked).toEqual(["views,reach,likes,comments,shares,saved,reposts", "views,reach,likes,comments,shares,saved"]);
+  });
+
+  it("reads one of Meta's days for the account, split by follow type", async () => {
+    const asked: URL[] = [];
+    let refuseFollows = false;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      asked.push(url);
+      const metric = url.searchParams.get("metric") ?? "";
+      if (refuseFollows && metric.includes("follows_and_unfollows")) {
+        return Response.json({ error: { message: "(#100) follows_and_unfollows is not available for this account", code: 100 } }, { status: 400 });
+      }
+      // Invented numbers, in the shape Meta answers: UNKNOWN left out, follows not counted yet.
+      return Response.json({
+        data: [
+          {
+            name: "reach",
+            period: "day",
+            total_value: { value: 480, breakdowns: [{ dimension_keys: ["follow_type"], results: [{ dimension_values: ["FOLLOWER"], value: 90 }, { dimension_values: ["NON_FOLLOWER"], value: 385 }] }] },
+          },
+          ...(metric.includes("follows_and_unfollows") ? [{ name: "follows_and_unfollows", period: "day", total_value: { breakdowns: [{ dimension_keys: ["follow_type"] }] } }] : []),
+        ],
+      });
+    });
+    const client = new GraphMetaClient("https://graph.example", "test-token", "17841400000000001", "1000000000000001", "test-secret");
+    expect(await client.accountDay("2026-11-10")).toEqual({ reach: 480, reachFollowers: 90, reachNonFollowers: 385, reachUnknown: 0, follows: null, unfollows: null });
+    const q = asked[0]!;
+    expect(q.pathname).toBe("/v26.0/17841400000000001/insights");
+    expect(Object.fromEntries(q.searchParams)).toEqual({
+      metric: "reach,follows_and_unfollows",
+      period: "day",
+      metric_type: "total_value",
+      breakdown: "follow_type",
+      // Noon Pacific on the day to noon the next: the window holds only the midnight that ends 2026-11-10.
+      since: String(Date.UTC(2026, 10, 10, 20) / 1000),
+      until: String(Date.UTC(2026, 10, 11, 20) / 1000),
+    });
+
+    asked.length = 0;
+    refuseFollows = true;
+    expect(await client.accountDay("2026-11-10")).toMatchObject({ reach: 480, follows: null });
+    expect(asked.map((u) => u.searchParams.get("metric"))).toEqual(["reach,follows_and_unfollows", "reach"]);
+  });
+
+  it("holds exactly one of Meta's day ends in each account day's window, across the change of clocks", () => {
+    // Midnight Pacific is 07:00 UTC in summer and 08:00 UTC in winter. 2026-11-01 is the day the clocks go back.
+    for (const day of ["2026-07-15", "2026-10-31", "2026-11-01", "2026-11-02", "2026-03-08"]) {
+      const { since, until } = accountDayWindow(day);
+      const [y, m, d] = day.split("-").map(Number) as [number, number, number];
+      const ends = [7, 8].flatMap((h) => [-1, 0, 1, 2].map((k) => Date.UTC(y, m - 1, d + k, h) / 1000));
+      const inside = ends.filter((t) => t >= Number(since) && t <= Number(until) && metaDay(t * 1000 - 1) !== metaDay(t * 1000));
+      expect(inside.map((t) => metaDay(t * 1000 - 1))).toEqual([day]);
+    }
   });
 
   it("does not retry a permission refusal", async () => {

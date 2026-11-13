@@ -1,5 +1,5 @@
 import type { Ctx } from "./context";
-import { POST_DAYS, refreshAccountStats, refreshMediaStats, refreshPostList } from "./insights";
+import { oldestKeptDay, POST_DAYS, refreshAccountDays, refreshAccountStats, refreshMediaStats, refreshPostList } from "./insights";
 import { handleComment, pendingCommentIds, QUERIES_PER_COMMENT } from "./pipeline/comments";
 import { listCampaigns } from "./campaigns";
 import { deliverDue, KEEP_DELIVERIES } from "./leadwebhook";
@@ -16,8 +16,8 @@ const KEEP_COMMENTS = 30 * DAY;
 
 /**
  * Runs every minute: attach campaigns waiting for the next post, retry what waited,
- * poll for missed comments, read Instagram's numbers that are due, send what the
- * lead webhook has waiting, and once a day, upkeep.
+ * poll for missed comments, read Instagram's numbers that are due (posts and the
+ * account's days), send what the lead webhook has waiting, and once a day, upkeep.
  */
 export async function runCron(ctx: Ctx): Promise<void> {
   // Leads already saved still go to the webhook while Instagram is disconnected.
@@ -36,6 +36,7 @@ export async function runCron(ctx: Ctx): Promise<void> {
   await refreshPostList(ctx);
   await refreshMediaStats(ctx);
   await refreshAccountStats(ctx);
+  await refreshAccountDays(ctx);
   await deliverDue(ctx);
   if (ctx.now() - Number(ctx.settings.daily_at ?? 0) > DAY) {
     await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { daily_at: String(ctx.now()) });
@@ -55,5 +56,6 @@ export async function cleanup(ctx: Ctx): Promise<void> {
     ctx.db
       .prepare("DELETE FROM media_stats WHERE media_id NOT IN (SELECT media_id FROM campaigns WHERE media_id IS NOT NULL) AND (posted_at IS NULL OR posted_at < ?)")
       .bind(now - POST_DAYS * DAY),
+    ctx.db.prepare("DELETE FROM account_days WHERE day < ?").bind(oldestKeptDay(now)),
   ]);
 }

@@ -1,6 +1,6 @@
 import { listCampaigns } from "./campaigns";
 import type { Ctx } from "./context";
-import { explainError, MetaError, REEL_METRICS, type Media, type MediaInsights, type ReelMetric } from "./meta/client";
+import { explainError, MetaError, REEL_METRICS, type AccountDay, type Media, type MediaInsights, type ReelMetric } from "./meta/client";
 import { MEDIA_PAGES } from "./meta/graph";
 import { saveSettings } from "./settings";
 import { DAY, HOUR, MINUTE } from "./time";
@@ -46,6 +46,7 @@ interface Row {
   comments: number | null;
   shares: number | null;
   saved: number | null;
+  reposts: number | null;
   avg_watch_time_ms: number | null;
   skip_rate_percent: number | null;
   fetched_at: number;
@@ -69,6 +70,7 @@ function fromRow(r: Row): MediaStats {
     comments: orUndefined(r.comments),
     shares: orUndefined(r.shares),
     saved: orUndefined(r.saved),
+    reposts: orUndefined(r.reposts),
     avgWatchTimeMs: orUndefined(r.avg_watch_time_ms),
     skipRatePercent: orUndefined(r.skip_rate_percent),
     fetchedAt: r.fetched_at,
@@ -176,7 +178,8 @@ export async function refreshMediaStats(ctx: Ctx): Promise<void> {
     .sort((a, b) => a.at - b.at)
     .slice(0, READS_PER_RUN);
   for (const post of due) {
-    if (ctx.budget.queriesLeft < 8 || !ctx.budget.take()) return;
+    // Two calls: Meta may refuse reposts and leave the rest to ask for again.
+    if (ctx.budget.queriesLeft < 8 || !ctx.budget.take(2)) return;
     await readOne(ctx, post.id, post.type, now);
   }
 }
@@ -214,11 +217,11 @@ async function readOne(ctx: Ctx, mediaId: string, mediaType: string | null, now:
     await ctx.db
       .prepare(
         `INSERT INTO media_stats (media_id, views, reach, likes, comments, shares, saved, avg_watch_time_ms, skip_rate_percent,
-           fetched_at, updated_at, problem)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, NULL)
+           fetched_at, updated_at, problem, reposts)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, NULL, ?11)
          ON CONFLICT (media_id) DO UPDATE SET views = ?2, reach = ?3, likes = ?4, comments = ?5, shares = ?6, saved = ?7,
            avg_watch_time_ms = COALESCE(?8, avg_watch_time_ms), skip_rate_percent = COALESCE(?9, skip_rate_percent),
-           fetched_at = ?10, updated_at = ?10, problem = NULL`,
+           fetched_at = ?10, updated_at = ?10, problem = NULL, reposts = ?11`,
       )
       .bind(
         mediaId,
@@ -231,6 +234,7 @@ async function readOne(ctx: Ctx, mediaId: string, mediaType: string | null, now:
         reel.ig_reels_avg_watch_time ?? null,
         reel.reels_skip_rate ?? null,
         now,
+        n.reposts ?? null,
       )
       .run();
   } catch (err) {
@@ -263,7 +267,117 @@ export async function refreshAccountStats(ctx: Ctx): Promise<void> {
   }
 }
 
-/** After a reconnect the permissions may have changed: every post's numbers are due again, from the next Cron run. */
+/** After a reconnect the permissions may have changed: every post's numbers and every recent day are due again, from the next Cron run. */
 export async function refreshMediaStatsSoon(ctx: Ctx): Promise<void> {
-  await ctx.db.prepare("UPDATE media_stats SET fetched_at = 0").run();
+  await ctx.db.batch([ctx.db.prepare("UPDATE media_stats SET fetched_at = 0"), ctx.db.prepare("UPDATE account_days SET fetched_at = 0")]);
 }
+
+/** Days of account numbers read from Meta, back from yesterday: enough to fill a month of follower history. */
+export const ACCOUNT_DAYS = 30;
+/** Meta revises a day for up to 48 hours after it ends; it is read again until this long after. */
+const DAY_SETTLES = 3 * DAY;
+/** How often a day that hasn't settled is read again, and a failed read retried. */
+const DAY_AGAIN_EVERY = 6 * HOUR;
+
+/** Meta's day for account insights, which runs midnight to midnight Pacific time, as YYYY-MM-DD. */
+export function metaDay(ms: number): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(ms);
+}
+
+/** The day `n` days before `day`. */
+function daysBefore(day: string, n: number): string {
+  const [y, m, d] = day.split("-").map(Number) as [number, number, number];
+  return new Date(Date.UTC(y, m - 1, d - n)).toISOString().slice(0, 10);
+}
+
+/** When Meta's `day` ends: midnight Pacific standard time, which is an hour late in summer, as settling allows. */
+function dayEnds(day: string): number {
+  const [y, m, d] = day.split("-").map(Number) as [number, number, number];
+  return Date.UTC(y, m - 1, d + 1, 8);
+}
+
+export interface AccountDayStats extends AccountDay {
+  day: string;
+  updatedAt: number | null;
+  problem: string | null;
+}
+
+/**
+ * Called by the Cron: reads one of the account's days from Meta, the newest that is
+ * due. A day is due once it has ended and until it has settled, every 6 hours: Meta
+ * fills a day in over 48 hours. So a new install fills yesterday first, then a day
+ * a minute back to ACCOUNT_DAYS ago.
+ */
+export async function refreshAccountDays(ctx: Ctx): Promise<void> {
+  if (!ctx.meta || ctx.budget.queriesLeft < 6) return;
+  const now = ctx.now();
+  const yesterday = daysBefore(metaDay(now), 1);
+  const { results } = await ctx.db
+    .prepare("SELECT day, fetched_at, updated_at FROM account_days WHERE day >= ?")
+    .bind(daysBefore(yesterday, ACCOUNT_DAYS - 1))
+    .all<{ day: string; fetched_at: number; updated_at: number | null }>();
+  const known = new Map(results.map((r) => [r.day, r]));
+  let due: string | undefined;
+  for (let i = 0; i < ACCOUNT_DAYS && !due; i++) {
+    const day = daysBefore(yesterday, i);
+    const r = known.get(day);
+    if (!r || (now - r.fetched_at >= DAY_AGAIN_EVERY && (r.updated_at === null || r.fetched_at < dayEnds(day) + DAY_SETTLES))) due = day;
+  }
+  // Two calls: Meta may refuse follows and leave the reach to ask for alone.
+  if (!due || !ctx.budget.take(2)) return;
+  try {
+    const n = await ctx.meta.accountDay(due);
+    await ctx.db
+      .prepare(
+        `INSERT INTO account_days (day, reach, reach_followers, reach_non_followers, reach_unknown, follows, unfollows, fetched_at, updated_at, problem)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, NULL)
+         ON CONFLICT (day) DO UPDATE SET reach = ?2, reach_followers = ?3, reach_non_followers = ?4, reach_unknown = ?5,
+           follows = ?6, unfollows = ?7, fetched_at = ?8, updated_at = ?8, problem = NULL`,
+      )
+      .bind(due, n.reach, n.reachFollowers, n.reachNonFollowers, n.reachUnknown, n.follows, n.unfollows, now)
+      .run();
+  } catch (err) {
+    await ctx.db
+      .prepare(
+        `INSERT INTO account_days (day, fetched_at, problem) VALUES (?1, ?2, ?3)
+         ON CONFLICT (day) DO UPDATE SET fetched_at = ?2, problem = ?3`,
+      )
+      .bind(due, now, problemText(err))
+      .run();
+  }
+}
+
+/** The account's days for the API, newest first. With `since` (YYYY-MM-DD), only that day and later. */
+export async function listAccountDays(ctx: Ctx, opts: { since?: string; limit: number }): Promise<AccountDayStats[]> {
+  const { results } = await ctx.db
+    .prepare("SELECT * FROM account_days WHERE day >= ?1 ORDER BY day DESC LIMIT ?2")
+    .bind(opts.since ?? "", opts.limit)
+    .all<{
+      day: string;
+      reach: number | null;
+      reach_followers: number | null;
+      reach_non_followers: number | null;
+      reach_unknown: number | null;
+      follows: number | null;
+      unfollows: number | null;
+      updated_at: number | null;
+      problem: string | null;
+    }>();
+  return results.map((r) => ({
+    day: r.day,
+    reach: r.reach,
+    reachFollowers: r.reach_followers,
+    reachNonFollowers: r.reach_non_followers,
+    reachUnknown: r.reach_unknown,
+    follows: r.follows,
+    unfollows: r.unfollows,
+    updatedAt: r.updated_at,
+    problem: r.problem,
+  }));
+}
+
+/** The oldest day the daily cleanup keeps: as long as posts. */
+export function oldestKeptDay(now: number): string {
+  return daysBefore(metaDay(now), POST_DAYS);
+}
+
