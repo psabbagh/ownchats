@@ -17,7 +17,7 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
-/** Instagram's lifetime numbers for a campaign's post, as last read; null until read. */
+/** Instagram's lifetime numbers for a campaign's post, as last read; null until read. The last two are for Reels only. */
 function postJson(m: MediaStats | undefined) {
   if (!m?.updatedAt) return null;
   return {
@@ -27,6 +27,8 @@ function postJson(m: MediaStats | undefined) {
     comments: m.comments ?? null,
     shares: m.shares ?? null,
     saves: m.saved ?? null,
+    avg_watch_time_ms: m.avgWatchTimeMs ?? null,
+    skip_rate_percent: m.skipRatePercent ?? null,
     updated_at: iso(m.updatedAt),
   };
 }
@@ -195,7 +197,7 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
         "GET /api/campaigns": "campaigns with their counts (clicks: people who clicked a link; failed split into failedDms, refusedPublicReplies, failedLeadWebhooks), their post's views, and what would stop them working (warnings), with the shortcut keywords from Settings that every keyword campaign on one post also answers",
         "GET /api/leads?campaign_id=&since=ISO-8601&limit=": "emails collected, newest first",
         "GET /api/activity?campaign_id=&outcome=sent|skipped|failed&limit=": "what happened and why, newest first",
-        "GET /api/posts?since=ISO-8601&limit=": "the account's posts from the last 90 days with Instagram's numbers, newest first",
+        "GET /api/posts?since=ISO-8601&limit=": "the account's posts from the last 90 days with Instagram's numbers, newest first; Reels also carry avg_watch_time_ms and skip_rate_percent (views skipped within 3 seconds, 0 to 100)",
         "GET /api/account": "follower, following and post counts",
         "GET /api/stats": "totals and connection health",
         "POST /api/campaigns": "write token: create a campaign that waits for the next post, from its caption (dry_run: true saves nothing)",
@@ -267,6 +269,8 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
         comments: p.comments ?? null,
         shares: p.shares ?? null,
         saves: p.saved ?? null,
+        avg_watch_time_ms: p.avgWatchTimeMs ?? null,
+        skip_rate_percent: p.skipRatePercent ?? null,
         numbers_updated_at: p.updatedAt ? iso(p.updatedAt) : null,
         numbers_problem: p.problem,
         campaign_ids: byPost.get(p.mediaId) ?? [],

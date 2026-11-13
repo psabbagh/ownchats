@@ -164,8 +164,8 @@ describe("every recent post and the account", () => {
   }
 
   /** Invented posts, posted `days` ago. */
-  function post(id: string, days: number) {
-    w.meta.media.push({ id, caption: `Invented post ${id}`, permalink: `https://example.com/p/${id}`, timestamp: w.clock.now() - days * DAY, mediaType: "REELS" });
+  function post(id: string, days: number, mediaType = "REELS") {
+    w.meta.media.push({ id, caption: `Invented post ${id}`, permalink: `https://example.com/p/${id}`, timestamp: w.clock.now() - days * DAY, mediaType });
   }
 
   it("lists the last 90 days of posts hourly and serves them with their numbers and campaigns", async () => {
@@ -228,6 +228,79 @@ describe("every recent post and the account", () => {
     expect(readLog.sort()).toEqual(["18000000000000301", "18000000000000302", "18000000000000303", "18000000000000304"]);
   });
 
+  describe("Reel watch time and skip rate", () => {
+    const REFUSED = new MetaError("(#100) The Media Insights API does not support the reels_skip_rate metric for this media product type", 400, 100);
+    const reelReads = () => w.meta.calls.filter((c) => c === "reelInsight").length;
+    const byId = async () => new Map(((await api("/api/posts")) as { posts: Array<Record<string, unknown>> }).posts.map((p) => [p.id, p]));
+
+    it("are read for Reels only, one request each, and served with the other numbers", async () => {
+      post("18000000000000401", 1);
+      post("18000000000000402", 1, "FEED");
+      post("18000000000000403", 2, "VIDEO");
+      const id = await w.campaign({ mediaId: "18000000000000401" });
+      w.meta.insights.set("18000000000000401", NUMBERS);
+      w.meta.insights.set("18000000000000402", { reach: 70, likes: 9 });
+      w.meta.reelInsights.set("18000000000000401", { ig_reels_avg_watch_time: 15500, reels_skip_rate: 47.5 });
+      w.meta.reelInsights.set("18000000000000403", { ig_reels_avg_watch_time: 8200, reels_skip_rate: 61.2 });
+      await w.cron();
+      await w.cron();
+      expect(reads()).toBe(3);
+      // Two Reel-like posts, two requests each; none for the photo.
+      expect(reelReads()).toBe(4);
+
+      const posts = await byId();
+      expect(posts.get("18000000000000401")).toMatchObject({ views: 12345, shares: 40, saves: 300, avg_watch_time_ms: 15500, skip_rate_percent: 47.5 });
+      expect(posts.get("18000000000000403")).toMatchObject({ avg_watch_time_ms: 8200, skip_rate_percent: 61.2 });
+      expect(posts.get("18000000000000402")).toMatchObject({ reach: 70, likes: 9, avg_watch_time_ms: null, skip_rate_percent: null });
+
+      const campaigns = (await api("/api/campaigns")) as { campaigns: Array<{ id: number; post: Record<string, unknown> | null }> };
+      expect(campaigns.campaigns.find((c) => c.id === id)!.post).toMatchObject({ views: 12345, avg_watch_time_ms: 15500, skip_rate_percent: 47.5 });
+    });
+
+    it("cost none of the other numbers when Meta refuses them", async () => {
+      post("18000000000000411", 1);
+      w.meta.insights.set("18000000000000411", NUMBERS);
+      w.meta.failNext("reelInsight", REFUSED);
+      w.meta.failNext("reelInsight", REFUSED);
+      await w.cron();
+      expect(reelReads()).toBe(2);
+      expect((await byId()).get("18000000000000411")).toMatchObject({
+        views: 12345,
+        reach: 9000,
+        likes: 800,
+        comments: 120,
+        shares: 40,
+        saves: 300,
+        avg_watch_time_ms: null,
+        skip_rate_percent: null,
+        numbers_problem: null,
+      });
+    });
+
+    it("are read apart from each other, and a refused one keeps its last number", async () => {
+      post("18000000000000421", 1);
+      w.meta.insights.set("18000000000000421", { views: 100 });
+      w.meta.reelInsights.set("18000000000000421", { ig_reels_avg_watch_time: 15500, reels_skip_rate: 47.5 });
+      await w.cron();
+
+      w.clock.advance(15 * MINUTE);
+      w.meta.insights.set("18000000000000421", { views: 180 });
+      w.meta.reelInsights.set("18000000000000421", { ig_reels_avg_watch_time: 16000, reels_skip_rate: 50.1 });
+      // The first request, the watch time, is refused; the skip rate still comes.
+      w.meta.failNext("reelInsight", REFUSED);
+      await w.cron();
+      expect((await byId()).get("18000000000000421")).toMatchObject({ views: 180, avg_watch_time_ms: 15500, skip_rate_percent: 50.1 });
+    });
+
+    it("are not asked when the post's other numbers failed", async () => {
+      post("18000000000000431", 1);
+      w.meta.failNext("mediaInsights", NO_PERMISSION);
+      await w.cron();
+      expect(reads()).toBe(1);
+      expect(reelReads()).toBe(0);
+    });
+  });
+
   it("serves the follower count, read hourly", async () => {
     await w.cron();
     await w.cron();
@@ -288,6 +361,23 @@ describe("Graph client insights", () => {
     expect(media.map((m) => m.id)).toEqual(["1", "2", "3"]);
     expect(asked).toEqual(["", "c1"]);
     expect(await client.getAccountStats()).toEqual({ followers: 321, follows: null, mediaCount: 12 });
+  });
+
+  it("asks for each Reel number alone and reads it, without retrying a refusal", async () => {
+    const asked: string[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const metric = url.searchParams.get("metric") ?? "";
+      asked.push(metric);
+      if (metric === "reels_skip_rate") {
+        return Response.json({ error: { message: "(#100) The Media Insights API does not support the reels_skip_rate metric for this media product type", code: 100 } }, { status: 400 });
+      }
+      return Response.json({ data: [{ name: metric, period: "lifetime", title: "Invented title", values: [{ value: 14250 }] }] });
+    });
+    const client = new GraphMetaClient("https://graph.example", "test-token", "17841400000000001", "1000000000000001", "test-secret");
+    expect(await client.reelInsight(REEL, "ig_reels_avg_watch_time")).toBe(14250);
+    await expect(client.reelInsight(REEL, "reels_skip_rate")).rejects.toMatchObject({ code: 100 });
+    expect(asked).toEqual(["ig_reels_avg_watch_time", "reels_skip_rate"]);
   });
 
   it("does not retry a permission refusal", async () => {
