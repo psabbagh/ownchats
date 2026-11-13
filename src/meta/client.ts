@@ -45,6 +45,11 @@ export interface MetaClient {
    * Undefined when Meta has none. Meta refuses it for other post types.
    */
   reelInsight(mediaId: string, metric: ReelMetric): Promise<number | undefined>;
+  /**
+   * The account's reach and follows for one of Meta's days (YYYY-MM-DD), which run
+   * midnight to midnight Pacific time. Null where Meta has no number yet.
+   */
+  accountDay(day: string): Promise<AccountDay>;
 }
 
 export interface AccountStats {
@@ -54,7 +59,20 @@ export interface AccountStats {
 }
 
 export const INSIGHT_METRICS = ["views", "reach", "likes", "comments", "shares", "saved"] as const;
-export type MediaInsights = Partial<Record<(typeof INSIGHT_METRICS)[number], number>>;
+/** Every post type has reposts, but it is newer: asked with INSIGHT_METRICS, and dropped if Meta refuses it. */
+export const REPOSTS = "reposts";
+export type MediaInsights = Partial<Record<(typeof INSIGHT_METRICS)[number] | typeof REPOSTS, number>>;
+
+/** One of Meta's days for the account. Reach is split by follow_type; follows and unfollows come from follows_and_unfollows. */
+export interface AccountDay {
+  reach: number | null;
+  reachFollowers: number | null;
+  reachNonFollowers: number | null;
+  reachUnknown: number | null;
+  follows: number | null;
+  /** Accounts that unfollowed or left Instagram. */
+  unfollows: number | null;
+}
 
 /**
  * Reel-only numbers, one request each: Meta refuses a whole request over one

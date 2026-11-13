@@ -5,7 +5,7 @@ import { listLeads } from "./export";
 import { checkTestLead, getDelivery, sendTestLead, webhookConfig } from "./leadwebhook";
 import { campaignFromRequest, checkCaption, waitingWithVideoId, type NewCampaignRequest } from "./newcampaign";
 import { attachmentOf, campaignWarnings } from "./readiness";
-import { listPosts, readMediaStats, type MediaStats } from "./insights";
+import { listAccountDays, listPosts, readMediaStats, type MediaStats } from "./insights";
 import { shortcutKeywords } from "./settings";
 import { campaignCounts, listActivity } from "./stats";
 import { iso } from "./time";
@@ -17,7 +17,7 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
-/** Instagram's lifetime numbers for a campaign's post, as last read; null until read. The last two are for Reels only. */
+/** Instagram's lifetime numbers for a campaign's post, as last read; null until read. Watch time and skip rate are for Reels only. */
 function postJson(m: MediaStats | undefined) {
   if (!m?.updatedAt) return null;
   return {
@@ -27,6 +27,7 @@ function postJson(m: MediaStats | undefined) {
     comments: m.comments ?? null,
     shares: m.shares ?? null,
     saves: m.saved ?? null,
+    reposts: m.reposts ?? null,
     avg_watch_time_ms: m.avgWatchTimeMs ?? null,
     skip_rate_percent: m.skipRatePercent ?? null,
     updated_at: iso(m.updatedAt),
@@ -199,6 +200,7 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
         "GET /api/activity?campaign_id=&outcome=sent|skipped|failed&limit=": "what happened and why, newest first",
         "GET /api/posts?since=ISO-8601&limit=": "the account's posts from the last 90 days with Instagram's numbers, newest first; Reels also carry avg_watch_time_ms and skip_rate_percent (views skipped within 3 seconds, 0 to 100)",
         "GET /api/account": "follower, following and post counts",
+        "GET /api/account/days?since=YYYY-MM-DD&limit=": "the account's reach (split by followers, non-followers and unknown) and its follows and unfollows for each of Meta's days, which run midnight to midnight Pacific time, newest first; a day can change for 48 hours after it ends",
         "GET /api/stats": "totals and connection health",
         "POST /api/campaigns": "write token: create a campaign that waits for the next post, from its caption (dry_run: true saves nothing)",
         "POST /api/campaigns/check": "either token: whether a caption would attach a campaign with these keywords (or campaign_id), and what else it would touch",
@@ -269,6 +271,7 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
         comments: p.comments ?? null,
         shares: p.shares ?? null,
         saves: p.saved ?? null,
+        reposts: p.reposts ?? null,
         avg_watch_time_ms: p.avgWatchTimeMs ?? null,
         skip_rate_percent: p.skipRatePercent ?? null,
         numbers_updated_at: p.updatedAt ? iso(p.updatedAt) : null,
@@ -287,6 +290,25 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
       media_count: count(s.media_count),
       updated_at: Number(s.account_stats_at) ? iso(Number(s.account_stats_at)) : null,
       problem: s.account_problem || null,
+    });
+  }
+  if (path === "/api/account/days") {
+    const since = url.searchParams.get("since") ?? "";
+    if (since && !/^\d{4}-\d{2}-\d{2}$/.test(since)) return json({ error: "Send since as a date, YYYY-MM-DD." }, 400);
+    const days = await listAccountDays(ctx, { since: since || undefined, limit });
+    return json({
+      time_zone: "America/Los_Angeles",
+      days: days.map((d) => ({
+        day: d.day,
+        reach: d.reach,
+        reach_followers: d.reachFollowers,
+        reach_non_followers: d.reachNonFollowers,
+        reach_unknown: d.reachUnknown,
+        follows: d.follows,
+        unfollows: d.unfollows,
+        updated_at: d.updatedAt ? iso(d.updatedAt) : null,
+        problem: d.problem,
+      })),
     });
   }
   if (path === "/api/stats") {

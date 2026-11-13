@@ -26,7 +26,7 @@ export class Clock {
   }
 }
 
-const TABLES = ["settings", "campaigns", "comments", "conversations", "leads", "inbound", "activity", "login_attempts", "media_stats", "deliveries", "tracked_links"];
+const TABLES = ["settings", "campaigns", "comments", "conversations", "leads", "inbound", "activity", "login_attempts", "media_stats", "deliveries", "tracked_links", "account_days"];
 
 /** The default email lines. */
 export const EMAIL_LINES = { emailPrompt: DEFAULTS.emailPrompt, optionalPrompt: DEFAULTS.optionalPrompt };
