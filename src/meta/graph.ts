@@ -1,5 +1,5 @@
 import type { Env } from "../env";
-import { INSIGHT_METRICS, MetaError, type AccountStats, type IgComment, type Media, type MediaInsights, type MetaClient, type OutMessage, type TokenInfo } from "./client";
+import { INSIGHT_METRICS, MetaError, type AccountStats, type IgComment, type Media, type MediaInsights, type MetaClient, type OutMessage, type ReelMetric, type TokenInfo } from "./client";
 
 /** Pinned so Meta's changes arrive when OwnChats is updated, not by surprise. */
 export const GRAPH_VERSION = "v26.0";
@@ -272,8 +272,7 @@ export class GraphMetaClient implements MetaClient {
   }
 
   async mediaInsights(mediaId: string): Promise<MediaInsights> {
-    type Row = { name?: string; values?: Array<{ value?: unknown }>; total_value?: { value?: unknown } };
-    let res: { data?: Row[] };
+    let res: { data?: InsightRow[] };
     try {
       res = await this.get(`${mediaId}/insights`, { metric: INSIGHT_METRICS.join(",") });
     } catch (err) {
@@ -283,12 +282,26 @@ export class GraphMetaClient implements MetaClient {
     }
     const out: MediaInsights = {};
     for (const row of res.data ?? []) {
-      const value = row.total_value?.value ?? row.values?.[0]?.value;
+      const value = insightValue(row);
       const name = INSIGHT_METRICS.find((m) => m === row.name);
-      if (name && typeof value === "number") out[name] = value;
+      if (name && value !== undefined) out[name] = value;
     }
     return out;
   }
+
+  async reelInsight(mediaId: string, metric: ReelMetric): Promise<number | undefined> {
+    const res = await this.get<{ data?: InsightRow[] }>(`${mediaId}/insights`, { metric });
+    const row = res.data?.find((r) => r.name === metric);
+    return row ? insightValue(row) : undefined;
+  }
+}
+
+type InsightRow = { name?: string; values?: Array<{ value?: unknown }>; total_value?: { value?: unknown } };
+
+/** Meta answers an insight in one of two shapes. */
+function insightValue(row: InsightRow): number | undefined {
+  const value = row.total_value?.value ?? row.values?.[0]?.value;
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 /** Builds the real client from stored settings, or null until Instagram is connected. */

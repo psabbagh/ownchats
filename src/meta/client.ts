@@ -40,6 +40,11 @@ export interface MetaClient {
    * in the login configuration. A metric Meta has no number for is left out.
    */
   mediaInsights(mediaId: string): Promise<MediaInsights>;
+  /**
+   * One lifetime number Meta gives only for Reels, asked alone (see REEL_METRICS).
+   * Undefined when Meta has none. Meta refuses it for other post types.
+   */
+  reelInsight(mediaId: string, metric: ReelMetric): Promise<number | undefined>;
 }
 
 export interface AccountStats {
@@ -50,6 +55,15 @@ export interface AccountStats {
 
 export const INSIGHT_METRICS = ["views", "reach", "likes", "comments", "shares", "saved"] as const;
 export type MediaInsights = Partial<Record<(typeof INSIGHT_METRICS)[number], number>>;
+
+/**
+ * Reel-only numbers, one request each: Meta refuses a whole request over one
+ * metric it won't give, so asked together, one refusal would cost the other.
+ * `ig_reels_avg_watch_time` is in milliseconds. `reels_skip_rate` is the
+ * percentage (0 to 100) of initial views skipped within the first 3 seconds.
+ */
+export const REEL_METRICS = ["ig_reels_avg_watch_time", "reels_skip_rate"] as const;
+export type ReelMetric = (typeof REEL_METRICS)[number];
 
 export interface TokenInfo {
   valid: boolean;

@@ -1,6 +1,6 @@
 import { listCampaigns } from "./campaigns";
 import type { Ctx } from "./context";
-import { explainError, MetaError, type Media, type MediaInsights } from "./meta/client";
+import { explainError, MetaError, REEL_METRICS, type Media, type MediaInsights, type ReelMetric } from "./meta/client";
 import { MEDIA_PAGES } from "./meta/graph";
 import { saveSettings } from "./settings";
 import { DAY, HOUR, MINUTE } from "./time";
@@ -21,6 +21,10 @@ export const MISSING_PERMISSION = "missing permission";
 
 export interface MediaStats extends MediaInsights {
   mediaId: string;
+  /** Reels only: Meta's average watch time, in milliseconds. */
+  avgWatchTimeMs?: number;
+  /** Reels only: the percentage (0 to 100) of initial views skipped within the first 3 seconds. */
+  skipRatePercent?: number;
   /** Last attempt, Unix ms; 0 until the first. */
   fetchedAt: number;
   /** Last successful read, Unix ms; null until one worked. */
@@ -42,6 +46,8 @@ interface Row {
   comments: number | null;
   shares: number | null;
   saved: number | null;
+  avg_watch_time_ms: number | null;
+  skip_rate_percent: number | null;
   fetched_at: number;
   updated_at: number | null;
   problem: string | null;
@@ -63,6 +69,8 @@ function fromRow(r: Row): MediaStats {
     comments: orUndefined(r.comments),
     shares: orUndefined(r.shares),
     saved: orUndefined(r.saved),
+    avgWatchTimeMs: orUndefined(r.avg_watch_time_ms),
+    skipRatePercent: orUndefined(r.skip_rate_percent),
     fetchedAt: r.fetched_at,
     updatedAt: r.updated_at,
     problem: r.problem,
@@ -155,33 +163,75 @@ export async function refreshMediaStats(ctx: Ctx): Promise<void> {
   // A few queries, leaving room for the daily upkeep that runs after this.
   if (!ctx.meta || ctx.budget.queriesLeft < 10) return;
   const watched = new Set((await listCampaigns(ctx.db, true)).flatMap((c) => (c.mediaId ? [c.mediaId] : [])));
-  const { results } = await ctx.db.prepare("SELECT media_id, posted_at, fetched_at FROM media_stats").all<{ media_id: string; posted_at: number | null; fetched_at: number }>();
+  const { results } = await ctx.db
+    .prepare("SELECT media_id, posted_at, fetched_at, media_type FROM media_stats")
+    .all<{ media_id: string; posted_at: number | null; fetched_at: number; media_type: string | null }>();
   const now = ctx.now();
   const known = new Map(results.map((r) => [r.media_id, r]));
-  for (const id of watched) if (!known.has(id)) known.set(id, { media_id: id, posted_at: null, fetched_at: 0 });
+  for (const id of watched) if (!known.has(id)) known.set(id, { media_id: id, posted_at: null, fetched_at: 0, media_type: null });
   const due = [...known.values()]
     .filter((p) => watched.has(p.media_id) || (p.posted_at !== null && now - p.posted_at < POST_DAYS * DAY))
-    .map((p) => ({ id: p.media_id, at: p.fetched_at + refreshEvery(p.posted_at, watched.has(p.media_id), now) }))
+    .map((p) => ({ id: p.media_id, type: p.media_type, at: p.fetched_at + refreshEvery(p.posted_at, watched.has(p.media_id), now) }))
     .filter((p) => p.at <= now)
     .sort((a, b) => a.at - b.at)
     .slice(0, READS_PER_RUN);
   for (const post of due) {
     if (ctx.budget.queriesLeft < 8 || !ctx.budget.take()) return;
-    await readOne(ctx, post.id, now);
+    await readOne(ctx, post.id, post.type, now);
   }
 }
 
-async function readOne(ctx: Ctx, mediaId: string, now: number): Promise<void> {
+/**
+ * Post types that get the Reel-only numbers: REELS from Meta's media_product_type,
+ * and VIDEO where Meta left that out. A VIDEO that isn't a Reel is refused, which
+ * costs the two calls and nothing else.
+ */
+const REEL_TYPES = new Set(["REELS", "VIDEO"]);
+
+/**
+ * A Reel's watch time and skip rate, each in a request of its own and each within
+ * the Meta call budget. A failed or refused one is left out, so it keeps its last
+ * number; the post's other numbers never depend on these.
+ */
+async function readReel(ctx: Ctx, mediaId: string): Promise<Partial<Record<ReelMetric, number>>> {
+  const out: Partial<Record<ReelMetric, number>> = {};
+  for (const metric of REEL_METRICS) {
+    if (!ctx.budget.take()) break;
+    try {
+      const value = await ctx.meta!.reelInsight(mediaId, metric);
+      if (value !== undefined) out[metric] = value;
+    } catch {
+      // Left out, so the stored number stays as it was.
+    }
+  }
+  return out;
+}
+
+async function readOne(ctx: Ctx, mediaId: string, mediaType: string | null, now: number): Promise<void> {
   try {
     const n = await ctx.meta!.mediaInsights(mediaId);
+    const reel = mediaType && REEL_TYPES.has(mediaType) ? await readReel(ctx, mediaId) : {};
     await ctx.db
       .prepare(
-        `INSERT INTO media_stats (media_id, views, reach, likes, comments, shares, saved, fetched_at, updated_at, problem)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, NULL)
+        `INSERT INTO media_stats (media_id, views, reach, likes, comments, shares, saved, avg_watch_time_ms, skip_rate_percent,
+           fetched_at, updated_at, problem)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, NULL)
          ON CONFLICT (media_id) DO UPDATE SET views = ?2, reach = ?3, likes = ?4, comments = ?5, shares = ?6, saved = ?7,
-           fetched_at = ?8, updated_at = ?8, problem = NULL`,
+           avg_watch_time_ms = COALESCE(?8, avg_watch_time_ms), skip_rate_percent = COALESCE(?9, skip_rate_percent),
+           fetched_at = ?10, updated_at = ?10, problem = NULL`,
       )
-      .bind(mediaId, n.views ?? null, n.reach ?? null, n.likes ?? null, n.comments ?? null, n.shares ?? null, n.saved ?? null, now)
+      .bind(
+        mediaId,
+        n.views ?? null,
+        n.reach ?? null,
+        n.likes ?? null,
+        n.comments ?? null,
+        n.shares ?? null,
+        n.saved ?? null,
+        reel.ig_reels_avg_watch_time ?? null,
+        reel.reels_skip_rate ?? null,
+        now,
+      )
       .run();
   } catch (err) {
     await ctx.db

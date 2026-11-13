@@ -1,4 +1,4 @@
-import { MetaError, type AccountStats, type IgComment, type Media, type MediaInsights, type MetaClient, type OutMessage, type TokenInfo } from "../src/meta/client";
+import { MetaError, type AccountStats, type IgComment, type Media, type MediaInsights, type MetaClient, type OutMessage, type ReelMetric, type TokenInfo } from "../src/meta/client";
 import { DAY } from "../src/time";
 
 export interface Sent {
@@ -34,6 +34,8 @@ export class FakeMeta implements MetaClient {
   accountStats: AccountStats = { followers: 1200, follows: 150, mediaCount: 40 };
   /** Each post's lifetime numbers, as Meta's insights report them. */
   insights = new Map<string, MediaInsights>();
+  /** Each Reel's watch time and skip rate, as Meta's insights report them. */
+  reelInsights = new Map<string, Partial<Record<ReelMetric, number>>>();
   /** When set, the messaging id Meta returns for a commenter differs from the id on the comment. */
   messagingIds = new Map<string, string>();
   private failures = new Map<string, MetaError[]>();
@@ -138,5 +140,9 @@ export class FakeMeta implements MetaClient {
   async mediaInsights(mediaId: string) {
     this.call("mediaInsights");
     return { ...(this.insights.get(mediaId) ?? {}) };
+  }
+  async reelInsight(mediaId: string, metric: ReelMetric) {
+    this.call("reelInsight");
+    return this.reelInsights.get(mediaId)?.[metric];
   }
 }
