@@ -76,7 +76,7 @@ import type { Media } from "../meta/client";
 import { recentMedia } from "../pipeline/poll";
 import { MISSING_PERMISSION, readMediaStats } from "../insights";
 import { missedComments, timeLeft, type MissedComment } from "../missed";
-import { untakenPosts } from "../nextpost";
+import { dismissUntakenPost, untakenPosts } from "../nextpost";
 import { deleteSettings, saveSettings, shortcutKeywords, type Settings } from "../settings";
 import { campaignCounts, deletePerson, failuresSince, findPersonByUsername, listActivity, storedAboutPeople, type ActivityRow } from "../stats";
 import { copyField, fmtCount, fmtDate, fmtTime, html, page, plural, redirect, type Html } from "./html";
@@ -125,7 +125,8 @@ function needsYou(ctx: Ctx, campaigns: Campaign[], missed: Map<number, MissedCom
     const needs = waiting.map(
       (c, i) => html`${i ? ", " : ""}<a href="/dashboard/campaigns/${c.id}/edit">${c.name}</a> needs "Comment ${c.keywords[0] ?? ""}"`,
     );
-    items.push(html`A post went up and no campaign attached to it: "${postLabel(post)}". If it is for a waiting campaign, add the line to its caption (${needs}), or pick the post in the campaign.`);
+    items.push(html`A post went up and no campaign attached to it: "${postLabel(post)}". If it is for a waiting campaign, add the line to its caption (${needs}), or pick the post in the campaign.
+      <form method="post" action="/dashboard/posts/dismiss" class="dismiss"><input type="hidden" name="media_id" value="${post.id}"><button class="secondary small">Not for a campaign</button></form>`);
   }
   const toCheck = campaigns.flatMap((c) => {
     const list = missed.get(c.id);
@@ -143,6 +144,12 @@ function campaignSwitch(c: Campaign): Html {
   const ask = `Turn off ${c.name}? Comments that arrive while it is off get no DM.`;
   return html`<form method="post" action="/dashboard/campaigns/${c.id}/switch"${c.active ? html` data-ask="${ask}" onsubmit="return confirm(this.dataset.ask)"` : ""}>
     <input type="hidden" name="active" value="${c.active ? "off" : "on"}"><button class="switch${c.active ? " on" : ""}" role="switch" aria-checked="${c.active ? "true" : "false"}" title="${c.active ? "On. Click to turn off." : "Off. Click to turn on."}">${c.active ? "on" : "off"}</button></form>`;
+}
+
+/** "Not for a campaign" on a flagged post: stop flagging it. */
+export async function dismissPostForm(ctx: Ctx, request: Request): Promise<Response> {
+  await dismissUntakenPost(ctx, String((await request.formData()).get("media_id") ?? ""));
+  return redirect("/dashboard");
 }
 
 export async function switchCampaign(ctx: Ctx, request: Request, id: number): Promise<Response> {

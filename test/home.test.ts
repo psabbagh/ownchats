@@ -141,6 +141,40 @@ describe("a post no waiting campaign attached to", () => {
     await w.cron();
     expect(strip(await home())).toBe("");
   });
+
+  it("stops flagging a post the owner says is not for a campaign, and still flags the next one", async () => {
+    const id = await waiting();
+    w.clock.advance(MINUTE);
+    w.meta.media = [media(OLD_POST, w.clock.now(), "A question for you. Yes or no in the comments")];
+    await w.cron();
+    expect(strip(await home())).toContain(`name="media_id" value="${OLD_POST}"`);
+
+    const dismiss = (mediaId: string, headers: Record<string, string> = { cookie, origin: BASE }) =>
+      w.fetch("/dashboard/posts/dismiss", {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ media_id: mediaId }),
+      });
+    expect((await dismiss(OLD_POST, { cookie, origin: "https://elsewhere.example" })).status).toBe(403);
+    expect(strip(await home())).toContain("no campaign attached to it");
+    expect((await dismiss("not-a-post")).status).toBe(303);
+    expect(strip(await home())).toContain("no campaign attached to it");
+
+    expect((await dismiss(OLD_POST)).status).toBe(303);
+    expect(await home()).toContain("Nothing needs you right now.");
+    expect((await getCampaign(env.DB, id))!.nextPostAfter).not.toBeNull();
+
+    w.clock.advance(MINUTE);
+    w.meta.media = [media(NEW_POST, w.clock.now(), "Forgot the line"), media(OLD_POST, w.clock.now() - MINUTE, "A question for you. Yes or no in the comments")];
+    await w.cron();
+    const shown = strip(await home());
+    expect(shown).toContain(`name="media_id" value="${NEW_POST}"`);
+    expect(shown).not.toContain(`name="media_id" value="${OLD_POST}"`);
+
+    w.meta.media = [media(NEW_POST, w.clock.now(), "Forgot the line. Comment AGENTS for the list"), media(OLD_POST, w.clock.now() - MINUTE, "A question")];
+    await w.cron();
+    expect((await getCampaign(env.DB, id))!.mediaId).toBe(NEW_POST);
+  });
 });
 
 describe("the on/off switch", () => {

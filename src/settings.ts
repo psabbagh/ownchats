@@ -45,6 +45,7 @@ export type SettingKey =
   | "last_poll_at"
   | "last_poll_problem"
   | "next_post_problem"
+  | "untaken_dismissed"
   | "daily_at"
   | "posts_listed_at"
   | "posts_problem"
