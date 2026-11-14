@@ -38,10 +38,36 @@ export function untakenPosts(ctx: Ctx, campaigns: Campaign[]): UntakenPost[] {
   const on = campaigns.filter((c) => c.active && c.nextPostAfter !== null);
   if (!on.length || !ctx.settings.media_cache) return [];
   const taken = new Set(campaigns.map((c) => c.mediaId));
+  const dismissed = new Set(dismissedPosts(ctx));
   return (JSON.parse(ctx.settings.media_cache) as Media[]).flatMap((post) => {
     const waiting = on.filter((c) => post.timestamp > c.nextPostAfter!);
-    return waiting.length && !taken.has(post.id) ? [{ post, waiting }] : [];
+    return waiting.length && !taken.has(post.id) && !dismissed.has(post.id) ? [{ post, waiting }] : [];
   });
+}
+
+/** Most posts the owner said were not for a campaign that are remembered; the list only has to outlast the campaigns waiting. */
+const DISMISSED_KEPT = 50;
+
+/** The posts the owner said were not for a campaign, so the dashboard stops flagging them. */
+export function dismissedPosts(ctx: Ctx): string[] {
+  try {
+    const parsed = JSON.parse(ctx.settings.untaken_dismissed ?? "[]") as unknown;
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Remembers that a post went up without a campaign on purpose (a question, a post with no
+ * guide). Only the warning is affected: a waiting campaign still attaches to the post if its
+ * caption is changed to ask for the keyword, and the post is not otherwise marked.
+ */
+export async function dismissUntakenPost(ctx: Ctx, mediaId: string): Promise<void> {
+  if (!/^\d{1,30}$/.test(mediaId)) return;
+  const list = [...dismissedPosts(ctx).filter((id) => id !== mediaId), mediaId].slice(-DISMISSED_KEPT);
+  ctx.settings.untaken_dismissed = JSON.stringify(list);
+  await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { untaken_dismissed: ctx.settings.untaken_dismissed });
 }
 
 /**

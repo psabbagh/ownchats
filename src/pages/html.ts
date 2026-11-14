@@ -53,6 +53,7 @@ a{color:var(--accent)}h1{font-size:26px;margin:8px 0 16px}h2{font-size:20px;marg
 .copy{display:flex;gap:6px;margin:6px 0;align-items:center}.copy code{flex:1;min-width:0;overflow-x:auto;white-space:nowrap;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg)}
 button,.button{font:inherit;padding:7px 14px;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer;text-decoration:none;display:inline-block}
 button.secondary,.button.secondary{background:transparent;color:var(--accent)}button.danger{background:var(--bad);border-color:var(--bad)}
+form.dismiss{margin:6px 0 2px}form.dismiss button{padding:3px 10px}
 input[type=text],input[type=password],input[type=url],input[type=email],textarea,select{font:inherit;width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)}
 textarea{min-height:80px}label{display:block;margin:12px 0 4px;font-weight:600}label.inline{display:flex;gap:8px;align-items:center;font-weight:400}
 .hint{font-size:14px;color:var(--muted);margin:2px 0 0}
