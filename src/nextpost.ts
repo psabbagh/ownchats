@@ -71,6 +71,21 @@ export async function dismissUntakenPost(ctx: Ctx, mediaId: string): Promise<voi
 }
 
 /**
+ * The owner attaches a flagged post to one of the campaigns that were waiting when it went
+ * up, from the post's entry on the dashboard. Same end as picking the post in the campaign's
+ * form, through the Cron's own attach, so comments already on the post that the campaign
+ * answers get their DM too. Only a post still flagged and a campaign it was flagged for are
+ * accepted; anything else changes nothing.
+ */
+export async function attachUntakenPost(ctx: Ctx, mediaId: string, campaignId: number): Promise<boolean> {
+  if (!/^\d{1,30}$/.test(mediaId) || !Number.isSafeInteger(campaignId)) return false;
+  const untaken = untakenPosts(ctx, await listCampaigns(ctx.db)).find((u) => u.post.id === mediaId);
+  const campaign = untaken?.waiting.find((c) => c.id === campaignId);
+  if (!untaken || !campaign) return false;
+  return attach(ctx, campaign, untaken.post);
+}
+
+/**
  * Called by the Cron every minute, before waiting comments are handled: attaches
  * each campaign that waits for the next post to its post (postFor). Comments on
  * that post that came in before, and that the campaign would have answered, go
@@ -98,14 +113,14 @@ export async function attachNextPosts(ctx: Ctx): Promise<void> {
   }
 }
 
-async function attach(ctx: Ctx, campaign: Campaign, post: Media): Promise<void> {
+async function attach(ctx: Ctx, campaign: Campaign, post: Media): Promise<boolean> {
   const now = ctx.now();
   // Only if it still waits since the same time: an edit in between wins.
   const done = await ctx.db
     .prepare("UPDATE campaigns SET media_id = ?, media_label = ?, next_post_after = NULL, updated_at = ? WHERE id = ? AND next_post_after = ?")
     .bind(post.id, postLabel(post), now, campaign.id, campaign.nextPostAfter)
     .run();
-  if (done.meta.changes !== 1) return;
+  if (done.meta.changes !== 1) return false;
   const attached: Campaign = { ...campaign, mediaId: post.id, mediaLabel: postLabel(post), nextPostAfter: null };
 
   // Comments that reached the post first were skipped as matching no campaign. Those
@@ -128,4 +143,5 @@ async function attach(ctx: Ctx, campaign: Campaign, post: Media): Promise<void> 
       )
       .bind(JSON.stringify(early)),
   ]);
+  return true;
 }
