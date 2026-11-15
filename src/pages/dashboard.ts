@@ -76,7 +76,7 @@ import type { Media } from "../meta/client";
 import { recentMedia } from "../pipeline/poll";
 import { MISSING_PERMISSION, readMediaStats } from "../insights";
 import { missedComments, timeLeft, type MissedComment } from "../missed";
-import { dismissUntakenPost, untakenPosts } from "../nextpost";
+import { attachUntakenPost, dismissUntakenPost, untakenPosts, type UntakenPost } from "../nextpost";
 import { deleteSettings, saveSettings, shortcutKeywords, type Settings } from "../settings";
 import { campaignCounts, deletePerson, failuresSince, findPersonByUsername, listActivity, storedAboutPeople, type ActivityRow } from "../stats";
 import { copyField, fmtCount, fmtDate, fmtTime, html, page, plural, redirect, type Html } from "./html";
@@ -121,12 +121,10 @@ function needsYou(ctx: Ctx, campaigns: Campaign[], missed: Map<number, MissedCom
   // Each problem is cleared by the next good run, and those runs only happen with work to do.
   if (campaigns.some((c) => c.active && c.nextPostAfter === null)) items.push(cronProblem(s.last_poll_problem, "The last check for missed comments", tz));
   if (campaigns.some((c) => c.nextPostAfter !== null)) items.push(cronProblem(s.next_post_problem, "The last look for your next post", tz));
-  for (const { post, waiting } of untakenPosts(ctx, campaigns)) {
-    const needs = waiting.map(
-      (c, i) => html`${i ? ", " : ""}<a href="/dashboard/campaigns/${c.id}/edit">${c.name}</a> needs "Comment ${c.keywords[0] ?? ""}"`,
-    );
-    items.push(html`A post went up and no campaign attached to it: "${postLabel(post)}". If it is for a waiting campaign, add the line to its caption (${needs}), or pick the post in the campaign.
-      <form method="post" action="/dashboard/posts/dismiss" class="dismiss"><input type="hidden" name="media_id" value="${post.id}"><button class="secondary small">Not for a campaign</button></form>`);
+  // Each such post is an entry in the list below, where its choices are; this only points there.
+  const untaken = untakenPosts(ctx, campaigns);
+  if (untaken.length) {
+    items.push(html`<a href="#no-campaign">${untaken.length > 1 ? `${untaken.length} posts` : "A post"} went up with no campaign</a>: say what ${untaken.length > 1 ? "each is" : "it is"} for.`);
   }
   const toCheck = campaigns.flatMap((c) => {
     const list = missed.get(c.id);
@@ -152,6 +150,38 @@ export async function dismissPostForm(ctx: Ctx, request: Request): Promise<Respo
   return redirect("/dashboard");
 }
 
+/** "Attach" on a post with no campaign: the chosen waiting campaign takes it. */
+export async function attachPostForm(ctx: Ctx, request: Request): Promise<Response> {
+  const form = await request.formData();
+  const campaignId = String(form.get("campaign_id") ?? "");
+  await attachUntakenPost(ctx, String(form.get("media_id") ?? ""), /^\d{1,10}$/.test(campaignId) ? Number(campaignId) : NaN);
+  return redirect("/dashboard");
+}
+
+/**
+ * A recent post no campaign has, shown in the list with the campaigns: what it is, and its
+ * two choices side by side. Attach offers only the campaigns that were waiting when it went up.
+ */
+function untakenEntry({ post, waiting }: UntakenPost, tz: string): Html {
+  const asks = waiting.map((c) => (c.anyComment ? `${c.name} (any comment)` : `${c.name} (Comment ${c.keywords[0] ?? ""})`));
+  return html`<div class="card row campaign untaken" id="post-${post.id}">
+    <span class="cover" aria-hidden="true">${post.thumbnailUrl ? html`<img src="${post.thumbnailUrl}" alt="" loading="lazy" onerror="this.remove()">` : ""}</span>
+    <div class="body">
+      <div class="row"><h3 style="flex:1 1 auto">${postLabel(post)}</h3><span class="pill">No campaign</span></div>
+      <p class="muted small">Posted ${post.permalink ? html`<a href="${post.permalink}" rel="noopener noreferrer" target="_blank">${fmtTime(post.timestamp, tz)}</a>` : fmtTime(post.timestamp, tz)}. No campaign attached to it.</p>
+      <div class="row choices">
+        <form method="post" action="/dashboard/posts/attach" class="row">
+          <input type="hidden" name="media_id" value="${post.id}">
+          ${waiting.length > 1
+            ? html`<select name="campaign_id" aria-label="Campaign">${waiting.map((c, i) => html`<option value="${c.id}">${asks[i]}</option>`)}</select><button class="small">Attach</button>`
+            : html`<input type="hidden" name="campaign_id" value="${waiting[0]!.id}"><button class="small">Attach to ${asks[0]}</button>`}
+        </form>
+        <form method="post" action="/dashboard/posts/dismiss"><input type="hidden" name="media_id" value="${post.id}"><button class="secondary small">Not for a campaign</button></form>
+      </div>
+      <p class="hint">Attach if it is that campaign's post: comments already on it get their DM too. Otherwise, it is not for a campaign.</p>
+    </div></div>`;
+}
+
 export async function switchCampaign(ctx: Ctx, request: Request, id: number): Promise<Response> {
   const wanted = String((await request.formData()).get("active") ?? "");
   if (wanted === "on" || wanted === "off") await setCampaignActive(ctx.db, id, wanted === "on", ctx.now());
@@ -173,6 +203,7 @@ export async function dashboardHome(ctx: Ctx): Promise<Response> {
   const clicksOn = trackingBase(ctx) !== null;
   const banner = healthBanner(ctx);
   const items = needsYou(ctx, campaigns, missed, failures, tz);
+  const untaken = untakenPosts(ctx, campaigns);
 
   const card = (c: Campaign) => {
     const n = counts.get(c.id);
@@ -210,6 +241,7 @@ export async function dashboardHome(ctx: Ctx): Promise<Response> {
           : ""}
       ${s.ig_username ? html`<p class="muted">Connected to Instagram as @${s.ig_username}. Last webhook: ${fmtTime(Number(s.last_webhook_at), tz) || "none yet"}. Last check for missed comments: ${fmtTime(Number(s.last_poll_at), tz) || "none yet"}.${s.time_zone ? "" : html` Times are in UTC: <a href="/dashboard/settings#time-zone">choose your time zone</a>.`}</p>` : ""}
       ${noPermission ? html`<p class="warn small">Instagram shares each post's views once your Meta login configuration includes <code>instagram_manage_insights</code>. <a href="/setup#step-3">Add it in setup</a>, then reconnect.</p>` : ""}
+      ${untaken.length ? html`<div id="no-campaign">${untaken.map((u) => untakenEntry(u, tz))}</div>` : ""}
       ${campaigns.length === 0 ? html`<div class="card"><p>No campaigns yet. Create one: a keyword, the post it watches, and the link to send.</p></div>` : ""}
       ${on.map(card)}
       ${off.length ? html`<details${on.length ? "" : html` open`} style="margin-top:20px"><summary class="muted">${plural(off.length, "campaign")} off</summary>${off.map(card)}</details>` : ""}`,

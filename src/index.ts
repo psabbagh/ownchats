@@ -18,6 +18,7 @@ import {
   newCampaignPage,
   saveCampaignForm,
   dismissPostForm,
+  attachPostForm,
   switchCampaign,
   settingsAction,
   settingsPage,
@@ -57,6 +58,7 @@ async function adminRoutes(ctx: Ctx, request: Request, url: URL): Promise<Respon
     return post ? saveCampaignForm(ctx, request, id) : campaignResultsPage(ctx, id, url);
   }
   if (path === "/dashboard/posts/dismiss" && post) return dismissPostForm(ctx, request);
+  if (path === "/dashboard/posts/attach" && post) return attachPostForm(ctx, request);
   if (path === "/dashboard/leads") return leadsPage(ctx);
   if (path === "/dashboard/leads.csv") return leadsCsvDownload(ctx);
   if (path === "/dashboard/people/delete" && post) return deletePersonForm(ctx, request);
