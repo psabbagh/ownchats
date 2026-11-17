@@ -29,7 +29,7 @@ async function busyReel(): Promise<number> {
   await w.sendComment(first);
   await w.sendComment(w.comment("AGENT", FAN2));
   await w.tap(FAN2.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
-  await w.sendComment(w.comment("agnets <script>x</script>", FAN3));
+  await w.sendComment(w.comment("could you send me the agnets <script>x</script>", FAN3));
   await w.sendComment(w.comment("agents again", FAN));
   await w.sendComment(w.comment("agents", FAN4, { ago: 2 * HOUR }));
   await w.sendComment(w.comment("Sent! Check your DMs", OWNER, { parentId: first.id }));
@@ -72,7 +72,7 @@ describe("campaign results", () => {
     const ctx = await w.ctx();
     const all = await listCampaignComments(ctx, { id, mediaId: REEL });
     // Newest first; the one written two hours ago comes last.
-    expect(all.map((c) => c.text)).toEqual(["agents again", "agnets <script>x</script>", "AGENT", "agents please", "agents"]);
+    expect(all.map((c) => c.text)).toEqual(["agents again", "could you send me the agnets <script>x</script>", "AGENT", "agents please", "agents"]);
     const byText = new Map(all.map((c) => [c.text, c]));
     expect(byText.get("agents please")).toMatchObject({ status: "done", state: "opened" });
     expect(byText.get("AGENT")).toMatchObject({ status: "done", state: "done" });
@@ -85,7 +85,7 @@ describe("campaign results", () => {
     expect(page).toContain("no keyword matched");
     expect(page).toContain("DM sent, no tap yet");
     expect(page).toContain("1 (50%)"); // one of the two tapped
-    expect(page).toContain("agnets &lt;script&gt;x&lt;/script&gt;");
+    expect(page).toContain("could you send me the agnets &lt;script&gt;x&lt;/script&gt;");
     expect(page).not.toContain("<script>x</script>");
     expect(page).not.toContain("—");
     const skippedPage = await (await w.fetch(`/dashboard/campaigns/${id}?show=skipped`, { headers: { cookie } })).text();

@@ -134,6 +134,7 @@ function commentText(line: CommentLine): Html {
 function whyMissed(m: MissedComment, campaign: Campaign): string {
   const before = m.beforeStart ? ", and was written before the campaign started" : "";
   if (m.why === "close") return `Close to ${m.keyword}${before}.`;
+  if (m.why === "long") return `Has the keyword in a longer comment, so it wasn't answered by itself${before}.`;
   if (m.why === "before") return "Written before the campaign started.";
   if (m.beforeStart) return campaign.anyComment ? "Written before the campaign started." : "Has the keyword, but was written before the campaign started.";
   return campaign.anyComment

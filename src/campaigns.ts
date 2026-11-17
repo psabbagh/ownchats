@@ -1,4 +1,4 @@
-import { matchesKeyword, parseKeywords, withoutKeywords } from "./match";
+import { commentMatch, matchesKeyword, parseKeywords, withoutKeywords, type Strength } from "./match";
 import { plainText, type Button, type OutMessage } from "./meta/client";
 
 /**
@@ -432,21 +432,32 @@ export function ownKeywords(c: Pick<Campaign, "keywords">, shortcuts: string[]):
 }
 
 /**
- * The campaign a comment belongs to. A one-post campaign wins over an all-posts
- * one, and a keyword campaign wins over an any-comment one; then the oldest wins.
+ * The campaign a comment belongs to. A keyword campaign takes a comment that is
+ * its keyword, give or take a few words, spacing and one letter (the comment rule,
+ * `commentMatch`); a longer comment that only mentions it is left for To check.
+ * A one-post campaign wins over an all-posts one, and a keyword campaign wins over
+ * an any-comment one; then a comment that spells the keyword exactly wins over one
+ * a letter off, and then the oldest campaign wins.
  * A campaign waiting for the next post matches nothing until it is attached.
  * Only when no campaign takes the comment this way are the shortcut keywords
- * (`shortcuts`, from Settings) tried, and then only for a keyword campaign on this
- * very post: so "AGENTS 🙌" still goes to the AGENTS campaign.
+ * (`shortcuts`, from Settings) tried, anywhere in the comment, and then only for a
+ * keyword campaign on this very post: so "AGENTS 🙌" still goes to the AGENTS campaign.
  */
 export function matchComment(campaigns: Campaign[], mediaId: string, text: string, shortcuts: string[] = []): Campaign | null {
   const on = campaigns.filter((c) => c.active && (c.mediaId === mediaId || onAllPosts(c)));
-  const candidates = on.filter((c) => c.anyComment || matchesKeyword(text, ownKeywords(c, shortcuts)));
+  const strength = new Map<number, Strength>();
+  const candidates = on.filter((c) => {
+    if (c.anyComment) return true;
+    const s = commentMatch(text, ownKeywords(c, shortcuts));
+    if (s) strength.set(c.id, s);
+    return s !== null;
+  });
   if (!candidates.length && shortcuts.length && matchesKeyword(text, shortcuts)) {
     candidates.push(...on.filter((c) => c.mediaId === mediaId && answersShortcuts(c)));
   }
   const rank = (c: Campaign) => (c.mediaId ? 0 : 2) + (c.anyComment ? 1 : 0);
-  candidates.sort((a, b) => rank(a) - rank(b) || a.id - b.id);
+  const typo = (c: Campaign) => (strength.get(c.id) === "typo" ? 1 : 0);
+  candidates.sort((a, b) => rank(a) - rank(b) || typo(a) - typo(b) || a.id - b.id);
   return candidates[0] ?? null;
 }
 

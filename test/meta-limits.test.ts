@@ -16,7 +16,7 @@ beforeEach(async () => {
 describe("one private reply per comment", () => {
   it("answers a keyword comment with one DM and one public reply", async () => {
     await w.campaign();
-    const c = w.comment("I want the AGENTS library please", FAN);
+    const c = w.comment("AGENTS please 🙏", FAN);
     const res = await w.sendComment(c);
     expect(res.status).toBe(200);
     const sent = w.meta.sent;

@@ -24,16 +24,23 @@ const status = async (id: string) => (await env.DB.prepare("SELECT status, reaso
 
 describe("near misses", () => {
   it("catch typos, plurals, and joined or split words, with the spelling to add", () => {
-    expect(nearMiss("PROMTS please", ["PROMPTS"])).toEqual({ keyword: "PROMPTS", spelling: "PROMTS" });
-    expect(nearMiss("promptss 🙏", ["PROMPTS"])).toEqual({ keyword: "PROMPTS", spelling: "PROMPTSS" });
-    expect(nearMiss("TEMPLATES!", ["TEMPLATE"])?.spelling).toBe("TEMPLATES");
-    expect(nearMiss("templete", ["TEMPLATE"])?.spelling).toBe("TEMPLETE");
-    expect(nearMiss("work shop", ["WORKSHOP"])?.spelling).toBe("WORK SHOP");
-    expect(nearMiss("Set-up", ["SETUP"])?.spelling).toBe("SET UP");
-    expect(nearMiss("Setup", ["SET UP"])?.spelling).toBe("SETUP");
-    expect(nearMiss("agnets", ["AGENTS"])?.spelling).toBe("AGNETS"); // swapped letters are one typo
-    expect(nearMiss("gears", ["GEAR"])?.spelling).toBe("GEARS");
+    // Short comments like these are answered by the comment rule; near misses are what is left: longer comments, and more than one letter off.
+    const ask = "could you send me the";
+    expect(nearMiss(`${ask} PROMTS please`, ["PROMPTS"])).toEqual({ keyword: "PROMPTS", spelling: "PROMTS" });
+    expect(nearMiss(`${ask} promptss 🙏`, ["PROMPTS"])).toEqual({ keyword: "PROMPTS", spelling: "PROMPTSS" });
+    expect(nearMiss("TEMPLATES!", ["TEMPLATE"])).toBeNull(); // one letter off, answered
+    expect(nearMiss(`${ask} TEMPLATES!`, ["TEMPLATE"])?.spelling).toBe("TEMPLATES");
+    expect(nearMiss("tamplete", ["TEMPLATE"])?.spelling).toBe("TAMPLETE"); // two letters off: only flagged
+    expect(nearMiss(`${ask} work shop`, ["WORKSHOP"])?.spelling).toBe("WORK SHOP");
+    expect(nearMiss(`${ask} Set-up`, ["SETUP"])?.spelling).toBe("SET UP");
+    expect(nearMiss(`${ask} Setup`, ["SET UP"])?.spelling).toBe("SETUP");
+    expect(nearMiss(`${ask} agnets`, ["AGENTS"])?.spelling).toBe("AGNETS"); // swapped letters are one typo
+    expect(nearMiss("gears", ["GEAR"])?.spelling).toBe("GEARS"); // a short keyword allows no typo
     expect(nearMiss("whats the gearlist", ["GEAR"])).toEqual({ keyword: "GEAR", spelling: null });
+  });
+
+  it("leave a longer comment that names the keyword to the long check, not to a spelling", () => {
+    expect(nearMiss("So now I have to read instead listen?", ["LISTEN"])).toBeNull();
   });
 
   it("leave ordinary comments, and comments that already match, alone", () => {
@@ -85,7 +92,7 @@ describe("bounded edit distance", () => {
 describe("answering a missed comment", () => {
   it("lists a near miss, adds the spelling on request, and sends one DM", async () => {
     const id = await w.campaign();
-    const c = w.comment("agnets pls", FAN);
+    const c = w.comment("could you send me the agnets list pls", FAN);
     await w.sendComment(c);
     expect(privateReplies()).toHaveLength(0);
     const cookie = await w.signIn();
@@ -117,7 +124,7 @@ describe("answering a missed comment", () => {
 
   it("keeps the chosen campaign when Meta asks to wait, though the text matches no keyword", async () => {
     const id = await w.campaign();
-    const c = w.comment("agnets", FAN);
+    const c = w.comment("could you send me the agnets list", FAN);
     await w.sendComment(c);
     w.meta.failNext("sendPrivateReply", new MetaError("Application request limit reached", 400, 4));
     const cookie = await w.signIn();
@@ -140,7 +147,7 @@ describe("answering a missed comment", () => {
       return (await w.fetch(res.headers.get("location")!, { headers: { cookie } })).text();
     };
 
-    const gone = w.comment("agnets", FAN);
+    const gone = w.comment("could you send me the agnets list", FAN);
     await w.sendComment(gone);
     w.meta.failNext("sendPrivateReply", new MetaError("(#100) The requested user cannot be found.", 400, 100, 2534014));
     const calls = w.meta.calls.length;
@@ -151,7 +158,7 @@ describe("answering a missed comment", () => {
     expect(w.meta.calls.slice(calls).filter((m) => m === "sendPrivateReply")).toHaveLength(1);
     expect(await status(gone.id)).toMatchObject({ status: "failed" });
 
-    const odd = w.comment("agnets", FAN2);
+    const odd = w.comment("could you send me the agnets list", FAN2);
     await w.sendComment(odd);
     w.meta.failNext("sendPrivateReply", new MetaError("An invented refusal", 400, 999));
     const second = await answer(odd);
@@ -193,14 +200,14 @@ describe("answering a missed comment", () => {
 
   it("never offers or answers a comment past Meta's 7 days, from someone already answered, on another post, or the owner's", async () => {
     const id = await w.campaign();
-    const old = w.comment("agnets", FAN2, { ago: 6 * DAY });
+    const old = w.comment("could you send me the agnets list", FAN2, { ago: 6 * DAY });
     await w.sendComment(old);
     await w.sendComment(w.comment("agents", FAN));
-    const again = w.comment("agnets", FAN);
+    const again = w.comment("could you send me the agnets list", FAN);
     await w.sendComment(again);
-    const elsewhere = w.comment("agnets", FAN3, { media: OTHER_POST });
+    const elsewhere = w.comment("could you send me the agnets list", FAN3, { media: OTHER_POST });
     await w.sendComment(elsewhere);
-    const own = w.comment("agnets", OWNER);
+    const own = w.comment("could you send me the agnets list", OWNER);
     await w.sendComment(own);
     const cookie = await w.signIn();
 
@@ -224,12 +231,24 @@ describe("answering a missed comment", () => {
     expect(w.meta.sent.length).toBe(sent);
   });
 
+  it("lists a longer comment that names the keyword, without sending anything, and answers it on request", async () => {
+    const id = await w.campaign();
+    const long = w.comment("What is the advantage? So now I have to read instead of agents?", FAN);
+    await w.sendComment(long);
+    expect(privateReplies()).toHaveLength(0);
+    expect(await status(long.id)).toMatchObject({ status: "skipped", reason: "no matching campaign" });
+    const missed = await missedComments(await w.ctx(), await listCampaigns(env.DB, true));
+    expect(missed.get(id)?.map((m) => [m.id, m.why, m.spelling])).toEqual([[long.id, "long", null]]);
+    const page = await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie: await w.signIn() } })).text();
+    expect(page).toContain("Has the keyword in a longer comment");
+  });
+
   it("lists near misses on any post for an all-posts campaign, and only on its own post otherwise", async () => {
     const all = await w.campaign({ name: "Gear", keywords: ["GEAR"], mediaId: null, mediaLabel: null });
     const reel = await w.campaign();
     const gears = w.comment("gears please", FAN, { media: OTHER_POST });
     await w.sendComment(gears);
-    await w.sendComment(w.comment("agnets", FAN2, { media: OTHER_POST }));
+    await w.sendComment(w.comment("could you send me the agnets list", FAN2, { media: OTHER_POST }));
     const ctx = await w.ctx();
     const missed = await missedComments(ctx, await listCampaigns(env.DB, true));
     expect(missed.get(all)?.map((m) => [m.id, m.spelling])).toEqual([[gears.id, "GEARS"]]);
@@ -238,7 +257,7 @@ describe("answering a missed comment", () => {
 
   it("refuses a spelling that doesn't match the comment, and only answers on a signed-in, same-site POST", async () => {
     const id = await w.campaign();
-    const c = w.comment("agnets", FAN);
+    const c = w.comment("could you send me the agnets list", FAN);
     await w.sendComment(c);
     const cookie = await w.signIn();
     const res = await post(cookie, `/dashboard/campaigns/${id}/answer`, { comment_id: c.id, spelling: "SOMETHING ELSE" });

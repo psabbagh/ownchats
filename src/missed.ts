@@ -7,7 +7,7 @@ import { DAY, HOUR, PRIVATE_REPLY_WINDOW } from "./time";
 
 /**
  * Comments a campaign could still answer by hand: skipped, but close to its
- * keyword, matching it now, or written before the campaign started. Only these
+ * keyword, naming it in a longer comment, matching it now, or written before the campaign started. Only these
  * two skip reasons qualify: OwnChats never sent a private reply for them, so
  * answering one can't be a second reply from OwnChats.
  */
@@ -18,7 +18,7 @@ const SCAN_LIMIT = 500;
 /** Too close to the end of Meta's window to be worth a click. */
 const MIN_LEFT = 60_000;
 
-export type MissedWhy = "close" | "matches" | "before";
+export type MissedWhy = "close" | "long" | "matches" | "before";
 
 export interface MissedComment {
   id: string;
@@ -75,13 +75,15 @@ function judge(
   if (c.reason !== NO_MATCH) return c.campaign_id === campaign.id ? { why: "before", keyword: null, spelling: null } : null;
   if (!onItsPosts(c, campaign)) return null;
   // It matched no active campaign when it came in. It may match now: the campaign was off, or the spelling or shortcut is new.
-  if (campaign.anyComment || keywords.matches(read(c)) || shortcuts?.matches(read(c))) return { why: "matches", keyword: null, spelling: null };
+  if (campaign.anyComment || keywords.matches(read(c)) || shortcuts?.contains(read(c))) return { why: "matches", keyword: null, spelling: null };
+  // It names the keyword, in a comment too long to be answered by itself: "So now I have to read instead of listen?"
+  if (keywords.contains(read(c))) return { why: "long", keyword: null, spelling: null };
   // Near misses are looked for against the campaign's own keywords only: a spelling is added to the campaign.
   const near = keywords.closeTo(read(c));
   return near ? { why: "close", keyword: near.keyword, spelling: near.spelling } : null;
 }
 
-const ORDER: Record<MissedWhy, number> = { close: 0, matches: 1, before: 2 };
+const ORDER: Record<MissedWhy, number> = { close: 0, long: 0, matches: 1, before: 2 };
 
 /**
  * The comments to check, per campaign: near misses first, then comments that
