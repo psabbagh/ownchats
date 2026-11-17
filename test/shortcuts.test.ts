@@ -234,3 +234,19 @@ describe("shortcuts end to end", () => {
     expect(api.shortcut_keywords).toEqual(["🙌"]);
   });
 });
+
+describe("matching a comment with the comment rule", () => {
+  it("leaves a longer comment that only mentions the keyword, and answers a short one spaced or a letter off", () => {
+    const reel = campaign(1, { keywords: ["LISTEN"] });
+    expect(matchComment([reel], REEL, "So now I have to read instead listen?")).toBeNull();
+    expect(matchComment([reel], REEL, "list en")?.id).toBe(1);
+    expect(matchComment([reel], REEL, "lisen 🙌")?.id).toBe(1);
+  });
+
+  it("prefers the campaign whose keyword the comment spells exactly over one it is a letter off", () => {
+    const agents = campaign(1, { keywords: ["AGENTS"] });
+    const agent = campaign(2, { keywords: ["AGENTE"] });
+    expect(matchComment([agents, agent], REEL, "agente")?.id).toBe(2);
+    expect(matchComment([agents, agent], REEL, "agents")?.id).toBe(1);
+  });
+});

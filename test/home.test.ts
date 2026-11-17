@@ -57,8 +57,8 @@ describe("what needs you", () => {
     const agents = await w.campaign();
     const setup = await w.campaign({ name: "Setup guide", keywords: ["SETUP"], mediaId: OTHER_POST, mediaLabel: "Other reel" });
     await w.sendComment(w.comment("Set-up", FAN, { media: OTHER_POST, ago: DAY }));
-    await w.sendComment(w.comment("agnets", FAN, { ago: 6 * DAY }));
-    await w.sendComment(w.comment("agnets please", FAN2, { ago: 2 * DAY }));
+    await w.sendComment(w.comment("could you send me the agnets list", FAN, { ago: 6 * DAY }));
+    await w.sendComment(w.comment("could you send me the agnets list please", FAN2, { ago: 2 * DAY }));
 
     const shown = strip(await home());
     expect(shown).toContain(`href="/dashboard/campaigns/${agents}#to-check">2 comments to check on Agents library</a>`);
@@ -70,7 +70,7 @@ describe("what needs you", () => {
 
   it("leaves out campaigns that are off", async () => {
     const id = await w.campaign();
-    await w.sendComment(w.comment("agnets", FAN));
+    await w.sendComment(w.comment("could you send me the agnets list", FAN));
     expect(strip(await home())).toContain("to check");
     await flip(id, "off");
     expect(strip(await home())).toBe("");

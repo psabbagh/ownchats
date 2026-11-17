@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { decryptText, encryptText, signValue, verifySigned } from "../src/crypto";
-import { extractEmail, matchesKeyword, parseKeywords } from "../src/match";
+import { commentMatch, extractEmail, matchesKeyword, parseKeywords } from "../src/match";
 import { isTemplateRejection, MetaError, plainText } from "../src/meta/client";
 import { fmtDate, fmtTime } from "../src/pages/html";
 import { timeZoneOf } from "../src/time";
@@ -130,5 +130,50 @@ describe("webhook parsing", () => {
   });
   it("ignores other objects", () => {
     expect(parsePayload({ object: "page", entry: [{ changes: [{ field: "comments", value: { id: "c", media: { id: "m" } } }] }] }, 0).comments).toEqual([]);
+  });
+});
+
+describe("the comment rule", () => {
+  const listen = ["LISTEN"];
+  it("answers a comment that is the keyword, give or take emoji, punctuation, repeats and a few words", () => {
+    for (const text of ["listen", "LISTEN!!", "Listen 🙌🔥", "listen listen listen", "#listen", "@a.friend listen", "yes listen please", "listen please send it", "🙏 Listen 🙏"]) {
+      expect(commentMatch(text, listen), text).toBe("exact");
+    }
+  });
+
+  it("leaves a longer comment that only mentions the keyword", () => {
+    for (const text of ["What is the advantage? So now I have to read instead listen?", "I would rather listen than read this", "listen to me, this is not how it works"]) {
+      expect(commentMatch(text, listen), text).toBeNull();
+    }
+  });
+
+  it("ignores spacing: split, spaced out or joined", () => {
+    expect(commentMatch("list en", listen)).toBe("exact");
+    expect(commentMatch("l i s t e n 🙌", listen)).toBe("exact");
+    expect(commentMatch("Lis-ten", listen)).toBe("exact");
+    expect(commentMatch("setup", ["SET UP"])).toBe("exact");
+    expect(commentMatch("set up please", ["SETUP"])).toBe("exact");
+    expect(commentMatch("cheat sheet", ["CHEAT-SHEET"])).toBe("exact");
+  });
+
+  it("allows one letter off in a keyword of 5 letters or more, and none in a shorter one", () => {
+    for (const text of ["lisen", "listten", "litsen", "Lisen 🙌", "lis tten"]) expect(commentMatch(text, listen), text).toBe("typo");
+    expect(commentMatch("lsn", listen)).toBeNull();
+    expect(commentMatch("listened", listen)).toBeNull(); // two letters off
+    expect(commentMatch("year", ["GEAR"])).toBeNull();
+    expect(commentMatch("gear", ["GEAR"])).toBe("exact");
+    expect(commentMatch("I would rather lisen than read this", listen)).toBeNull(); // a typo in a long comment is only flagged
+  });
+
+  it("reads a word before the keyword as a word, not as a typo", () => {
+    expect(commentMatch("a listen", listen)).toBe("exact");
+  });
+
+  it("matches a keyword with no letters anywhere, as before", () => {
+    expect(commentMatch("Love this video, really 🙌", ["🙌"])).toBe("exact");
+  });
+
+  it("does not count a comment too long to be short", () => {
+    expect(commentMatch(`listen ${"listen ".repeat(50)}`, listen)).toBeNull();
   });
 });

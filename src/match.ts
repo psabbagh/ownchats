@@ -156,9 +156,12 @@ const NEAR_MISS_WORDS = 60;
 export class CommentText {
   readonly text: string;
   readonly words: string[];
+  /** Its words for the comment rule, or null when it is too long to be answered by itself. */
+  readonly ruleWords: string[] | null;
   constructor(raw: string) {
     this.text = normalise(raw);
     this.words = (this.text.match(WORD) ?? []).slice(0, NEAR_MISS_WORDS);
+    this.ruleWords = ruleWords(this.text);
   }
 }
 
@@ -174,9 +177,11 @@ export class KeywordSet {
   private readonly minLength: number;
   private readonly maxLength: number;
   readonly keywords: string[];
+  private readonly rule: CommentRule;
 
   constructor(keywords: string[]) {
     this.keywords = keywords;
+    this.rule = new CommentRule(keywords);
     this.prepared = keywords
       .map((raw) => {
         const flat = normalise(raw).replace(GAP, "");
@@ -187,7 +192,13 @@ export class KeywordSet {
     this.maxLength = Math.max(...this.prepared.map((k) => k.flat.length + k.tol));
   }
 
+  /** Whether the comment rule answers this comment (see CommentRule). */
   matches(t: CommentText): boolean {
+    return this.rule.strength(t.text, t.ruleWords) !== null;
+  }
+
+  /** Whether the comment holds a keyword as a whole word anywhere, however long it is. */
+  contains(t: CommentText): boolean {
     return matchesNormalised(t.text, this.keywords);
   }
 
@@ -199,7 +210,7 @@ export class KeywordSet {
    * by hand; nothing is sent on its basis.
    */
   nearMiss(t: CommentText): NearMiss | null {
-    return this.matches(t) ? null : this.closeTo(t);
+    return this.matches(t) || this.contains(t) ? null : this.closeTo(t);
   }
 
   /** The near-miss check alone, for a comment already known not to match. */
@@ -258,6 +269,114 @@ export class KeywordSet {
     if (this.seen.size < 20_000) this.seen.set(key, verdict);
     return verdict;
   }
+}
+
+/** How many words besides the keyword a comment may hold and still be answered by itself. */
+export const MAX_OTHER_WORDS = 3;
+/** A comment with more words than this can't be short enough, whatever it says. */
+const MAX_COMMENT_WORDS = 40;
+const MENTION = /@[\p{L}\p{N}._]+/gu;
+const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
+
+/** How a comment matched: its letters spell the keyword ("exact"), or are one letter off ("typo"). */
+export type Strength = "exact" | "typo";
+
+/** A keyword as the comment rule reads it: its letters and digits run together, and the typos allowed. */
+interface RuleKeyword {
+  flat: string;
+  tol: number;
+}
+
+/** Typos a comment may make and still be answered: one, and only in a keyword of 5 letters or more. */
+function autoTolerance(length: number): number {
+  return length >= 5 ? 1 : 0;
+}
+
+/** The words of a comment for the comment rule: no @mentions, no emoji or punctuation; null when it is too long to count. */
+function ruleWords(normalised: string): string[] | null {
+  const words = normalised.replace(MENTION, " ").match(WORD) ?? [];
+  return words.length > MAX_COMMENT_WORDS ? null : words;
+}
+
+/**
+ * The comment rule: a comment is answered when it is the keyword, give or take a
+ * few words. Emoji, punctuation, @mentions and repeats of the keyword don't count,
+ * and up to MAX_OTHER_WORDS other words may sit around it, so "listen listen
+ * listen", "Listen 🙌" and "yes listen please" match LISTEN, and "So now I have
+ * to read instead listen?" does not. Spacing doesn't matter ("list en", "l i s t
+ * e n", "setup" for SET UP), and in a keyword of 5 letters or more one letter may
+ * be off ("lisen", "listten", "litsen"). Keywords with no letters or digits (🙌)
+ * match anywhere, as before.
+ */
+class CommentRule {
+  private readonly words: RuleKeyword[] = [];
+  private readonly symbols: string[] = [];
+
+  constructor(keywords: string[]) {
+    for (const raw of keywords) {
+      const canon = canonical(raw);
+      if (!canon) continue;
+      if (!LETTER_OR_DIGIT.test(canon)) {
+        this.symbols.push(raw);
+        continue;
+      }
+      const flat = (canon.match(WORD) ?? []).join("");
+      this.words.push({ flat, tol: autoTolerance(flat.length) });
+    }
+  }
+
+  strength(normalised: string, words: string[] | null): Strength | null {
+    if (this.symbols.length && matchesNormalised(normalised, this.symbols)) return "exact";
+    if (!this.words.length || !words) return null;
+    let other = 0;
+    let exact = false;
+    let typo = false;
+    for (let i = 0; i < words.length; ) {
+      let span = this.exactAt(words, i);
+      if (span) exact = true;
+      // "a listen" is a word and then LISTEN, not "alisten" one letter off.
+      else if (!this.exactAt(words, i + 1) && (span = this.typoAt(words, i))) typo = true;
+      if (span) i += span;
+      else {
+        if (++other > MAX_OTHER_WORDS) return null;
+        i++;
+      }
+    }
+    return exact ? "exact" : typo ? "typo" : null;
+  }
+
+  /** How many words, from word `i`, spell out a keyword exactly ("list en"), or 0. */
+  private exactAt(words: string[], i: number): number {
+    for (const k of this.words) {
+      let joined = "";
+      for (let j = i; j < words.length; j++) {
+        joined += words[j];
+        if (joined.length > k.flat.length) break;
+        if (joined === k.flat) return j - i + 1;
+      }
+    }
+    return 0;
+  }
+
+  /** How many words (one or two), from word `i`, spell a keyword one letter off ("lisen", "lis tten"), or 0. */
+  private typoAt(words: string[], i: number): number {
+    for (const k of this.words) {
+      if (!k.tol) continue;
+      let joined = "";
+      for (let j = i; j < words.length && j < i + 2; j++) {
+        joined += words[j];
+        if (joined.length > k.flat.length + k.tol) break;
+        if (editDistanceWithin(joined, k.flat, k.tol) <= k.tol) return j - i + 1;
+      }
+    }
+    return 0;
+  }
+}
+
+/** How a comment matches these keywords under the comment rule (see CommentRule), or null. */
+export function commentMatch(text: string, keywords: string[]): Strength | null {
+  const normalised = normalise(text);
+  return new CommentRule(keywords).strength(normalised, ruleWords(normalised));
 }
 
 /** A near miss for one comment and one keyword list. To check many comments, use KeywordSet. */
