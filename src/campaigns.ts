@@ -424,11 +424,24 @@ export function answersShortcuts(c: Pick<Campaign, "anyComment" | "mediaId" | "n
 
 /**
  * A campaign's own keywords, less the shortcuts, even when it lists one itself: what
- * comments are first matched against, what attaches it to its next post, and what
- * counts as its DM keyword. A shortcut picks out no campaign, so it does none of that.
+ * comments are first matched against and what counts as its DM keyword. A shortcut
+ * picks out no campaign, so it does neither. Attaching to the next post is the
+ * exception and reads every keyword the campaign lists (`postFor`).
  */
 export function ownKeywords(c: Pick<Campaign, "keywords">, shortcuts: string[]): string[] {
   return withoutKeywords(c.keywords, shortcuts);
+}
+
+/**
+ * Whether a comment is one of the shortcut keywords. An emoji shortcut (🙌) counts
+ * anywhere in the comment. A word shortcut (SKILL) follows the comment rule, the
+ * comment being that word give or take a few words, and must be spelled exactly:
+ * a shortcut is a common word shared by every post, so "I still don't get it"
+ * must not read as SKILL one letter off, nor "what skill do I need for this?" as
+ * asking for the link.
+ */
+export function shortcutMatch(text: string, shortcuts: string[]): boolean {
+  return commentMatch(text, shortcuts) === "exact";
 }
 
 /**
@@ -440,8 +453,8 @@ export function ownKeywords(c: Pick<Campaign, "keywords">, shortcuts: string[]):
  * a letter off, and then the oldest campaign wins.
  * A campaign waiting for the next post matches nothing until it is attached.
  * Only when no campaign takes the comment this way are the shortcut keywords
- * (`shortcuts`, from Settings) tried, anywhere in the comment, and then only for a
- * keyword campaign on this very post: so "AGENTS 🙌" still goes to the AGENTS campaign.
+ * (`shortcuts`, from Settings) tried (`shortcutMatch`), and then only for a keyword
+ * campaign on this very post: so "AGENTS 🙌" still goes to the AGENTS campaign.
  */
 export function matchComment(campaigns: Campaign[], mediaId: string, text: string, shortcuts: string[] = []): Campaign | null {
   const on = campaigns.filter((c) => c.active && (c.mediaId === mediaId || onAllPosts(c)));
@@ -452,7 +465,7 @@ export function matchComment(campaigns: Campaign[], mediaId: string, text: strin
     if (s) strength.set(c.id, s);
     return s !== null;
   });
-  if (!candidates.length && shortcuts.length && matchesKeyword(text, shortcuts)) {
+  if (!candidates.length && shortcuts.length && shortcutMatch(text, shortcuts)) {
     candidates.push(...on.filter((c) => c.mediaId === mediaId && answersShortcuts(c)));
   }
   const rank = (c: Campaign) => (c.mediaId ? 0 : 2) + (c.anyComment ? 1 : 0);

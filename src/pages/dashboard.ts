@@ -678,8 +678,8 @@ export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string; apiWrit
           <input id="shortcut_keywords" name="shortcut_keywords" type="text" value="${s.shortcut_keywords ?? ""}" placeholder="🙌">
           <p class="hint">Separate them with commas, as in a campaign's keywords. Leave empty for none.
             A comment that has a campaign's own keyword still goes to that campaign. Campaigns on all posts don't answer shortcuts, since a 🙌 under any of your posts would get their link.
-            Shortcuts never attach a campaign waiting for your next post (its caption still needs "Comment" and its own keyword), and never count as a DM keyword.
-            Like any keyword, they match anywhere in a comment, so "love this 🙌" gets the link too.</p>
+            Shortcuts never attach a campaign waiting for your next post unless it lists them as its own keyword (its caption still needs "Comment" and its keyword), and never count as a DM keyword.
+            An emoji matches anywhere in a comment, so "love this 🙌" gets the link too. A word, like any keyword, only in a short comment that is that word, spelled exactly.</p>
           <p class="row"><button>Save</button>${savedNote(fresh.saved, "shortcuts")}</p>
         </form>
       </div>
