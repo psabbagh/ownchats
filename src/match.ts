@@ -197,6 +197,11 @@ export class KeywordSet {
     return this.rule.strength(t.text, t.ruleWords) !== null;
   }
 
+  /** Whether the comment rule answers this comment with a keyword spelled exactly, as shortcuts need. */
+  matchesExactly(t: CommentText): boolean {
+    return this.rule.strength(t.text, t.ruleWords) === "exact";
+  }
+
   /** Whether the comment holds a keyword as a whole word anywhere, however long it is. */
   contains(t: CommentText): boolean {
     return matchesNormalised(t.text, this.keywords);

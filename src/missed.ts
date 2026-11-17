@@ -75,9 +75,9 @@ function judge(
   if (c.reason !== NO_MATCH) return c.campaign_id === campaign.id ? { why: "before", keyword: null, spelling: null } : null;
   if (!onItsPosts(c, campaign)) return null;
   // It matched no active campaign when it came in. It may match now: the campaign was off, or the spelling or shortcut is new.
-  if (campaign.anyComment || keywords.matches(read(c)) || shortcuts?.contains(read(c))) return { why: "matches", keyword: null, spelling: null };
-  // It names the keyword, in a comment too long to be answered by itself: "So now I have to read instead of listen?"
-  if (keywords.contains(read(c))) return { why: "long", keyword: null, spelling: null };
+  if (campaign.anyComment || keywords.matches(read(c)) || shortcuts?.matchesExactly(read(c))) return { why: "matches", keyword: null, spelling: null };
+  // It names the keyword or a shortcut, in a comment too long to be answered by itself: "So now I have to read instead of listen?"
+  if (keywords.contains(read(c)) || shortcuts?.contains(read(c))) return { why: "long", keyword: null, spelling: null };
   // Near misses are looked for against the campaign's own keywords only: a spelling is added to the campaign.
   const near = keywords.closeTo(read(c));
   return near ? { why: "close", keyword: near.keyword, spelling: near.spelling } : null;

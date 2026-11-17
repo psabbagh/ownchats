@@ -79,6 +79,18 @@ describe("matching a comment with shortcut keywords", () => {
     expect(matchComment([reel], REEL, "🔥", RAISED)).toBeNull();
   });
 
+  it("answers a word shortcut only in a short comment that spells it exactly", () => {
+    const reel = campaign(1);
+    const shortcuts = ["🙌", "SKILL", "SKILLS"];
+    for (const text of ["skill", "SKILLS", "Skill please", "send the skill 🙌", "s k i l l", "Love this, skills!"]) {
+      expect(matchComment([reel], REEL, text, shortcuts)?.id, text).toBe(1);
+    }
+    for (const text of ["still", "I still don't get it", "What skill do I need for this to work?", "this skill is so overhyped honestly", "skil"]) {
+      expect(matchComment([reel], REEL, text, shortcuts), text).toBeNull();
+    }
+    expect(matchComment([reel], REEL, "Great video, I watched it twice and learned a lot 🙌", shortcuts)?.id, "an emoji shortcut still counts anywhere").toBe(1);
+  });
+
   it("leaves campaigns on all posts out, so a shortcut under any post doesn't get their link", () => {
     const all = campaign(1, { mediaId: null, mediaLabel: null });
     expect(matchComment([all], OTHER_POST, "🙌", RAISED)).toBeNull();
@@ -122,14 +134,15 @@ describe("matching a comment with shortcut keywords", () => {
 });
 
 describe("a campaign waiting for the next post", () => {
-  it("is never attached by a shortcut, even one it lists itself", () => {
+  it("is attached by a keyword it lists, even one that is also a shortcut, and never by a shortcut it only shares", () => {
     const now = Date.parse("2026-11-04T12:00:00Z");
     const waiting = campaign(1, { keywords: ["AGENTS", "SEND IT"], mediaId: null, mediaLabel: null, nextPostAfter: now - MINUTE });
     const posts = [media(NEW_POST, now, "Five tools I use daily. Comment SEND IT and I'll DM you the list")];
-    expect(postFor(waiting, posts)?.id, "with no shortcuts set, its own list applies").toBe(NEW_POST);
-    expect(postFor(waiting, posts, ["Send it"])).toBeUndefined();
-    expect(postFor(campaign(2, { mediaId: null, mediaLabel: null, nextPostAfter: now - MINUTE }), [media(NEW_POST, now, "Comment 🙌 for part two")], RAISED)).toBeUndefined();
-    expect(postFor(waiting, [media(NEW_POST, now, "Comment AGENTS for the list")], ["Send it"])?.id).toBe(NEW_POST);
+    expect(postFor(waiting, posts)?.id).toBe(NEW_POST);
+    const other = campaign(2, { mediaId: null, mediaLabel: null, nextPostAfter: now - MINUTE });
+    expect(postFor(other, posts), "SEND IT is not its own keyword").toBeUndefined();
+    expect(postFor(other, [media(NEW_POST, now, "Comment 🙌 for part two")])).toBeUndefined();
+    expect(postFor(waiting, [media(NEW_POST, now, "Comment AGENTS for the list")])?.id).toBe(NEW_POST);
   });
 
   it("answers the shortcuts that reached its post before it attached", async () => {
@@ -148,14 +161,30 @@ describe("a campaign waiting for the next post", () => {
     expect(await status(early.id)).toMatchObject({ status: "done", campaign_id: id });
   });
 
-  it("isn't reported as attaching by a caption check, for a shortcut", async () => {
+  it("is reported as attaching by a caption check for its own keyword, even one that is also a shortcut", async () => {
     await setShortcuts("SEND IT");
     const cookie = await w.signIn();
     const page = await (await w.fetch("/dashboard/settings/api-write-token", form(cookie, { do: "new" }))).text();
     const headers = { authorization: `Bearer ${page.match(/ocw_[A-Za-z0-9_-]+/)![0]}`, "content-type": "application/json" };
     const caption = "Five tools I use daily. Comment SEND IT and I'll DM you the list";
     const res = await w.fetch("/api/campaigns/check", { method: "POST", headers, body: JSON.stringify({ caption, keywords: ["SEND IT"] }) });
-    expect(await res.json()).toMatchObject({ attaches: false, matched_keyword: null });
+    expect(await res.json()).toMatchObject({ attaches: true, matched_keyword: "SEND IT" });
+  });
+
+  it("can be created through the API for a word that is also a shortcut, and attaches to its Reel", async () => {
+    await setShortcuts("🙌, SKILL, SKILLS");
+    const cookie = await w.signIn();
+    const page = await (await w.fetch("/dashboard/settings/api-write-token", form(cookie, { do: "new" }))).text();
+    const headers = { authorization: `Bearer ${page.match(/ocw_[A-Za-z0-9_-]+/)![0]}`, "content-type": "application/json" };
+    const caption = "An invented reel. Comment SKILLS and I'll send you the skill";
+    const res = await w.fetch("/api/campaigns", { method: "POST", headers, body: JSON.stringify({ caption, link: "https://example.com/skill" }) });
+    expect(res.status).toBe(201);
+    const id = ((await res.json()) as { campaign: { id: number; keywords: string[] } }).campaign;
+    expect(id.keywords).toEqual(["SKILLS"]);
+    w.clock.advance(MINUTE);
+    w.meta.media = [media(NEW_POST, w.clock.now(), caption)];
+    await w.cron();
+    expect((await listCampaigns(env.DB)).find((c) => c.id === id.id)?.mediaId).toBe(NEW_POST);
   });
 });
 
@@ -214,6 +243,13 @@ describe("shortcuts end to end", () => {
     const missed = await missedComments(await w.ctx(), campaigns);
     expect(missed.get(reel)?.map((m) => [m.id, m.why])).toEqual([[raised.id, "matches"]]);
     expect(missed.get(all)).toBeUndefined();
+
+    // A word shortcut in a comment too long to be answered by itself waits for a click.
+    const long = w.comment("Can you send me the skill please, I would love to try it", FAN2);
+    await w.sendComment(long);
+    await setShortcuts("🙌, SKILL");
+    const again = await missedComments(await w.ctx(), campaigns);
+    expect(again.get(reel)?.map((m) => [m.id, m.why])).toEqual(expect.arrayContaining([[long.id, "long"], [raised.id, "matches"]]));
   });
 
   it("are named on the campaign's page and form, with a link to Settings, and served by the API", async () => {

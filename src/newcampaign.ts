@@ -1,10 +1,9 @@
-import { DEFAULTS, EMAIL_MODES, ownDefaults, listCampaigns, ownKeywords, validateCampaign, type Campaign, type CampaignInput, type EmailMode } from "./campaigns";
+import { DEFAULTS, EMAIL_MODES, ownDefaults, listCampaigns, validateCampaign, type Campaign, type CampaignInput, type EmailMode } from "./campaigns";
 import type { Ctx } from "./context";
 import { listPosts } from "./insights";
-import { captionAsksFor, parseKeywords, withoutKeywords } from "./match";
+import { captionAsksFor, parseKeywords } from "./match";
 import type { Media } from "./meta/client";
 import { newCampaignDefaults } from "./pages/dashboard";
-import { shortcutKeywords } from "./settings";
 import { DAY } from "./time";
 
 /** Letters and digits: a keyword's words. */
@@ -69,12 +68,12 @@ export interface CaptionCheck {
 
 /**
  * Whether a post with this caption would attach a waiting campaign with these keywords,
- * and what else it would touch. Like the Cron (postFor), it leaves the shortcut keywords out.
+ * and what else it would touch. Like the Cron (postFor), it reads every keyword given,
+ * a shortcut keyword included.
  */
 export async function checkCaption(ctx: Ctx, caption: string, given: string[], exceptId: number | null = null): Promise<CaptionCheck> {
   const campaigns = await listCampaigns(ctx.db);
-  const shortcuts = shortcutKeywords(ctx.settings);
-  const keywords = withoutKeywords(given, shortcuts);
+  const keywords = given;
   const matched = keywords.find((k) => captionAsksFor(caption, [k])) ?? null;
   const taken = new Set(campaigns.map((c) => c.mediaId));
   const recent = new Map<string, Media>();
@@ -90,7 +89,7 @@ export async function checkCaption(ctx: Ctx, caption: string, given: string[], e
     attaches: matched !== null,
     matched_keyword: matched,
     waiting_campaigns_it_would_attach: campaigns
-      .filter((c) => c.id !== exceptId && c.nextPostAfter !== null && (c.anyComment || captionAsksFor(caption, ownKeywords(c, shortcuts))))
+      .filter((c) => c.id !== exceptId && c.nextPostAfter !== null && (c.anyComment || captionAsksFor(caption, c.keywords)))
       .map((c) => ({ id: c.id, name: c.name, video_id: c.videoId || null })),
     posts_already_up: keywords.length
       ? [...recent.values()]

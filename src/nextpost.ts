@@ -1,4 +1,4 @@
-import { listCampaigns, matchComment, ownKeywords, postLabel, type Campaign } from "./campaigns";
+import { listCampaigns, matchComment, postLabel, type Campaign } from "./campaigns";
 import type { Ctx } from "./context";
 import { listedStatement } from "./insights";
 import { captionAsksFor } from "./match";
@@ -13,12 +13,13 @@ import { PRIVATE_REPLY_WINDOW } from "./time";
  * tells two waiting campaigns apart, and what keeps a keyword used on an old Reel
  * from mattering: only posts published since the campaign was armed count. An
  * any-comment campaign has no keyword to look for, so it takes the first new post.
- * The shortcut keywords never attach a campaign, even one that lists them itself:
- * every campaign shares them, so they can't tell two waiting campaigns apart.
+ * Every keyword the campaign lists counts, a shortcut keyword included when the
+ * campaign lists it itself: a Reel may ask for SKILLS while SKILLS is also a shortcut.
+ * A shortcut a campaign only shares through Settings never attaches it, since every
+ * campaign shares it and it can't tell two waiting campaigns apart.
  */
-export function postFor(campaign: Campaign, oldestFirst: Media[], shortcuts: string[] = []): Media | undefined {
-  const keywords = ownKeywords(campaign, shortcuts);
-  return oldestFirst.find((m) => m.timestamp > campaign.nextPostAfter! && (campaign.anyComment || captionAsksFor(m.caption ?? "", keywords)));
+export function postFor(campaign: Campaign, oldestFirst: Media[]): Media | undefined {
+  return oldestFirst.find((m) => m.timestamp > campaign.nextPostAfter! && (campaign.anyComment || captionAsksFor(m.caption ?? "", campaign.keywords)));
 }
 
 /** A post that went up while campaigns waited and that none of them attached to. */
@@ -106,9 +107,8 @@ export async function attachNextPosts(ctx: Ctx): Promise<void> {
   if (ctx.settings.next_post_problem) await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { next_post_problem: "" });
 
   const oldestFirst = [...media].filter((m) => m.timestamp).sort((a, b) => a.timestamp - b.timestamp);
-  const shortcuts = shortcutKeywords(ctx.settings);
   for (const campaign of waiting) {
-    const post = postFor(campaign, oldestFirst, shortcuts);
+    const post = postFor(campaign, oldestFirst);
     if (post) await attach(ctx, campaign, post);
   }
 }
