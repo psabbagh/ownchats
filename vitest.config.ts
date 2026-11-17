@@ -14,6 +14,7 @@ export default defineConfig(async () => {
         },
       }),
     ],
-    test: { setupFiles: ["./test/apply-migrations.ts"] },
+    // Only this checkout's tests: copies in other worktrees under .claude/worktrees are not ours to run.
+    test: { include: ["test/**/*.test.ts"], setupFiles: ["./test/apply-migrations.ts"] },
   };
 });
