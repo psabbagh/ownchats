@@ -9,7 +9,7 @@ Set it up in the dashboard under **Settings, Lead webhook**: the URL, and a sign
 - **`lead.created`**: each time a campaign saves an email. If the same person gives another email for the same campaign, it is sent again with the new address and the same lead id.
 - **`lead.deleted`**: for each of a person's emails when their data is deleted from the dashboard, so the copy in your tool can go too. A `lead.created` for them that was still waiting to be retried is cancelled.
 
-Only emails saved after the webhook is set up are sent. Earlier ones are on the Leads page and in the CSV.
+Only emails saved after the webhook is set up are sent as they come in. To send the earlier ones too, for example to fill a list in a tool you connected later, use `POST /api/leads/resend` (see below). They are also on the Leads page and in the CSV.
 
 ## The request
 
@@ -75,6 +75,8 @@ The fields:
 - `campaign.link_title`: what that link leads to, in words, from the campaign's optional **What the first link leads to** field (campaign form, Link section), for example "Turn YouTube videos into Claude skills". `null` when empty. With `link`, it lets one email template deliver every campaign's guide by name, with nothing to configure on the receiving side.
 - `consent.wording`: the exact line the person answered (or the campaign's consent wording, if it has one), and `given_at` when they answered it. Keep both if your tool can: they are your proof of consent.
 
+- `resent`: present and `true` only on leads sent again with `POST /api/leads/resend`. The person gave this email earlier and already got whatever your tool sent then, so save or update them, and don't send the first email again. `delivery_id` is new, so it won't catch the repeat: check this field.
+
 New fields may be added; existing ones won't change.
 
 ## Send a test lead through the API
@@ -124,6 +126,20 @@ Refusals, each with `error` in plain words and `problem` as a code:
 - `401`: no write token, or the read token.
 
 A `delivered` status means your receiver accepted the request. Whether the email then arrives is up to your email tool, so check the inbox too.
+
+## Send saved leads again
+
+`POST /api/leads/resend` queues a `lead.created` for every lead OwnChats has saved, or one campaign's, marked `"resent": true`. Each is built as its first send was: the same lead id, name, campaign, the person's own `/go/` link, and the consent wording and time they answered. Use it when you connect a tool after people already gave their email, so it can fill its list. It needs the write token.
+
+```http
+POST /api/leads/resend
+Authorization: Bearer ocw_...
+Content-Type: application/json
+
+{ "campaign_id": 12 }
+```
+
+Leave `campaign_id` out to send every saved lead. OwnChats answers `200` with `{ "queued": 2, "campaign_id": 12, "message": "..." }`, and the Cron sends them within a minute, retried like any lead. `409`, `no_webhook`, when the webhook's URL or secret isn't set. Sending them twice sends them twice, so your receiver should save by email address.
 
 ## Checking the signature
 

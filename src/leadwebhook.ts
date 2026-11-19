@@ -117,6 +117,41 @@ export async function queueLeadCreated(
 }
 
 /**
+ * Queues lead.created again for every saved lead, or one campaign's, marked
+ * `resent: true`: for filling a list in a tool connected after those emails were
+ * saved. Built as the first send was, with the person's own /go/ link and the
+ * consent wording and time they answered. The receiver should save them and not
+ * send the first email again. Returns how many were queued, or null when no
+ * webhook is set up.
+ */
+export async function queueResend(ctx: Ctx, campaignId: number | null): Promise<number | null> {
+  if (!webhookConfig(ctx)) return null;
+  const { results } = await ctx.db
+    .prepare(
+      `SELECT l.id, l.campaign_id, l.ig_user_id, l.username, l.email, l.consent_text, l.consented_at, c.id AS conversation_id, c.name
+       FROM leads l LEFT JOIN conversations c ON c.campaign_id = l.campaign_id AND c.ig_user_id = l.ig_user_id
+       WHERE ?1 IS NULL OR l.campaign_id = ?1 ORDER BY l.id`,
+    )
+    .bind(campaignId)
+    .all<{ id: number; campaign_id: number; ig_user_id: string; username: string | null; email: string; consent_text: string; consented_at: number; conversation_id: number | null; name: string | null }>();
+  const campaigns = new Map<number, Campaign | null>();
+  const statements: D1PreparedStatement[] = [];
+  for (const l of results) {
+    if (!campaigns.has(l.campaign_id)) campaigns.set(l.campaign_id, await getCampaign(ctx.db, l.campaign_id));
+    // A deleted campaign leaves its leads: they go with its id and nothing else.
+    const campaign = campaigns.get(l.campaign_id) ?? { id: l.campaign_id, name: "", emailTag: "", linkTitle: "", links: [] };
+    const link = await personalLink(ctx, l.conversation_id, campaign);
+    const payload = {
+      resent: true,
+      ...leadCreatedPayload({ id: l.id, email: l.email, name: l.name || null, createdAt: l.consented_at, campaign, link, consentText: l.consent_text }),
+    };
+    statements.push(queueStatement(ctx, { event: "lead.created", payload, campaignId: l.campaign_id, igUserId: l.ig_user_id, username: l.username }).statement);
+  }
+  for (let i = 0; i < statements.length; i += 50) await ctx.db.batch(statements.slice(i, i + 50));
+  return statements.length;
+}
+
+/**
  * For deleting a person: cancels their deliveries still waiting, and queues a
  * lead.deleted for each of their emails, so copies in other tools go too. The
  * lead.deleted rows name nobody, so they outlive the deletion until sent.

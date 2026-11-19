@@ -2,7 +2,7 @@ import { apiAuthorized } from "./auth";
 import { getCampaign, listCampaigns, onAllPosts, saveCampaign, type Campaign } from "./campaigns";
 import { log, type Ctx } from "./context";
 import { listLeads } from "./export";
-import { checkTestLead, getDelivery, sendTestLead, webhookConfig } from "./leadwebhook";
+import { checkTestLead, getDelivery, queueResend, sendTestLead, webhookConfig } from "./leadwebhook";
 import { campaignFromRequest, checkCaption, waitingWithVideoId, type NewCampaignRequest } from "./newcampaign";
 import { attachmentOf, campaignWarnings } from "./readiness";
 import { listAccountDays, listPosts, readMediaStats, type MediaStats } from "./insights";
@@ -131,9 +131,23 @@ async function testLead(ctx: Ctx, body: Record<string, unknown>): Promise<Respon
   });
 }
 
+/**
+ * POST /api/leads/resend: queues every saved lead (or one campaign's) for the lead
+ * webhook again, marked resent, so a tool connected later can fill its list. The
+ * Cron sends them within a minute, retried like any lead.
+ */
+async function resendLeads(ctx: Ctx, body: Record<string, unknown>): Promise<Response> {
+  const campaignId = body.campaign_id === undefined || body.campaign_id === null ? null : Number(body.campaign_id);
+  if (campaignId !== null && !(Number.isInteger(campaignId) && campaignId > 0)) return json({ error: "Send `campaign_id` as a campaign's id, or leave it out for every lead." }, 400);
+  const queued = await queueResend(ctx, campaignId);
+  if (queued === null) return json({ error: "Set the webhook's URL and secret first.", problem: "no_webhook" }, 409);
+  await log(ctx, { kind: "api", outcome: "queued", reason: `${queued} saved lead${queued === 1 ? "" : "s"} queued for the lead webhook again, marked resent`, campaignId });
+  return json({ queued, campaign_id: campaignId, message: queued ? "Queued. They go out within a minute, marked resent." : "No saved leads to send." });
+}
+
 async function handleWrite(ctx: Ctx, request: Request, path: string): Promise<Response> {
-  if (path !== "/api/campaigns" && path !== "/api/campaigns/check" && path !== "/api/test-lead") {
-    return json({ error: "Only POST /api/campaigns, POST /api/campaigns/check and POST /api/test-lead take a POST. GET /api lists the rest." }, 405);
+  if (path !== "/api/campaigns" && path !== "/api/campaigns/check" && path !== "/api/test-lead" && path !== "/api/leads/resend") {
+    return json({ error: "Only POST /api/campaigns, POST /api/campaigns/check, POST /api/test-lead and POST /api/leads/resend take a POST. GET /api lists the rest." }, 405);
   }
   const write = await apiAuthorized(ctx, request, "write");
   if (!write && !(path === "/api/campaigns/check" && (await apiAuthorized(ctx, request, "read")))) {
@@ -143,6 +157,7 @@ async function handleWrite(ctx: Ctx, request: Request, path: string): Promise<Re
   if (typeof body === "string") return json({ error: body }, 400);
 
   if (path === "/api/test-lead") return testLead(ctx, body);
+  if (path === "/api/leads/resend") return resendLeads(ctx, body);
 
   if (path === "/api/campaigns/check") {
     const caption = typeof body.caption === "string" ? body.caption : "";
@@ -204,6 +219,7 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
         "GET /api/stats": "totals and connection health",
         "POST /api/campaigns": "write token: create a campaign that waits for the next post, from its caption (dry_run: true saves nothing)",
         "POST /api/campaigns/check": "either token: whether a caption would attach a campaign with these keywords (or campaign_id), and what else it would touch",
+        "POST /api/leads/resend": "write token: send every saved lead (or campaign_id's) to the lead webhook again, marked resent, for filling a tool connected later",
         "POST /api/test-lead": "write token: send a lead marked as a test to the lead webhook, as Settings does (email, optional name and campaign_id), and see what the receiver answered",
       },
     });

@@ -480,3 +480,57 @@ describe("POST /api/test-lead", () => {
     expect(index.endpoints["POST /api/test-lead"]).toBeDefined();
   });
 });
+
+describe("POST /api/leads/resend", () => {
+  let write: Record<string, string>;
+  beforeEach(async () => {
+    const cookie = await w.signIn();
+    const page = await (await w.fetch("/dashboard/settings/api-write-token", form(cookie, { do: "new" }))).text();
+    write = { authorization: `Bearer ${page.match(/ocw_[A-Za-z0-9_-]+/)![0]}`, "content-type": "application/json" };
+  });
+  const resend = (body: unknown = {}, headers = write) => w.fetch("/api/leads/resend", { method: "POST", headers, body: JSON.stringify(body) });
+
+  it("sends every saved lead again as the first send was, marked resent, with a new delivery id", async () => {
+    await w.lead_webhook();
+    const id = await w.campaign({ name: "SETUP", emailMode: "optional", emailTag: "setupGuide", consentText: "", linkTitle: "A guide" });
+    w.meta.names.set(FAN.id, "Sam");
+    await giveEmail(w, id);
+    await giveEmail(w, id, FAN2, "fan2@example.com");
+    expect(w.receiver.received).toHaveLength(2);
+    const firsts = w.receiver.bodies() as Array<Record<string, any>>;
+
+    w.clock.advance(HOUR);
+    const res = await resend();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ queued: 2, campaign_id: null });
+    await w.cron();
+    const again = (w.receiver.bodies() as Array<Record<string, any>>).slice(2);
+    expect(again).toHaveLength(2);
+    for (const [i, body] of again.entries()) {
+      const first = firsts[i]!;
+      expect(body.resent).toBe(true);
+      expect(body.delivery_id).not.toBe(first.delivery_id);
+      expect({ ...body, resent: undefined, delivery_id: null, sent_at: null }).toEqual({ ...first, delivery_id: null, sent_at: null });
+    }
+    for (const r of w.receiver.received.slice(2)) expect(await signedCorrectly(r)).toBe(true);
+    expect(firsts.every((b) => !("resent" in b))).toBe(true);
+  });
+
+  it("can be limited to one campaign, and says when there is nothing to send", async () => {
+    await w.lead_webhook();
+    const id = await w.campaign({ name: "SETUP", emailMode: "optional" });
+    await giveEmail(w, id);
+    expect(await (await resend({ campaign_id: id + 1 })).json()).toMatchObject({ queued: 0, message: "No saved leads to send." });
+    expect(await (await resend({ campaign_id: id })).json()).toMatchObject({ queued: 1, campaign_id: id });
+    expect((await resend({ campaign_id: "abc" })).status).toBe(400);
+  });
+
+  it("needs a webhook and the write token", async () => {
+    let res = await resend();
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ problem: "no_webhook" });
+    await w.lead_webhook();
+    expect((await resend({}, { "content-type": "application/json" })).status).toBe(401);
+    expect(w.receiver.received).toHaveLength(0);
+  });
+});
