@@ -137,7 +137,8 @@ function metaLoadLine(ctx: Ctx): Html | string {
   if (paused(ctx.load, now)) return "";
   const usage = currentUsage(ctx.load, now);
   if (usage && usage.percent >= BUSY_PERCENT) {
-    return html` <span class="warn">Instagram's rate limit is near (${usage.detail}): OwnChats reads less until it falls, and keeps sending DMs.</span>`;
+    // A status, not a to-do: the readings per limit are on hover.
+    return html`<p class="small status-note" title="Meta's readings: ${usage.detail}"><span class="dot warn" aria-hidden="true"></span>Instagram's limit is at ${Math.round(usage.percent)}%. OwnChats checks for missed comments less often; DMs still go first.</p>`;
   }
   return "";
 }
@@ -183,23 +184,31 @@ async function refusalHealth(ctx: Ctx, campaignIds: number[], refused: Map<numbe
 /** Meta's error codes OwnChats can name. */
 const CODE_WORDS: Record<number, string> = { 4: "its app rate limit", 17: "its user rate limit", 32: "its page rate limit", 613: "a rate limit", 80002: "the account's rate limit", 2: "an outage", 1: "an outage" };
 
-/** The health line about refusals: what Meta refused and what became of the people, not a to-do. */
+/**
+ * What Meta refused over the last 24 hours, as history rather than a to-do: one short line on what
+ * became of the people, linking to the log, with the attempts and Meta's error code on hover.
+ * People still waiting are listed under Needs you, with links, so here they are only counted.
+ */
 function refusalLine(h: RefusalHealth): Html | string {
-  const parts: Html[] = [];
+  const lines: Html[] = [];
   if (h.attempts) {
-    const why = h.code !== null ? ` (mostly code ${h.code}${CODE_WORDS[h.code] ? `, ${CODE_WORDS[h.code]}` : ""})` : "";
     const p = h.people;
+    const why = h.code !== null ? `, mostly code ${h.code}${CODE_WORDS[h.code] ? ` (${CODE_WORDS[h.code]})` : ""}` : "";
     const fates = [
       p.recovered ? `${plural(p.recovered, "person", "people")} got it on a retry` : "",
       p.answeredByHand ? `${p.answeredByHand} answered by hand` : "",
       p.waiting ? `${p.waiting} still waiting` : "",
       p.unreached ? `${p.unreached} not reached` : "",
     ].filter(Boolean);
-    const all = p.people > 0 && p.waiting === 0 && p.unreached === 0 ? ", all answered" : "";
-    parts.push(html`Instagram refused ${plural(h.attempts, "DM attempt")} in the last 24 hours${why}${all}${fates.length ? `: ${fates.join(", ")}` : ""}.`);
+    const detail = `${plural(h.attempts, "DM attempt")} refused in the last 24 hours${why}${fates.length ? `: ${fates.join(", ")}` : ""}.`;
+    const open = p.waiting + p.unreached;
+    const what = !p.people
+      ? `Instagram refused ${plural(h.attempts, "DM attempt")} in the last 24 hours`
+      : `Instagram's limit in the last 24 hours: ${plural(p.people, "person", "people")} affected, ${open ? [p.waiting ? `${p.waiting} still waiting` : "", p.unreached ? `${p.unreached} not reached` : ""].filter(Boolean).join(", ") : "all answered"}`;
+    lines.push(html`<a href="/dashboard/activity?show=failed" title="${detail}">${what}</a>`);
   }
-  if (h.other) parts.push(html`<a href="/dashboard/activity?show=failed">${plural(h.other, "other failure")}</a> in the last 24 hours.`);
-  return parts.length ? html` ${parts.map((x, i) => (i ? html` ${x}` : x))}` : "";
+  if (h.other) lines.push(html`<a href="/dashboard/activity?show=failed">${plural(h.other, "other failure")}</a> in the last 24 hours`);
+  return lines.length ? html`<p class="muted small status-note">${lines.map((x, i) => (i ? html`. ${x}` : x))}.</p>` : "";
 }
 
 /** Meta's rate limit was reached: until when, how many people wait for a send, and when the next try is. */
@@ -489,7 +498,7 @@ export async function dashboardHome(ctx: Ctx, switched: string | null = null, sh
         : s.ig_username && on.length && !banner.value
           ? html`<p class="ok small" id="needs-you">Nothing needs you right now.</p>`
           : ""}
-      ${s.ig_username ? html`<p class="muted small"><span title="Last webhook: ${fmtTime(Number(s.last_webhook_at), tz) || "none yet"}. Last check for missed comments: ${fmtTime(Number(s.last_poll_at), tz) || "none yet"}.">Connected to Instagram as @${s.ig_username}.</span>${metaLoadLine(ctx)}${refusalLine(health)}${s.time_zone ? "" : html` Times are in UTC: <a href="/dashboard/settings#time-zone">choose your time zone</a>.`}</p>` : ""}
+      ${s.ig_username ? html`<p class="muted small"><span title="Last webhook: ${fmtTime(Number(s.last_webhook_at), tz) || "none yet"}. Last check for missed comments: ${fmtTime(Number(s.last_poll_at), tz) || "none yet"}.">Connected to Instagram as @${s.ig_username}.</span>${s.time_zone ? "" : html` Times are in UTC: <a href="/dashboard/settings#time-zone">choose your time zone</a>.`}</p>${metaLoadLine(ctx)}${refusalLine(health)}` : ""}
       ${noPermission ? html`<p class="warn small">Instagram shares each post's views once your Meta login configuration includes <code>instagram_manage_insights</code>. <a href="/setup#step-3">Add it in setup</a>, then reconnect.</p>` : ""}
       ${untaken.length ? html`<div id="no-campaign">${untaken.map((u) => untakenEntry(u, tz))}</div>` : ""}
       ${campaigns.length === 0 ? html`<div class="card"><p>No campaigns yet. Create one: a keyword, the post it watches, and the link to send.</p></div>` : ""}
