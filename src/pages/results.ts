@@ -5,7 +5,7 @@ import type { Media } from "../meta/client";
 import { MISSING_PERMISSION, readMediaStats, type MediaStats } from "../insights";
 import { ANSWER_PROBLEM, answerMissed, answerOutcome, missedComments, timeLeft, type AnswerProblem, type MissedComment } from "../missed";
 import { recentMedia } from "../pipeline/poll";
-import { refusedSends, sendRefused, type RefusedSend } from "../refused";
+import { markAnsweredByHand, refusedSends, sendRefused, type RefusedSend } from "../refused";
 import { shortcutKeywords } from "../settings";
 import {
   campaignResults,
@@ -182,28 +182,43 @@ function windowLeft(r: RefusedSend): string {
 
 function refusedSection(campaign: Campaign, refused: RefusedSend[], tz: string): Html {
   if (!refused.length) return html``;
-  const action = `/dashboard/campaigns/${campaign.id}/send`;
+  const base = `/dashboard/campaigns/${campaign.id}`;
   return html`<h2>Waiting on a refused send (${refused.length})</h2>
     <p class="muted small">Instagram refused these for a passing reason, usually its rate limit, and nothing reached the person yet.
-      OwnChats tries again on its own; Send tries now. Each goes out once.</p>
+      OwnChats tries again on its own while it can; Send tries now, once. Answered them yourself in Instagram? Mark them answered by hand: nothing is sent.</p>
     ${campaign.active ? "" : html`<p class="warn small">The campaign is off. First DMs wait until it is on; messages after a tap can still be sent.</p>`}
     ${refused.slice(0, MISSED_SHOWN).map((r) => {
       const who = r.username ? `@${r.username}` : "this person";
       const tries = `${plural(r.attempts, "try", "tries")} so far`;
-      const next = r.nextAt === null ? `OwnChats stopped retrying after ${tries}.` : `Next try ${fmtTime(r.nextAt, tz)} (${tries}).`;
-      const canSend = r.type === "message" || campaign.active;
+      const next = !r.canSend
+        ? r.left > 0 && r.type === "comment"
+          ? "Refused before OwnChats retried on its own: answer by hand."
+          : "Meta's window for OwnChats to send this has closed: answer by hand."
+        : r.nextAt === null
+          ? `OwnChats stopped retrying after ${tries}.`
+          : `Next try ${fmtTime(r.nextAt, tz)} (${tries}).`;
+      const canSend = r.canSend && (r.type === "message" || campaign.active);
       return html`<div class="card">
-        <p style="margin:0"><b>${r.username ? `@${r.username}` : "Someone"}</b> <span class="muted small">${windowLeft(r)}</span></p>
+        <p style="margin:0"><b>${r.username ? `@${r.username}` : "Someone"}</b>${r.canSend ? html` <span class="muted small">${windowLeft(r)}</span>` : ""}</p>
         <p style="margin:4px 0">Didn't get ${r.what}.</p>
         <p class="muted small" style="margin:0">${next}</p>
-        ${canSend
-          ? html`<div class="row" style="margin-top:8px">
-              <form method="post" action="${action}" data-ask="${`Send ${r.what.replace(/ \(.*\)$/, "")} to ${who} now?`}" onsubmit="return confirm(this.dataset.ask)">
-                <input type="hidden" name="type" value="${r.type}"><input type="hidden" name="id" value="${r.id}"><button>Send</button></form>
-            </div>`
-          : ""}
+        <div class="row" style="margin-top:8px">
+          ${canSend
+            ? html`<form method="post" action="${base}/send" data-ask="${`Send ${r.what.replace(/ \(.*\)$/, "")} to ${who} now?`}" onsubmit="return confirm(this.dataset.ask)">
+                <input type="hidden" name="type" value="${r.type}"><input type="hidden" name="id" value="${r.id}"><button>Send</button></form>`
+            : ""}
+          <form method="post" action="${base}/by-hand" data-ask="${`Mark ${who} as answered by hand? Nothing is sent.`}" onsubmit="return confirm(this.dataset.ask)">
+            <input type="hidden" name="type" value="${r.type}"><input type="hidden" name="id" value="${r.id}"><button class="secondary">Answered by hand</button></form>
+        </div>
       </div>`;
     })}`;
+}
+
+/** The "Answered by hand" button: marks the person, sends nothing. */
+export async function answeredByHandForm(ctx: Ctx, request: Request, id: number): Promise<Response> {
+  const form = await request.formData();
+  const done = await markAnsweredByHand(ctx, id, String(form.get("type") ?? ""), String(form.get("id") ?? "").trim());
+  return redirect(`/dashboard/campaigns/${id}?sent=${done ? "byhand" : "none"}#to-check`);
 }
 
 /** What the last "Send" did, from the address the form came back to. */
@@ -211,6 +226,7 @@ function sendNotice(url: URL): Html {
   const sent = url.searchParams.get("sent");
   if (sent === "1") return html`<div class="card"><p class="ok">Sent.</p></div>`;
   if (sent === "0") return html`<div class="card notice"><p>Instagram refused it again; the activity log has Meta's reason. OwnChats keeps trying while it can.</p></div>`;
+  if (sent === "byhand") return html`<div class="card"><p class="ok">Marked as answered by hand. Nothing was sent.</p></div>`;
   if (sent === "none") return html`<div class="card notice"><p>Nothing was waiting there any more: it went out, or Meta's window for it closed.</p></div>`;
   return html``;
 }

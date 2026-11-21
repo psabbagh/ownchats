@@ -24,7 +24,7 @@ import {
   settingsPage,
 } from "./pages/dashboard";
 import { redirect } from "./pages/html";
-import { answerMissedForm, campaignResultsPage, sendRefusedForm } from "./pages/results";
+import { answeredByHandForm, answerMissedForm, campaignResultsPage, sendRefusedForm } from "./pages/results";
 import { dataDeletionPage, privacyPage, termsPage } from "./pages/legal";
 import { confirmPublished, finishConnect, rememberBaseUrl, resubscribe, saveAccountHint, saveAppValues, setupPage, startConnect, testCampaign } from "./pages/setup";
 import { receiveWebhook, verifyWebhook } from "./webhook";
@@ -48,12 +48,13 @@ async function adminRoutes(ctx: Ctx, request: Request, url: URL): Promise<Respon
 
   if (path === "/dashboard") return dashboardHome(ctx, url.searchParams.get("switched"));
   if (path === "/dashboard/campaigns/new") return post ? saveCampaignForm(ctx, request, null) : newCampaignPage(ctx, url.searchParams.get("flow"));
-  const campaign = path.match(/^\/dashboard\/campaigns\/(\d+)(\/delete|\/edit|\/answer|\/send|\/switch)?$/);
+  const campaign = path.match(/^\/dashboard\/campaigns\/(\d+)(\/delete|\/edit|\/answer|\/send|\/by-hand|\/switch)?$/);
   if (campaign) {
     const id = Number(campaign[1]);
     if (campaign[2] === "/delete") return post ? deleteCampaign(ctx, id) : null;
     if (campaign[2] === "/answer") return post ? answerMissedForm(ctx, request, id) : null;
     if (campaign[2] === "/send") return post ? sendRefusedForm(ctx, request, id) : null;
+    if (campaign[2] === "/by-hand") return post ? answeredByHandForm(ctx, request, id) : null;
     if (campaign[2] === "/switch") return post ? switchCampaign(ctx, request, id) : null;
     if (campaign[2] === "/edit") return post ? saveCampaignForm(ctx, request, id) : editCampaignPage(ctx, id);
     return post ? saveCampaignForm(ctx, request, id) : campaignResultsPage(ctx, id, url);

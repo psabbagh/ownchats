@@ -364,8 +364,11 @@ describe("GET /api/activity", () => {
   });
 });
 
-describe("sends refused before this change", () => {
-  it("are neither listed nor sent again: the owner answers them by hand", async () => {
+describe("sends refused before automatic retries, and answered by hand", () => {
+  const form = (cookie: string, path: string, data: Record<string, string>) =>
+    w.fetch(path, { method: "POST", headers: { cookie, origin: BASE, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(data) });
+
+  it("lists an old refused first DM with only Answered by hand, which sends nothing and counts the person", async () => {
     const id = await w.campaign();
     const c = w.comment("agents", FAN);
     // As the earlier code left a private reply that gave up on a rate limit.
@@ -381,46 +384,68 @@ describe("sends refused before this change", () => {
     }
     expect(count("sendPrivateReply")).toBe(0);
     const cookie = await w.signIn();
+    const page = await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie } })).text();
+    expect(page).toContain("Waiting on a refused send (1)");
+    expect(page).toContain("Refused before OwnChats retried on its own: answer by hand.");
+    expect(page).toContain("Answered by hand</button>");
+    expect(page).not.toContain(">Send</button>");
+    // Send is refused for it all the same.
+    expect((await form(cookie, `/dashboard/campaigns/${id}/send`, { type: "comment", id: c.id })).headers.get("location")).toBe(`/dashboard/campaigns/${id}?sent=none#to-check`);
+
+    const res = await form(cookie, `/dashboard/campaigns/${id}/by-hand`, { type: "comment", id: c.id });
+    expect(res.headers.get("location")).toBe(`/dashboard/campaigns/${id}?sent=byhand#to-check`);
+    expect(w.meta.sent).toHaveLength(0);
     expect(await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie } })).text()).not.toContain("Waiting on a refused send");
-    const res = await w.fetch(`/dashboard/campaigns/${id}/send`, {
-      method: "POST",
-      headers: { cookie, origin: BASE, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ type: "comment", id: c.id }),
-    });
-    expect(res.headers.get("location")).toBe(`/dashboard/campaigns/${id}?sent=none#to-check`);
+    expect((await w.activity()).at(-1)).toMatchObject({ kind: "by_hand", outcome: "saved", reason: "first DM answered by hand", comment_id: c.id });
+    // A second click marks nothing.
+    expect((await form(cookie, `/dashboard/campaigns/${id}/by-hand`, { type: "comment", id: c.id })).headers.get("location")).toBe(`/dashboard/campaigns/${id}?sent=none#to-check`);
+    // They count once, as a person answered by hand, and a later comment from them gets no second DM.
+    expect(await (await w.fetch("/dashboard", { headers: { cookie } })).text()).toContain("<b>1</b>answered by hand");
+    await w.sendComment(w.comment("agents please", FAN));
     expect(w.meta.sent).toHaveLength(0);
   });
-});
 
-describe("the rate-limit line on the campaigns page", () => {
-  const strip = (page: string) => /<div class="card notice" id="needs-you">.*?<\/ul><\/div>/s.exec(page)?.[0] ?? "";
-
-  it("tops Needs you while Meta refuses, with everyone waiting and the next try, and leaves once the pause ends", async () => {
-    await saveTimeZone("America/Toronto");
-    await twoPosts();
-    w.meta.failNext("sendPrivateReply", LIMIT());
-    await w.sendComment(w.comment("AGENTS", FAN, { media: YOUNG_POST }));
-    w.meta.failNext("sendPrivateReply", LIMIT());
-    await w.sendComment(w.comment("OLD", FAN2, { media: OLD_POST }));
+  it("lists someone whose link after a tap was refused before messages were kept, and marks them", async () => {
+    const id = await w.campaign();
+    await w.sendComment(w.comment("agents", FAN));
+    const tapAt = w.clock.now();
+    await env.DB.prepare("UPDATE conversations SET last_inbound_at = ? WHERE ig_user_id = ?").bind(tapAt, FAN.id).run();
+    await env.DB.prepare("INSERT INTO activity (at, kind, outcome, reason, campaign_id, ig_user_id, username) VALUES (?, 'message', 'failed', ?, ?, ?, ?)")
+      .bind(tapAt + 1000, TRANSIENT_REASON, id, FAN.id, FAN.username)
+      .run();
+    // Two days later, past Meta's 24 hours: listed for a hand answer, not for Send.
+    w.clock.advance(2 * DAY);
     const cookie = await w.signIn();
-    const home = async () => (await w.fetch("/dashboard", { headers: { cookie } })).text();
-
-    const page = await home();
-    const shown = strip(page);
-    expect(shown).toMatch(/<li><span class="warn"><b>Instagram's rate limit was reached\.<\/b><\/span> OwnChats holds back its background reads until [^.]+\. <b>2 people are waiting for a DM<\/b> Meta refused\. OwnChats tries again (from [^.]+|once the pause ends)\. To send one sooner, open its campaign below\.<\/li>/);
-    // Above the per-campaign lines that link to them, and no longer repeated in the grey line.
-    expect(shown.indexOf("rate limit was reached")).toBeLessThan(shown.indexOf("waiting on a refused send"));
-    expect(page.match(/rate limit was reached/g)).toHaveLength(1);
-
-    w.clock.advance(PAUSE + MINUTE);
-    expect(await home()).not.toContain("rate limit was reached");
+    const page = await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie } })).text();
+    expect(page).toContain("t get the message after their tap.");
+    expect(page).toContain("window for OwnChats to send this has closed: answer by hand.");
+    expect(page).not.toContain(">Send</button>");
+    const conversationId = (await env.DB.prepare("SELECT id FROM conversations").first<{ id: number }>())!.id;
+    await form(cookie, `/dashboard/campaigns/${id}/by-hand`, { type: "message", id: String(conversationId) });
+    expect(await env.DB.prepare("SELECT state, answered_by_hand_at FROM conversations").first()).toEqual({ state: "done", answered_by_hand_at: w.clock.now() });
+    expect(await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie } })).text()).not.toContain("Waiting on a refused send");
+    expect(w.meta.sentTo(FAN.id).filter((s) => s.kind === "message")).toHaveLength(0);
   });
 
-  it("says nobody is waiting when every DM went out", async () => {
-    await twoPosts();
-    await saveSettings(env.DB, env.ADMIN_PASSWORD, { meta_paused_until: String(w.clock.now() + PAUSE) });
+  it("stops the retries of a message the owner answered by hand, and serves the count in the API", async () => {
+    const id = await w.campaign();
+    await w.sendComment(w.comment("agents", FAN));
+    for (let i = 0; i < 20; i++) w.meta.failNext("sendMessage", OUTAGE());
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
     const cookie = await w.signIn();
-    const shown = strip(await (await w.fetch("/dashboard", { headers: { cookie } })).text());
-    expect(shown).toContain("Nobody is waiting: new DMs still go out first.");
+    expect(await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie } })).text()).toContain(">Send</button>");
+    const conversationId = (await env.DB.prepare("SELECT id FROM conversations").first<{ id: number }>())!.id;
+    await form(cookie, `/dashboard/campaigns/${id}/by-hand`, { type: "message", id: String(conversationId) });
+    const tries = count("sendMessage");
+    for (let i = 0; i < 60; i++) {
+      w.clock.advance(MINUTE);
+      await w.cron();
+    }
+    expect(count("sendMessage")).toBe(tries);
+
+    const tokenPage = await (await form(cookie, "/dashboard/settings/api-token", { do: "new" })).text();
+    const token = tokenPage.match(/oc_[A-Za-z0-9_-]+/)![0];
+    const api = (await (await w.fetch("/api/campaigns", { headers: { authorization: `Bearer ${token}` } })).json()) as { campaigns: Array<{ counts: Record<string, number> }> };
+    expect(api.campaigns[0]!.counts).toMatchObject({ answeredByHand: 1, linksSent: 0 });
   });
 });

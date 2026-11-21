@@ -311,6 +311,7 @@ export async function dashboardHome(ctx: Ctx, switched: string | null = null): P
         <div><b>${n?.linksSent ?? 0}</b>links sent</div>
         ${clicksOn || n?.clicks ? html`<div><b>${n?.clicks ?? 0}</b>clicked</div>` : ""}
         <div><b>${n?.failed ?? 0}</b>failed</div>
+        ${n?.answeredByHand ? html`<div><b>${n.answeredByHand}</b>answered by hand</div>` : ""}
       </div></div></div>`;
   };
 
@@ -520,6 +521,7 @@ export const KIND_LABEL: Record<string, string> = {
   api: "API",
   follow: "Follow check",
   token: "Token",
+  by_hand: "By hand",
 };
 
 export function activityTable(rows: ActivityRow[], names: Map<number, string>, tz: string): Html {
