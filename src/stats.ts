@@ -69,25 +69,44 @@ export interface CampaignRecent {
   lastComment: { at: number; text: string | null } | null;
   /** First DMs sent in the last 7 days. */
   dmsLastWeek: number;
+  /** First DMs sent per day over the last 14 days, oldest first: index 13 is the last 24 hours. */
+  dmsByDay: number[];
+  /** For a campaign that is off: when it was turned off, if that was recorded (since migration 0015). */
+  offSince: number | null;
 }
 
+export const CHART_DAYS = 14;
+
 export async function campaignRecent(ctx: Ctx): Promise<Map<number, CampaignRecent>> {
-  const [comments, people, week] = await ctx.db.batch<{ campaign_id: number; at: number; text?: string; n?: number }>([
+  const now = ctx.now();
+  const [comments, people, days, off] = await ctx.db.batch<{ campaign_id: number; at: number; text?: string; n?: number; d?: number }>([
     // SQLite returns the other columns from the row that holds the MAX.
     ctx.db.prepare("SELECT campaign_id, MAX(commented_at) AS at, text FROM comments WHERE campaign_id IS NOT NULL GROUP BY campaign_id"),
     // Conversations outlive comments, so a campaign quiet for over 30 days still shows when it last matched one.
     ctx.db.prepare("SELECT campaign_id, MAX(created_at) AS at FROM conversations WHERE trigger = 'comment' GROUP BY campaign_id"),
-    ctx.db.prepare("SELECT campaign_id, COUNT(*) AS n, 0 AS at FROM conversations WHERE first_sent_at > ? GROUP BY campaign_id").bind(ctx.now() - 7 * DAY),
+    // Days counted back from now, 0 being the last 24 hours, so the chart doesn't depend on a time zone.
+    ctx.db
+      .prepare("SELECT campaign_id, CAST((?1 - first_sent_at) / ?2 AS INTEGER) AS d, COUNT(*) AS n, 0 AS at FROM conversations WHERE first_sent_at > ?1 - ?2 * ?3 GROUP BY campaign_id, d")
+      .bind(now, DAY, CHART_DAYS),
+    ctx.db.prepare("SELECT id AS campaign_id, active_changed_at AS at FROM campaigns WHERE active = 0 AND active_changed_at IS NOT NULL"),
   ]);
   const out = new Map<number, CampaignRecent>();
-  const get = (id: number) => out.get(id) ?? out.set(id, { lastComment: null, dmsLastWeek: 0 }).get(id)!;
+  const get = (id: number) =>
+    out.get(id) ?? out.set(id, { lastComment: null, dmsLastWeek: 0, dmsByDay: new Array<number>(CHART_DAYS).fill(0), offSince: null }).get(id)!;
   // A kept comment says when it was written; a conversation only says when it was handled, so it is the fallback.
   for (const r of comments!.results) get(r.campaign_id).lastComment = { at: r.at, text: r.text ?? null };
   for (const r of people!.results) {
     const c = get(r.campaign_id);
     c.lastComment ??= { at: r.at, text: null };
   }
-  for (const r of week!.results) get(r.campaign_id).dmsLastWeek = r.n ?? 0;
+  for (const r of days!.results) {
+    const d = r.d ?? 0;
+    if (d < 0 || d >= CHART_DAYS) continue;
+    const c = get(r.campaign_id);
+    c.dmsByDay[CHART_DAYS - 1 - d] = r.n ?? 0;
+    if (d < 7) c.dmsLastWeek += r.n ?? 0;
+  }
+  for (const r of off!.results) get(r.campaign_id).offSince = r.at;
   return out;
 }
 

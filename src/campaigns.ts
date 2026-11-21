@@ -388,10 +388,10 @@ export async function saveCampaign(db: D1Database, c: CampaignInput, id: number 
     const row = await db
       // reply_cursor -1: no public reply used yet, so any variant can come first.
       .prepare(
-        `INSERT INTO campaigns (${columns}, next_post_after, reply_cursor, created_at, updated_at)
-         VALUES (${values.map(() => "?").join(", ")}, ?, -1, ?, ?) RETURNING id`,
+        `INSERT INTO campaigns (${columns}, next_post_after, reply_cursor, created_at, updated_at, active_changed_at)
+         VALUES (${values.map(() => "?").join(", ")}, ?, -1, ?, ?, ?) RETURNING id`,
       )
-      .bind(...values, c.nextPostAfter, now, now)
+      .bind(...values, c.nextPostAfter, now, now, now)
       .first<{ id: number }>();
     return row!.id;
   }
@@ -401,15 +401,23 @@ export async function saveCampaign(db: D1Database, c: CampaignInput, id: number 
     .join(", ");
   await db
     // A campaign already waiting keeps the time it started waiting, so a post published since still counts.
-    .prepare(`UPDATE campaigns SET ${sets}, next_post_after = CASE WHEN ? IS NULL THEN NULL ELSE COALESCE(next_post_after, ?) END, updated_at = ? WHERE id = ?`)
-    .bind(...values, c.nextPostAfter, c.nextPostAfter, now, id)
+    // SQLite reads the old row in every SET expression, so `active != ?` compares with the state before the save.
+    .prepare(
+      `UPDATE campaigns SET ${sets}, next_post_after = CASE WHEN ? IS NULL THEN NULL ELSE COALESCE(next_post_after, ?) END,
+       active_changed_at = CASE WHEN active != ? THEN ? ELSE active_changed_at END, updated_at = ? WHERE id = ?`,
+    )
+    .bind(...values, c.nextPostAfter, c.nextPostAfter, c.active ? 1 : 0, now, now, id)
     .run();
   return id;
 }
 
 /** The on/off switch. Only this column, so it can't undo an edit saved in another tab. */
 export async function setCampaignActive(db: D1Database, id: number, active: boolean, now: number): Promise<void> {
-  await db.prepare("UPDATE campaigns SET active = ?, updated_at = ? WHERE id = ?").bind(active ? 1 : 0, now, id).run();
+  // The switch time moves only when the state does, so a second click or an old tab keeps the first time.
+  await db
+    .prepare("UPDATE campaigns SET active_changed_at = CASE WHEN active != ?1 THEN ?2 ELSE active_changed_at END, active = ?1, updated_at = ?2 WHERE id = ?3")
+    .bind(active ? 1 : 0, now, id)
+    .run();
 }
 
 /**
