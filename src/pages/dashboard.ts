@@ -117,12 +117,10 @@ function cronProblem(saved: string | undefined, what: string, tz: string): Html 
   return detail ? html`${what} failed (${fmtTime(Number(at), tz)}): ${detail}` : null;
 }
 
-/** How close Meta's rate limit is, when it matters: near it, or paused after a refusal. */
-function metaLoadLine(ctx: Ctx, tz: string): Html | string {
+/** How close Meta's rate limit is, when near it. A pause after a refusal is the first line of "Needs you" instead. */
+function metaLoadLine(ctx: Ctx): Html | string {
   const now = ctx.now();
-  if (paused(ctx.load, now)) {
-    return html` <span class="warn">Instagram's rate limit was reached: OwnChats holds back its background reads until ${fmtTime(ctx.load.pausedUntil, tz)}, and keeps sending DMs.</span>`;
-  }
+  if (paused(ctx.load, now)) return "";
   const usage = currentUsage(ctx.load, now);
   if (usage && usage.percent >= BUSY_PERCENT) {
     return html` <span class="warn">Instagram's rate limit is near (${usage.detail}): OwnChats reads less until it falls, and keeps sending DMs.</span>`;
@@ -130,10 +128,25 @@ function metaLoadLine(ctx: Ctx, tz: string): Html | string {
   return "";
 }
 
+/** Meta's rate limit was reached: until when, how many people wait for a send, and when the next try is. */
+function rateLimitLine(ctx: Ctx, refused: Map<number, RefusedSend[]>, tz: string): Html {
+  const waiting = [...refused.values()].flat();
+  const next = Math.min(...waiting.flatMap((r) => (r.nextAt !== null ? [r.nextAt] : [])));
+  const until = fmtTime(ctx.load.pausedUntil, tz);
+  const who = waiting.length
+    ? html` <b>${plural(waiting.length, "person is", "people are")} waiting for a DM</b> Meta refused.${Number.isFinite(next)
+        ? html` ${next > ctx.load.pausedUntil + MINUTE ? html`OwnChats tries again from ${fmtTime(next, tz)}.` : "OwnChats tries again once the pause ends."} To send one sooner, open its campaign below.`
+        : " OwnChats has stopped retrying them: send them from their campaign below."}`
+    : " Nobody is waiting: new DMs still go out first.";
+  return html`<span class="warn"><b>Instagram's rate limit was reached.</b></span> OwnChats holds back its background reads until ${until}.${who}`;
+}
+
 /** What the owner should look at, most urgent first: each line says what, and links to where to act. */
 function needsYou(ctx: Ctx, campaigns: Campaign[], missed: Map<number, MissedComment[]>, refused: Map<number, RefusedSend[]>, failures: number, tz: string): Html[] {
   const s = ctx.settings;
   const items: Array<Html | null> = [];
+  // While Meta refuses, one line says so with everyone waiting, above the per-campaign lines that link to them.
+  if (paused(ctx.load, ctx.now())) items.push(rateLimitLine(ctx, refused, tz));
   // People who asked and got nothing yet come first: their window runs out.
   for (const c of campaigns) {
     const list = refused.get(c.id);
@@ -311,7 +324,7 @@ export async function dashboardHome(ctx: Ctx, switched: string | null = null): P
         : s.ig_username && on.length && !banner.value
           ? html`<p class="ok small" id="needs-you">Nothing needs you right now.</p>`
           : ""}
-      ${s.ig_username ? html`<p class="muted">Connected to Instagram as @${s.ig_username}. Last webhook: ${fmtTime(Number(s.last_webhook_at), tz) || "none yet"}. Last check for missed comments: ${fmtTime(Number(s.last_poll_at), tz) || "none yet"}.${metaLoadLine(ctx, tz)}${s.time_zone ? "" : html` Times are in UTC: <a href="/dashboard/settings#time-zone">choose your time zone</a>.`}</p>` : ""}
+      ${s.ig_username ? html`<p class="muted">Connected to Instagram as @${s.ig_username}. Last webhook: ${fmtTime(Number(s.last_webhook_at), tz) || "none yet"}. Last check for missed comments: ${fmtTime(Number(s.last_poll_at), tz) || "none yet"}.${metaLoadLine(ctx)}${s.time_zone ? "" : html` Times are in UTC: <a href="/dashboard/settings#time-zone">choose your time zone</a>.`}</p>` : ""}
       ${noPermission ? html`<p class="warn small">Instagram shares each post's views once your Meta login configuration includes <code>instagram_manage_insights</code>. <a href="/setup#step-3">Add it in setup</a>, then reconnect.</p>` : ""}
       ${untaken.length ? html`<div id="no-campaign">${untaken.map((u) => untakenEntry(u, tz))}</div>` : ""}
       ${campaigns.length === 0 ? html`<div class="card"><p>No campaigns yet. Create one: a keyword, the post it watches, and the link to send.</p></div>` : ""}
