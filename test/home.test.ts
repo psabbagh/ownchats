@@ -385,7 +385,7 @@ describe("which platform this covers", () => {
   });
 
   it("names Instagram on the connected line", async () => {
-    expect(await home()).toMatch(/Connected to Instagram as @\w+\./);
+    expect(await home()).toMatch(/>Connected to Instagram as @\w+\.<\/span>/);
   });
 });
 
@@ -590,5 +590,28 @@ describe("deciding which campaigns to keep on", () => {
     const row = rowOf(await home(), id);
     expect(row).toContain('aria-label="First DMs per day, last 14 days: 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 (2 in all)"');
     expect(row).toContain("<b>1</b> DM in the last 7 days");
+  });
+});
+
+describe("the line that says what a campaign answers", () => {
+  const line = async (id: number) => {
+    const page = await home();
+    const row = page.slice(page.indexOf(`id="c-${id}"`));
+    return /<p class="muted small">((?:Comment|Any comment).*?)<\/p>/s.exec(row)?.[1] ?? "";
+  };
+
+  it("names the main keyword, keeps the other spellings on hover, and says the email ask only when there is one", async () => {
+    const plain = await w.campaign({ keywords: ["AGENTS"] });
+    expect(await line(plain)).toBe("Comment <b>AGENTS</b> on Test reel");
+    const more = await w.campaign({ name: "More", keywords: ["SEO", "SEOO", "S E O"], mediaId: OTHER_POST, mediaLabel: "Other reel", emailMode: "optional" });
+    expect(await line(more)).toBe('Comment <b>SEO</b> <span title="Also answers: SEOO, S E O">(+2 spellings)</span> on Other reel, then asks for their email');
+    const any = await w.campaign({ name: "Any", keywords: [], anyComment: true, mediaId: "18000000000000306", mediaLabel: "Third reel", emailMode: "first" });
+    expect(await line(any)).toBe("Any comment on Third reel, asks for their email first");
+  });
+
+  it("keeps the connection times on hover", async () => {
+    const page = await home();
+    expect(page).toMatch(/<span title="Last webhook: [^"]+\. Last check for missed comments: [^"]+\.">Connected to Instagram as @\w+\.<\/span>/);
+    expect(page).not.toContain(". Last webhook:");
   });
 });
