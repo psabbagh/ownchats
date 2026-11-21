@@ -3,14 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OPEN_PAYLOAD_PREFIX } from "../src/campaigns";
 import { MetaError, parseUsage, TRANSIENT_REASON } from "../src/meta/client";
 import { GraphMetaClient } from "../src/meta/graph";
-import { MESSAGE_GAVE_UP_REASON } from "../src/pipeline/messages";
-import { GAVE_UP_REASON, RETRY_AFTER } from "../src/pipeline/comments";
+import { GAVE_UP_REASON } from "../src/pipeline/comments";
+import { saveSettings } from "../src/settings";
 import { pollEvery } from "../src/pipeline/poll";
 import { PAUSE } from "../src/throttle";
 import { DAY, HOUR, MINUTE } from "../src/time";
 import { BASE, FAN, FAN2, setupWorld } from "./helpers";
 
 type World = Awaited<ReturnType<typeof setupWorld>>;
+const saveTimeZone = (tz: string) => saveSettings(env.DB, env.ADMIN_PASSWORD, { time_zone: tz });
 let w: World;
 
 beforeEach(async () => {
@@ -119,27 +120,33 @@ describe("sends first", () => {
       await w.cron();
     }
     expect(backgroundCalls()).toBe(reads);
-    // The refused DM was still retried, and went out.
-    expect(w.meta.sent.filter((s) => s.kind === "private_reply")).toHaveLength(1);
+    // The refused DM waits out the pause too.
+    expect(count("sendPrivateReply")).toBe(1);
     // A DM by webhook during the pause goes out at once.
     await w.sendComment(w.comment("AGENTS", FAN2, { media: YOUNG_POST }));
-    expect(w.meta.sent.filter((s) => s.kind === "private_reply")).toHaveLength(2);
+    expect(w.meta.sent.filter((s) => s.kind === "private_reply")).toHaveLength(1);
 
-    w.clock.advance(2 * MINUTE);
-    await w.cron();
+    // After the pause, the refused DM goes first, then the reads come back.
+    for (let i = 0; i < 4; i++) {
+      w.clock.advance(MINUTE);
+      await w.cron();
+    }
+    expect(w.meta.sent.filter((s) => s.kind === "private_reply")).toHaveLength(2);
     expect(backgroundCalls()).toBeGreaterThan(reads);
   });
 
-  it("retries only a few sends per run while paused", async () => {
+  it("spreads the retries of a burst of refusals over more than one minute", async () => {
     await w.campaign();
-    for (let i = 0; i < 4; i++) {
-      w.meta.failNext("sendPrivateReply", LIMIT());
+    const OUTAGE = new MetaError("Service temporarily unavailable", 503, 2);
+    for (let i = 0; i < 5; i++) {
+      w.meta.failNext("sendPrivateReply", OUTAGE);
       await w.sendComment(w.comment("AGENTS", { id: `90000000000010${i}`, username: `invented_fan_${i}` }));
     }
-    expect(w.meta.sent).toHaveLength(0);
-    w.clock.advance(MINUTE);
-    await w.cron();
-    expect(w.meta.sent.filter((s) => s.kind === "private_reply")).toHaveLength(2);
+    const { results } = await env.DB.prepare("SELECT next_attempt_at FROM comments").all<{ next_attempt_at: number }>();
+    const at = results.map((r) => r.next_attempt_at);
+    expect(Math.min(...at)).toBeGreaterThanOrEqual(w.clock.now() + MINUTE);
+    expect(Math.max(...at)).toBeLessThanOrEqual(w.clock.now() + 2 * MINUTE);
+    expect(new Set(at).size).toBeGreaterThan(1);
   });
 });
 
@@ -173,22 +180,32 @@ describe("polling by age", () => {
   });
 });
 
+const OUTAGE = () => new MetaError("Service temporarily unavailable", 503, 2);
+
 describe("the step after a tap", () => {
-  it("is retried by the Cron when Meta refuses it for a rate limit, and the log says so truthfully", async () => {
+  it("is retried by the Cron once Meta's pause ends, and the log says when", async () => {
     const id = await w.campaign();
     await w.sendComment(w.comment("agents", FAN));
     w.meta.failNext("sendMessage", LIMIT());
     await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
     expect(links(FAN.id)).toHaveLength(0);
-    expect((await w.activity()).at(-1)).toMatchObject({ kind: "message", outcome: "failed", reason: TRANSIENT_REASON });
+    // Due a minute later, but Meta paused the app for 10: the retry goes after the pause. Times are UTC until a zone is chosen.
+    expect((await w.activity()).at(-1)).toMatchObject({ kind: "message", outcome: "failed", reason: expect.stringMatching(/^Meta rate limit or outage, will retry, next at 12:1[0-2] pm$/) });
 
-    w.clock.advance(MINUTE);
-    await w.cron();
+    for (let i = 0; i < 9; i++) {
+      w.clock.advance(MINUTE);
+      await w.cron();
+    }
+    expect(links(FAN.id)).toHaveLength(0);
+    for (let i = 0; i < 3; i++) {
+      w.clock.advance(MINUTE);
+      await w.cron();
+    }
     expect(links(FAN.id)).toHaveLength(1);
     expect(await w.unwrap(links(FAN.id)[0]!.message)).toMatchObject({ buttons: [{ type: "web_url", url: "https://example.com/library" }] });
     const conversation = await env.DB.prepare("SELECT state, pending_message FROM conversations").first();
     expect(conversation).toEqual({ state: "done", pending_message: null });
-    expect((await w.activity()).at(-1)).toMatchObject({ kind: "link", outcome: "sent", reason: "after the tap" });
+    expect((await w.activity()).filter((a) => a.kind === "link").at(-1)).toMatchObject({ outcome: "sent", reason: "after the tap" });
 
     // Nothing is sent twice.
     w.clock.advance(HOUR);
@@ -196,18 +213,33 @@ describe("the step after a tap", () => {
     expect(links(FAN.id)).toHaveLength(1);
   });
 
-  it("is spaced out, stops before Meta's 24 hours run out, and waits under To check with a Send button", async () => {
+  it("follows the schedule up to about 21.5 hours after the tap, then waits under To check with a Send button", async () => {
+    await saveTimeZone("America/Toronto");
     const id = await w.campaign();
     await w.sendComment(w.comment("agents", FAN));
-    for (let i = 0; i < 20; i++) w.meta.failNext("sendMessage", LIMIT());
+    for (let i = 0; i < 20; i++) w.meta.failNext("sendMessage", OUTAGE());
+    const tap = w.clock.now();
     await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
-    for (let i = 0; i < 18 * 60; i += 10) {
-      w.clock.advance(10 * MINUTE);
+    const tries: number[] = [];
+    // Up to 23 hours after the tap: the To check entry stays while Meta's 24 hours last.
+    for (let i = 0; i < 23 * 60; i++) {
+      w.clock.advance(MINUTE);
+      const before = count("sendMessage");
       await w.cron();
+      if (count("sendMessage") > before) tries.push(Math.round((w.clock.now() - tap) / MINUTE));
     }
-    // 1 + 8 retries, the last at 15 h 54 min, then no more.
-    expect(count("sendMessage")).toBe(9);
-    expect((await w.activity()).filter((a) => a.kind === "message").at(-1)).toMatchObject({ outcome: "failed", reason: MESSAGE_GAVE_UP_REASON });
+    // 1, 5 and 30 minutes, 1, 3, 6 and 12 hours, and 21.5 hours, each a little later, never past the 24 hours.
+    const planned = [1, 5, 30, 60, 180, 360, 720, 1290];
+    expect(tries).toHaveLength(planned.length);
+    tries.forEach((t, i) => {
+      expect(t).toBeGreaterThanOrEqual(planned[i]!);
+      expect(t).toBeLessThanOrEqual(planned[i]! + 21);
+    });
+    expect(tries.at(-1)!).toBeLessThan(23 * 60);
+    const log = (await w.activity()).filter((a) => a.kind === "message").map((a) => a.reason);
+    // Each try says which it was and when the next one is, in the owner's time zone.
+    expect(log[3]).toMatch(/^Meta rate limit or outage, try 3 of 8, next at \d{1,2}:\d\d (am|pm)$/);
+    expect(log.at(-1)).toBe("Meta rate limit or outage, try 8 of 8, stopped retrying: send it from To check");
 
     const cookie = await w.signIn();
     const page = await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie } })).text();
@@ -227,39 +259,35 @@ describe("the step after a tap", () => {
     expect(links(FAN.id)).toHaveLength(1);
     const after = await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie } })).text();
     expect(after).not.toContain("Waiting on a refused send");
-  });
+  }, 60_000);
 });
 
 describe("private replies refused for a passing reason", () => {
-  it("are tried again further and further apart, then wait under To check", async () => {
+  it("are tried on the schedule up to about 6.5 days after the comment, then wait under To check", async () => {
     const id = await w.campaign();
-    for (let i = 0; i < 20; i++) w.meta.failNext("sendPrivateReply", LIMIT());
+    for (let i = 0; i < 20; i++) w.meta.failNext("sendPrivateReply", OUTAGE());
     const c = w.comment("agents", FAN);
+    const start = w.clock.now();
     await w.sendComment(c);
-    const tries = () => count("sendPrivateReply");
-    expect(tries()).toBe(1);
-    // Due a minute later, then 5 minutes after that, not every minute.
-    w.clock.advance(MINUTE);
-    await w.cron();
-    expect(tries()).toBe(2);
-    for (let i = 0; i < 4; i++) {
-      w.clock.advance(MINUTE);
+    const tries: number[] = [];
+    const step = async (ms: number) => {
+      w.clock.advance(ms);
+      const before = count("sendPrivateReply");
       await w.cron();
-    }
-    expect(tries()).toBe(2);
-    w.clock.advance(MINUTE);
-    await w.cron();
-    expect(tries()).toBe(3);
-
-    // The rest over about 4 days, inside Meta's 7.
-    const total = RETRY_AFTER.reduce((a, b) => a + b, 0);
-    expect(total).toBeLessThan(5 * DAY);
-    for (let t = 0; t < 5 * DAY; t += 30 * MINUTE) {
-      w.clock.advance(30 * MINUTE);
-      await w.cron();
-    }
-    expect(tries()).toBe(RETRY_AFTER.length + 1);
+      if (count("sendPrivateReply") > before) tries.push((w.clock.now() - start) / MINUTE);
+    };
+    for (let i = 0; i < 2 * 60; i++) await step(MINUTE);
+    // Up to 6.75 days: the To check entry stays while Meta's 7 days last.
+    for (let t = 2 * HOUR; t < 6.75 * DAY; t += 10 * MINUTE) await step(10 * MINUTE);
+    // 1, 5 and 30 minutes, 1, 3, 6, 12, 24 and 48 hours, then 6.5 days after the comment.
+    const planned = [1, 5, 30, 60, 180, 360, 720, 1440, 2880, 9360];
+    expect(tries).toHaveLength(planned.length);
+    tries.forEach((t, i) => {
+      expect(t).toBeGreaterThanOrEqual(planned[i]!);
+      expect(t).toBeLessThanOrEqual(planned[i]! + 30);
+    });
     expect(await env.DB.prepare("SELECT status, reason FROM comments WHERE id = ?").bind(c.id).first()).toEqual({ status: "failed", reason: GAVE_UP_REASON });
+    expect((await w.activity()).filter((a) => a.kind === "private_reply").at(-1)!.reason).toBe("Meta rate limit or outage, try 10 of 10, stopped retrying: send it from To check");
 
     const cookie = await w.signIn();
     const page = await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie } })).text();
@@ -280,7 +308,7 @@ describe("private replies refused for a passing reason", () => {
     });
     expect(again.headers.get("location")).toBe(`/dashboard/campaigns/${id}?sent=none#to-check`);
     expect(w.meta.sent).toHaveLength(2);
-  });
+  }, 60_000);
 });
 
 describe("GET /api/activity", () => {
@@ -298,6 +326,10 @@ describe("GET /api/activity", () => {
     ).text();
     const token = tokenPage.match(/oc_[A-Za-z0-9_-]+/)![0];
     const api = (await (await w.fetch("/api/activity?outcome=failed", { headers: { authorization: `Bearer ${token}` } })).json()) as { activity: Array<Record<string, unknown>> };
-    expect(api.activity[0]).toMatchObject({ kind: "private_reply", reason: TRANSIENT_REASON, detail: "Application request limit reached (HTTP 403, code 4)" });
+    expect(api.activity[0]).toMatchObject({
+      kind: "private_reply",
+      reason: expect.stringMatching(/^Meta rate limit or outage, will retry, next at /),
+      detail: "Application request limit reached (HTTP 403, code 4)",
+    });
   });
 });

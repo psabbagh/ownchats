@@ -19,8 +19,6 @@ const READING_LASTS = 5 * MINUTE;
 export const PAUSE = 10 * MINUTE;
 /** The longest pause, whatever Meta says. */
 const MAX_PAUSE = HOUR;
-/** Sends the Cron retries in one run while paused: enough to see whether Meta lets them through. */
-export const RETRIES_WHILE_PAUSED = 2;
 
 /** "low": can wait for hours (insights, account days, older posts). "high": a new post's comments, attaching a waiting campaign. */
 export type Priority = "low" | "high";

@@ -8,7 +8,7 @@ import { retryPendingMessages } from "./pipeline/messages";
 import { pollComments } from "./pipeline/poll";
 import { saveSettings } from "./settings";
 import { DAY } from "./time";
-import { paused, RETRIES_WHILE_PAUSED, saveMetaLoad } from "./throttle";
+import { saveMetaLoad } from "./throttle";
 import { checkToken } from "./token";
 
 /** Messages after a tap that the Cron sends again in one run, at most. */
@@ -31,18 +31,16 @@ export async function runCron(ctx: Ctx): Promise<void> {
   if (!ctx.meta) return deliverDue(ctx);
   // First, so the comments it hands back are answered in this same run.
   await attachNextPosts(ctx);
-  // Sends before reads. While Meta has paused the app, only a few retries go, to see whether it lets them through.
-  let retries = paused(ctx.load, ctx.now()) ? RETRIES_WHILE_PAUSED : Infinity;
+  // Sends before reads. Refused sends wait out a pause Meta imposed (throttle.ts), then go first.
   const pending = await pendingCommentIds(ctx);
   if (pending.length) {
     const campaigns = await listCampaigns(ctx.db, true);
     for (const id of pending) {
-      if (retries-- <= 0 || ctx.budget.left < 2 || ctx.budget.queriesLeft < QUERIES_PER_COMMENT + 8) break;
+      if (ctx.budget.left < 2 || ctx.budget.queriesLeft < QUERIES_PER_COMMENT + 8) break;
       await handleComment(ctx, id, campaigns);
     }
   }
-  if (paused(ctx.load, ctx.now())) retries = Math.min(retries, RETRIES_WHILE_PAUSED);
-  await retryPendingMessages(ctx, Math.min(retries, MESSAGE_RETRIES_PER_RUN));
+  await retryPendingMessages(ctx, MESSAGE_RETRIES_PER_RUN);
   await pollComments(ctx);
   await refreshPostList(ctx);
   await refreshMediaStats(ctx);

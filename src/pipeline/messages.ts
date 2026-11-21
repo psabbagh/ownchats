@@ -23,9 +23,11 @@ import { trackingBase, trackLinks } from "../clicks";
 import { log, logStatement, type Ctx } from "../context";
 import { deliverNow, queueLeadCreated } from "../leadwebhook";
 import { extractEmail } from "../match";
-import { explainError, MetaError, sendWithFallback, TRANSIENT_REASON, type OutMessage } from "../meta/client";
+import { explainError, MetaError, sendWithFallback, type OutMessage } from "../meta/client";
+import { messagePlan, nextTry, retryLog } from "../retry";
 import { shortcutKeywords } from "../settings";
-import { DAY, HOUR, MESSAGING_WINDOW, MINUTE } from "../time";
+import { paused } from "../throttle";
+import { DAY, MESSAGING_WINDOW, MINUTE } from "../time";
 import { claimConversation, getConversation, openConversation, releaseClaim, type Conversation } from "./conversations";
 
 /** A DM or a button tap, as it arrives by webhook. */
@@ -340,26 +342,19 @@ function advance(
   return send(ctx, conversation, campaign, next.message, next.state, reason, kind).then(() => undefined);
 }
 
-/**
- * When a message after a tap or a reply that Meta refused for a passing reason is tried
- * again, after each failed attempt. The Cron sends it, always inside Meta's 24-hour
- * window from the person's last tap or message; past the last one it waits under To
- * check, where the owner can send it while the window lasts.
- */
-export const MESSAGE_RETRY_AFTER = [MINUTE, 3 * MINUTE, 10 * MINUTE, 30 * MINUTE, HOUR, 2 * HOUR, 4 * HOUR, 8 * HOUR];
-
-/** Logged when the Cron stops retrying a message: the owner can still send it from To check. */
+/** Logged when a message is not retried any more: the owner can still send it from To check. */
 export const MESSAGE_GAVE_UP_REASON = "Meta rate limit or outage, stopped retrying: send it from To check";
 
-const CLEAR_PENDING = "pending_message = NULL, pending_state = NULL, pending_reason = NULL, pending_kind = NULL, pending_attempts = 0, pending_at = NULL";
+const CLEAR_PENDING =
+  "pending_message = NULL, pending_state = NULL, pending_reason = NULL, pending_kind = NULL, pending_attempts = 0, pending_at = NULL, pending_since = NULL";
 
 /**
  * Sends a follow-up and moves the conversation on. Refuses outside the 24-hour
  * window that the person's last tap or message opened. If Meta rejects a button
  * template, the same content goes again as plain text. If Meta refuses for a passing
  * reason (a rate limit, an outage), or the run has no room left, what was due is kept
- * on the conversation and the Cron sends it later (MESSAGE_RETRY_AFTER); `attempt` is
- * how many times it was already tried. A first DM by DM keyword is not kept: its
+ * on the conversation and the Cron sends it later, on the schedule in retry.ts, never past
+ * Meta's 24 hours; `attempt` is how many times it was already tried. A first DM by DM keyword is not kept: its
  * claim is released, and the person can write again.
  */
 async function send(
@@ -370,7 +365,7 @@ async function send(
   state: ConversationState,
   reason: string,
   kind: "link" | "message",
-  opts: { firstSent?: boolean; attempt?: number } = {},
+  opts: { firstSent?: boolean; attempt?: number; since?: number } = {},
 ): Promise<boolean> {
   const who = { campaignId: campaign.id, igUserId: conversation.ig_user_id, username: conversation.username };
   const opened = conversation.last_inbound_at;
@@ -380,17 +375,18 @@ async function send(
     await log(ctx, { kind: "message", outcome: "skipped", reason: "outside Meta's 24-hour window", ...who });
     return false;
   }
-  const keep = (attempts: number, nextAt: number | null) =>
+  const since = opts.since ?? ctx.now();
+  const keep = (attempts: number, nextAt: number | null, refusedSince: number | null) =>
     ctx.db
       .prepare(
-        `UPDATE conversations SET pending_message = ?, pending_state = ?, pending_reason = ?, pending_kind = ?, pending_attempts = ?, pending_at = ?
-         WHERE id = ?`,
+        `UPDATE conversations SET pending_message = ?, pending_state = ?, pending_reason = ?, pending_kind = ?, pending_attempts = ?, pending_at = ?,
+           pending_since = ? WHERE id = ?`,
       )
-      .bind(JSON.stringify(message), state, reason, kind, attempts, nextAt, conversation.id);
+      .bind(JSON.stringify(message), state, reason, kind, attempts, nextAt, refusedSince, conversation.id);
   if (!ctx.budget.take()) {
     // No room in this run: the next one sends it, with no attempt counted.
     if (opts.firstSent) await log(ctx, { kind: "message", outcome: "failed", reason: "too many requests in one run", ...who });
-    else if (opts.attempt === undefined) await ctx.db.batch([keep(0, ctx.now()), logStatement(ctx, { kind: "message", outcome: "queued", reason: "waiting for the next run", ...who })]);
+    else if (opts.attempt === undefined) await ctx.db.batch([keep(0, ctx.now(), null), logStatement(ctx, { kind: "message", outcome: "queued", reason: "waiting for the next run", ...who })]);
     return false;
   }
   // The campaign's links go out as /go/ links, so a click can be counted.
@@ -405,11 +401,11 @@ async function send(
       return false;
     }
     const attempts = (opts.attempt ?? 0) + 1;
-    const delay = MESSAGE_RETRY_AFTER[attempts - 1];
-    const nextAt = delay !== undefined && ctx.now() + delay < windowEnds ? ctx.now() + delay : null;
+    const plan = messagePlan(since, opened);
+    const next = nextTry(ctx, plan, attempts - 1);
     await ctx.db.batch([
-      keep(attempts, nextAt),
-      logStatement(ctx, { kind: "message", outcome: "failed", reason: nextAt === null ? MESSAGE_GAVE_UP_REASON : TRANSIENT_REASON, ...who, detail }),
+      keep(attempts, next?.at ?? null, since),
+      logStatement(ctx, { kind: "message", outcome: "failed", reason: retryLog(ctx, attempts - 1, next, plan.times.length), ...who, detail }),
     ]);
     return false;
   }
@@ -429,7 +425,14 @@ async function send(
 }
 
 /** A conversation with a message waiting after a refusal, as the Cron and To check read it. */
-type PendingRow = Conversation & { pending_message: string; pending_state: ConversationState; pending_reason: string; pending_kind: "link" | "message"; pending_attempts: number };
+type PendingRow = Conversation & {
+  pending_message: string;
+  pending_state: ConversationState;
+  pending_reason: string;
+  pending_kind: "link" | "message";
+  pending_attempts: number;
+  pending_since: number | null;
+};
 
 /** Sends a waiting message once more, through send(), counting the attempt. */
 async function sendPending(ctx: Ctx, row: PendingRow): Promise<boolean> {
@@ -445,7 +448,7 @@ async function sendPending(ctx: Ctx, row: PendingRow): Promise<boolean> {
     return false;
   }
   // A tap on a campaign switched off since still gets its answer, as a live tap would.
-  return send(ctx, row, campaign, message, row.pending_state, row.pending_reason, row.pending_kind, { attempt: row.pending_attempts });
+  return send(ctx, row, campaign, message, row.pending_state, row.pending_reason, row.pending_kind, { attempt: row.pending_attempts, since: row.pending_since ?? undefined });
 }
 
 /** How long a retry the Cron took is kept from another Cron run. */
@@ -457,7 +460,8 @@ const RETRY_LOCK = 2 * MINUTE;
  * can't send it twice.
  */
 export async function retryPendingMessages(ctx: Ctx, limit: number): Promise<void> {
-  if (!ctx.meta || limit <= 0) return;
+  // While Meta has paused the app, retries wait for the pause to end.
+  if (!ctx.meta || limit <= 0 || paused(ctx.load, ctx.now())) return;
   const now = ctx.now();
   const { results } = await ctx.db
     .prepare(
