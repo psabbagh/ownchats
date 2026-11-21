@@ -70,7 +70,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}table.figures{m
 .campaign.off{background:transparent;border-style:dashed}.pill.off{color:var(--warn);border-color:var(--warn);font-weight:600}.campaign.off>.cover,.campaign.off .body>:not(.row):not([role=status]),.campaign.off h3{opacity:.55}
 .recent{margin:4px 0 6px;display:flex;flex-wrap:wrap;gap:4px 16px}
 .cover{flex:none;width:64px;height:114px;border-radius:6px;overflow:hidden;border:1px solid var(--line);background:var(--bg)}.cover img{display:block;width:100%;height:100%;object-fit:cover}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px}.stats div{border:1px solid var(--line);border-radius:8px;padding:8px}.stats b{display:block;font-size:22px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(88px,1fr));gap:8px}.stats div{border:1px solid var(--line);border-radius:8px;padding:8px}.stats b{display:block;font-size:22px}
 `;
 
 const COPY_SCRIPT = `document.addEventListener('click',e=>{const b=e.target.closest('[data-copy]');if(!b)return;navigator.clipboard.writeText(b.getAttribute('data-copy')).then(()=>{const t=b.textContent;b.textContent='Copied';setTimeout(()=>b.textContent=t,1200)})});`;
