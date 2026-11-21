@@ -333,3 +333,31 @@ describe("GET /api/activity", () => {
     });
   });
 });
+
+describe("sends refused before this change", () => {
+  it("are neither listed nor sent again: the owner answers them by hand", async () => {
+    const id = await w.campaign();
+    const c = w.comment("agents", FAN);
+    // As the earlier code left a private reply that gave up on a rate limit.
+    await env.DB.prepare(
+      `INSERT INTO comments (id, media_id, from_id, from_username, text, commented_at, received_at, source, status, reason, campaign_id, attempts)
+       VALUES (?, ?, ?, ?, 'agents', ?, ?, 'webhook', 'failed', ?, ?, 5)`,
+    )
+      .bind(c.id, c.mediaId, FAN.id, FAN.username, c.timestamp, c.timestamp, TRANSIENT_REASON, id)
+      .run();
+    for (let i = 0; i < 30; i++) {
+      w.clock.advance(MINUTE);
+      await w.cron();
+    }
+    expect(count("sendPrivateReply")).toBe(0);
+    const cookie = await w.signIn();
+    expect(await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie } })).text()).not.toContain("Waiting on a refused send");
+    const res = await w.fetch(`/dashboard/campaigns/${id}/send`, {
+      method: "POST",
+      headers: { cookie, origin: BASE, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ type: "comment", id: c.id }),
+    });
+    expect(res.headers.get("location")).toBe(`/dashboard/campaigns/${id}?sent=none#to-check`);
+    expect(w.meta.sent).toHaveLength(0);
+  });
+});

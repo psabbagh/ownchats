@@ -25,7 +25,11 @@ export interface RefusedSend {
   left: number;
 }
 
-/** Comment reasons that mean a refusal worth sending again. Before 2026-11-21 a private reply gave up with the first one. */
+/**
+ * Comment reasons that mean a refusal worth sending again. Only refusals since this
+ * change count (first_refused_at is set): the owner answers the earlier ones by hand
+ * (decision of 2026-11-21), so they are neither listed nor sent again.
+ */
 const REFUSED_REASONS = [TRANSIENT_REASON, GAVE_UP_REASON];
 
 /** What a pending message is, by the reason it will be logged with. */
@@ -46,7 +50,7 @@ export async function refusedSends(ctx: Ctx, campaignIds: number[]): Promise<Map
       .prepare(
         `SELECT c.id, c.campaign_id, c.from_username, c.commented_at, c.status, c.next_attempt_at, c.attempts FROM comments c
          WHERE c.campaign_id IN (SELECT value FROM json_each(?1)) AND c.status IN ('queued', 'failed')
-           AND c.reason IN (SELECT value FROM json_each(?2)) AND c.commented_at > ?3 AND c.from_id IS NOT NULL
+           AND c.reason IN (SELECT value FROM json_each(?2)) AND c.commented_at > ?3 AND c.from_id IS NOT NULL AND c.first_refused_at IS NOT NULL
            AND NOT EXISTS (SELECT 1 FROM conversations v WHERE v.campaign_id = c.campaign_id AND (v.ig_user_id = c.from_id OR v.commenter_id = c.from_id))
          ORDER BY c.commented_at LIMIT 200`,
       )
@@ -104,7 +108,7 @@ export async function sendRefused(ctx: Ctx, campaignId: number, type: string, id
   const handed = await ctx.db
     .prepare(
       `UPDATE comments SET status = 'new', next_attempt_at = NULL, locked_at = NULL
-       WHERE id = ? AND campaign_id = ? AND status IN ('queued', 'failed') AND reason IN (SELECT value FROM json_each(?))`,
+       WHERE id = ? AND campaign_id = ? AND status IN ('queued', 'failed') AND reason IN (SELECT value FROM json_each(?)) AND first_refused_at IS NOT NULL`,
     )
     .bind(id, campaignId, JSON.stringify(REFUSED_REASONS))
     .run();
