@@ -72,6 +72,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}table.figures{m
 .funnel{margin:6px 0 0;display:flex;flex-wrap:wrap;gap:2px 14px}.funnel b{font-size:16px}
 .pill.quiet{color:var(--muted);border-color:var(--muted);border-style:dashed}
 .dm-chart{vertical-align:middle;margin-left:4px;fill:var(--accent);stroke:var(--line)}.dm-chart rect{stroke:none}
+.status-note{margin:-8px 0 12px}.status-note.muted a{color:inherit}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle;background:var(--muted)}.dot.warn{background:var(--warn)}
 .list-head{align-items:center;margin:4px 0}.chips{display:flex;flex-wrap:wrap;gap:6px}
 .chip{padding:2px 10px;border:1px solid var(--line);border-radius:999px;text-decoration:none;color:var(--fg)}.chip.current{border-color:var(--accent);color:var(--accent);font-weight:600}
 .cover{flex:none;width:64px;height:114px;border-radius:6px;overflow:hidden;border:1px solid var(--line);background:var(--bg)}.cover img{display:block;width:100%;height:100%;object-fit:cover}

@@ -84,10 +84,23 @@ describe("what needs you", () => {
     await env.DB.prepare("INSERT INTO activity (at, kind, outcome, reason) VALUES (?, 'lead_webhook', 'failed', 'invented refusal')").bind(w.clock.now()).run();
     const page = await home();
     expect(page).toContain("Nothing needs you right now.");
-    expect(page).toContain("Instagram refused 1 DM attempt in the last 24 hours (mostly code 4, its app rate limit).");
-    expect(page).toContain(`<a href="/dashboard/activity?show=failed">1 other failure</a> in the last 24 hours.`);
+    // History, not a to-do: one short line linking to the log, with the attempts and Meta's code on hover.
+    expect(page).toContain(
+      `<p class="muted small status-note"><a href="/dashboard/activity?show=failed" title="1 DM attempt refused in the last 24 hours, mostly code 4 (its app rate limit).">Instagram refused 1 DM attempt in the last 24 hours</a>. <a href="/dashboard/activity?show=failed">1 other failure</a> in the last 24 hours.</p>`,
+    );
     w.clock.advance(25 * HOUR);
     expect(await home()).not.toContain("Instagram refused");
+  });
+
+  it("puts a near limit on a short line of its own, the readings per limit on hover", async () => {
+    await w.campaign();
+    await saveSettings(env.DB, env.ADMIN_PASSWORD, {
+      meta_usage: JSON.stringify({ readings: { instagram: { percent: 1, at: w.clock.now() }, app: { percent: 81, at: w.clock.now() } }, regainMs: 0, regainAt: 0 }),
+    });
+    const page = await home();
+    expect(page).toMatch(/<p class="small status-note" title="Meta's readings: [^"]*app 81%[^"]*"><span class="dot warn" aria-hidden="true"><\/span>Instagram's limit is at 81%\. OwnChats checks for missed comments less often; DMs still go first\.<\/p>/);
+    // Its own line, not a clause of the connected line.
+    expect(page).toMatch(/Connected to Instagram as @\w+\.<\/span>(?: Times are in UTC: <a [^>]+>[^<]+<\/a>\.)?<\/p><p class="small status-note"/);
   });
 
   it("shows a check that failed, escaped, only while that check still runs", async () => {
