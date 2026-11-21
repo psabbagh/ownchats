@@ -5,6 +5,7 @@ import type { Media } from "../meta/client";
 import { MISSING_PERMISSION, readMediaStats, type MediaStats } from "../insights";
 import { ANSWER_PROBLEM, answerMissed, answerOutcome, missedComments, timeLeft, type AnswerProblem, type MissedComment } from "../missed";
 import { recentMedia } from "../pipeline/poll";
+import { refusedSends, sendRefused, type RefusedSend } from "../refused";
 import { shortcutKeywords } from "../settings";
 import {
   campaignResults,
@@ -172,6 +173,55 @@ function missedSection(campaign: Campaign, missed: MissedComment[], tz: string):
     ${missed.length > MISSED_SHOWN ? html`<p class="muted small">And ${missed.length - MISSED_SHOWN} more, older ones. Answer these first.</p>` : ""}`;
 }
 
+/** How long is left of Meta's window for a refused send, in words. */
+function windowLeft(r: RefusedSend): string {
+  if (r.type === "comment") return timeLeft(r.left).replace("to answer", "to send");
+  const hours = Math.floor(r.left / 3_600_000);
+  return hours >= 2 ? `${hours} hours left to send` : `${Math.max(1, Math.floor(r.left / 60_000))} minutes left to send`;
+}
+
+function refusedSection(campaign: Campaign, refused: RefusedSend[], tz: string): Html {
+  if (!refused.length) return html``;
+  const action = `/dashboard/campaigns/${campaign.id}/send`;
+  return html`<h2>Waiting on a refused send (${refused.length})</h2>
+    <p class="muted small">Instagram refused these for a passing reason, usually its rate limit, and nothing reached the person yet.
+      OwnChats tries again on its own; Send tries now. Each goes out once.</p>
+    ${campaign.active ? "" : html`<p class="warn small">The campaign is off. First DMs wait until it is on; messages after a tap can still be sent.</p>`}
+    ${refused.slice(0, MISSED_SHOWN).map((r) => {
+      const who = r.username ? `@${r.username}` : "this person";
+      const tries = `${plural(r.attempts, "try", "tries")} so far`;
+      const next = r.nextAt === null ? `OwnChats stopped retrying after ${tries}.` : `Next try ${fmtTime(r.nextAt, tz)} (${tries}).`;
+      const canSend = r.type === "message" || campaign.active;
+      return html`<div class="card">
+        <p style="margin:0"><b>${r.username ? `@${r.username}` : "Someone"}</b> <span class="muted small">${windowLeft(r)}</span></p>
+        <p style="margin:4px 0">Didn't get ${r.what}.</p>
+        <p class="muted small" style="margin:0">${next}</p>
+        ${canSend
+          ? html`<div class="row" style="margin-top:8px">
+              <form method="post" action="${action}" data-ask="${`Send ${r.what.replace(/ \(.*\)$/, "")} to ${who} now?`}" onsubmit="return confirm(this.dataset.ask)">
+                <input type="hidden" name="type" value="${r.type}"><input type="hidden" name="id" value="${r.id}"><button>Send</button></form>
+            </div>`
+          : ""}
+      </div>`;
+    })}`;
+}
+
+/** What the last "Send" did, from the address the form came back to. */
+function sendNotice(url: URL): Html {
+  const sent = url.searchParams.get("sent");
+  if (sent === "1") return html`<div class="card"><p class="ok">Sent.</p></div>`;
+  if (sent === "0") return html`<div class="card notice"><p>Instagram refused it again; the activity log has Meta's reason. OwnChats keeps trying while it can.</p></div>`;
+  if (sent === "none") return html`<div class="card notice"><p>Nothing was waiting there any more: it went out, or Meta's window for it closed.</p></div>`;
+  return html``;
+}
+
+/** The "Send" button on a refused send: only ever on the owner's click. */
+export async function sendRefusedForm(ctx: Ctx, request: Request, id: number): Promise<Response> {
+  const form = await request.formData();
+  const result = await sendRefused(ctx, id, String(form.get("type") ?? ""), String(form.get("id") ?? "").trim());
+  return redirect(`/dashboard/campaigns/${id}?sent=${result === null ? "none" : result ? "1" : "0"}#to-check`);
+}
+
 /** What the last "Answer" did, from the address the form came back to. */
 async function answerNotice(ctx: Ctx, url: URL): Promise<Html> {
   const problem = url.searchParams.get("problem") as AnswerProblem | null;
@@ -225,6 +275,7 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
   }
   const notice = await answerNotice(ctx, url);
   const missed = (await missedComments(ctx, [campaign])).get(campaign.id) ?? [];
+  const refused = (await refusedSends(ctx, [campaign.id])).get(campaign.id) ?? [];
   const results = await campaignResults(ctx, campaign);
   const comments = await listCampaignComments(ctx, campaign, { show, before, limit: COMMENTS_PER_PAGE });
   const names = new Map((await listCampaigns(ctx.db)).map((c) => [c.id, c.name]));
@@ -265,7 +316,7 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
       ${waitingNotice(ctx, campaign)}
       ${postNumbers(campaign, stats, fc.dmsSent, fc.links, tz)}
 
-      <div id="to-check">${notice}${missedSection(campaign, missed, tz)}</div>
+      <div id="to-check">${notice}${sendNotice(url)}${refusedSection(campaign, refused, tz)}${missedSection(campaign, missed, tz)}</div>
 
       <h2>Comments</h2>
       <p class="muted small">${campaign.mediaId

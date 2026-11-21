@@ -76,6 +76,8 @@ import type { Media } from "../meta/client";
 import { recentMedia } from "../pipeline/poll";
 import { MISSING_PERMISSION, readMediaStats } from "../insights";
 import { missedComments, timeLeft, type MissedComment } from "../missed";
+import { refusedSends, type RefusedSend } from "../refused";
+import { BUSY_PERCENT, currentUsage, paused } from "../throttle";
 import { attachUntakenPost, dismissUntakenPost, untakenPosts, type UntakenPost } from "../nextpost";
 import { deleteSettings, saveSettings, shortcutKeywords, type Settings } from "../settings";
 import { campaignCounts, deletePerson, failuresSince, findPersonByUsername, listActivity, storedAboutPeople, type ActivityRow } from "../stats";
@@ -114,10 +116,28 @@ function cronProblem(saved: string | undefined, what: string, tz: string): Html 
   return detail ? html`${what} failed (${fmtTime(Number(at), tz)}): ${detail}` : null;
 }
 
+/** How close Meta's rate limit is, when it matters: near it, or paused after a refusal. */
+function metaLoadLine(ctx: Ctx, tz: string): Html | string {
+  const now = ctx.now();
+  if (paused(ctx.load, now)) {
+    return html` <span class="warn">Instagram's rate limit was reached: OwnChats holds back its background reads until ${fmtTime(ctx.load.pausedUntil, tz)}, and keeps sending DMs.</span>`;
+  }
+  const usage = currentUsage(ctx.load, now);
+  if (usage && usage.percent >= BUSY_PERCENT) {
+    return html` <span class="warn">Instagram's rate limit is near (${usage.detail}): OwnChats reads less until it falls, and keeps sending DMs.</span>`;
+  }
+  return "";
+}
+
 /** What the owner should look at, most urgent first: each line says what, and links to where to act. */
-function needsYou(ctx: Ctx, campaigns: Campaign[], missed: Map<number, MissedComment[]>, failures: number, tz: string): Html[] {
+function needsYou(ctx: Ctx, campaigns: Campaign[], missed: Map<number, MissedComment[]>, refused: Map<number, RefusedSend[]>, failures: number, tz: string): Html[] {
   const s = ctx.settings;
   const items: Array<Html | null> = [];
+  // People who asked and got nothing yet come first: their window runs out.
+  for (const c of campaigns) {
+    const list = refused.get(c.id);
+    if (list?.length) items.push(html`<a href="/dashboard/campaigns/${c.id}#to-check">${plural(list.length, "person", "people")} waiting on a refused send on ${c.name}</a>`);
+  }
   // Each problem is cleared by the next good run, and those runs only happen with work to do.
   if (campaigns.some((c) => c.active && c.nextPostAfter === null)) items.push(cronProblem(s.last_poll_problem, "The last check for missed comments", tz));
   if (campaigns.some((c) => c.nextPostAfter !== null)) items.push(cronProblem(s.next_post_problem, "The last look for your next post", tz));
@@ -195,6 +215,7 @@ export async function dashboardHome(ctx: Ctx): Promise<Response> {
   const off = campaigns.filter((c) => !c.active);
   const counts = await campaignCounts(ctx);
   const missed = await missedComments(ctx, on);
+  const refused = await refusedSends(ctx, campaigns.map((c) => c.id));
   const stats = await readMediaStats(ctx, campaigns.flatMap((c) => (c.mediaId ? [c.mediaId] : [])));
   const failures = await failuresSince(ctx, ctx.now() - DAY);
   const noPermission = on.some((c) => c.mediaId && stats.get(c.mediaId)?.problem === MISSING_PERMISSION);
@@ -202,7 +223,7 @@ export async function dashboardHome(ctx: Ctx): Promise<Response> {
   const tz = timeZoneOf(s);
   const clicksOn = trackingBase(ctx) !== null;
   const banner = healthBanner(ctx);
-  const items = needsYou(ctx, campaigns, missed, failures, tz);
+  const items = needsYou(ctx, campaigns, missed, refused, failures, tz);
   const untaken = untakenPosts(ctx, campaigns);
 
   const card = (c: Campaign) => {
@@ -216,6 +237,9 @@ export async function dashboardHome(ctx: Ctx): Promise<Response> {
       <div class="row"><h3 style="flex:1 1 auto"><a href="/dashboard/campaigns/${c.id}">${c.name}</a>${c.videoId ? html` <span class="muted small">${c.videoId}</span>` : ""}</h3><span class="muted small">Started ${fmtDate(c.createdAt, tz)}</span>
         ${campaignSwitch(c)}</div>
       <p class="muted small">${c.anyComment ? "Any comment" : `Keyword: ${c.keywords.join(", ")}`} on ${postWords(c)}, ${EMAIL_MODE_LABEL[c.emailMode]}</p>
+      ${refused.get(c.id)?.length
+        ? html`<p class="small"><a class="warn" href="/dashboard/campaigns/${c.id}#to-check">${plural(refused.get(c.id)!.length, "person", "people")} waiting on a refused send</a></p>`
+        : ""}
       ${missed.get(c.id)?.length
         ? html`<p class="small"><a class="warn" href="/dashboard/campaigns/${c.id}#to-check">${plural(missed.get(c.id)!.length, "comment")} to check</a></p>`
         : ""}
@@ -239,7 +263,7 @@ export async function dashboardHome(ctx: Ctx): Promise<Response> {
         : s.ig_username && on.length && !banner.value
           ? html`<p class="ok small" id="needs-you">Nothing needs you right now.</p>`
           : ""}
-      ${s.ig_username ? html`<p class="muted">Connected to Instagram as @${s.ig_username}. Last webhook: ${fmtTime(Number(s.last_webhook_at), tz) || "none yet"}. Last check for missed comments: ${fmtTime(Number(s.last_poll_at), tz) || "none yet"}.${s.time_zone ? "" : html` Times are in UTC: <a href="/dashboard/settings#time-zone">choose your time zone</a>.`}</p>` : ""}
+      ${s.ig_username ? html`<p class="muted">Connected to Instagram as @${s.ig_username}. Last webhook: ${fmtTime(Number(s.last_webhook_at), tz) || "none yet"}. Last check for missed comments: ${fmtTime(Number(s.last_poll_at), tz) || "none yet"}.${metaLoadLine(ctx, tz)}${s.time_zone ? "" : html` Times are in UTC: <a href="/dashboard/settings#time-zone">choose your time zone</a>.`}</p>` : ""}
       ${noPermission ? html`<p class="warn small">Instagram shares each post's views once your Meta login configuration includes <code>instagram_manage_insights</code>. <a href="/setup#step-3">Add it in setup</a>, then reconnect.</p>` : ""}
       ${untaken.length ? html`<div id="no-campaign">${untaken.map((u) => untakenEntry(u, tz))}</div>` : ""}
       ${campaigns.length === 0 ? html`<div class="card"><p>No campaigns yet. Create one: a keyword, the post it watches, and the link to send.</p></div>` : ""}

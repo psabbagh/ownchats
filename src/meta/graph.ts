@@ -1,5 +1,5 @@
 import type { Env } from "../env";
-import { INSIGHT_METRICS, MetaError, REPOSTS, type AccountDay, type AccountStats, type IgComment, type Media, type MediaInsights, type MetaClient, type OutMessage, type ReelMetric, type TokenInfo } from "./client";
+import { INSIGHT_METRICS, MetaError, parseUsage, REPOSTS, type MetaUsage, type AccountDay, type AccountStats, type IgComment, type Media, type MediaInsights, type MetaClient, type OutMessage, type ReelMetric, type TokenInfo } from "./client";
 
 /** Pinned so Meta's changes arrive when OwnChats is updated, not by surprise. */
 export const GRAPH_VERSION = "v26.0";
@@ -30,7 +30,7 @@ interface GraphErrorBody {
 async function graph<T>(
   base: string,
   path: string,
-  opts: { method?: "GET" | "POST"; token?: string; query?: Record<string, string>; body?: unknown } = {},
+  opts: { method?: "GET" | "POST"; token?: string; query?: Record<string, string>; body?: unknown; usage?: (u: MetaUsage) => void } = {},
 ): Promise<T> {
   const url = new URL(`${base}/${GRAPH_VERSION}/${path.replace(/^\//, "")}`);
   for (const [k, v] of Object.entries(opts.query ?? {})) url.searchParams.set(k, v);
@@ -43,6 +43,9 @@ async function graph<T>(
     headers,
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
   });
+  // On every answer, refusals included: it is how OwnChats sees Meta's rate limit coming.
+  const usage = parseUsage(res.headers.get("x-app-usage"), res.headers.get("x-business-use-case-usage"));
+  if (usage) opts.usage?.(usage);
   const text = await res.text();
   let data: unknown;
   try {
@@ -125,6 +128,11 @@ function ms(timestamp: string | undefined): number {
 
 /** The real client: the Instagram API with Unified Login, on graph.facebook.com. */
 export class GraphMetaClient implements MetaClient {
+  lastUsage: MetaUsage | null = null;
+  private readonly seeUsage = (u: MetaUsage) => {
+    this.lastUsage = u;
+  };
+
   constructor(
     private readonly base: string,
     private readonly token: string,
@@ -134,10 +142,10 @@ export class GraphMetaClient implements MetaClient {
   ) {}
 
   private get<T>(path: string, query: Record<string, string> = {}) {
-    return graph<T>(this.base, path, { token: this.token, query });
+    return graph<T>(this.base, path, { token: this.token, query, usage: this.seeUsage });
   }
   private post<T>(path: string, body: unknown, query: Record<string, string> = {}) {
-    return graph<T>(this.base, path, { method: "POST", token: this.token, body, query });
+    return graph<T>(this.base, path, { method: "POST", token: this.token, body, query, usage: this.seeUsage });
   }
 
   async getAccount() {
@@ -158,7 +166,7 @@ export class GraphMetaClient implements MetaClient {
     const res = await graph<{ data?: { is_valid?: boolean; expires_at?: number; data_access_expires_at?: number; scopes?: string[] } }>(
       this.base,
       "debug_token",
-      { token: `${this.appId}|${this.appSecret}`, query: { input_token: this.token } },
+      { token: `${this.appId}|${this.appSecret}`, query: { input_token: this.token }, usage: this.seeUsage },
     );
     const d = res.data ?? {};
     return {

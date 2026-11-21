@@ -1,4 +1,4 @@
-import { MetaError, type AccountDay, type AccountStats, type IgComment, type Media, type MediaInsights, type MetaClient, type OutMessage, type ReelMetric, type TokenInfo } from "../src/meta/client";
+import { MetaError, type MetaUsage, type AccountDay, type AccountStats, type IgComment, type Media, type MediaInsights, type MetaClient, type OutMessage, type ReelMetric, type TokenInfo } from "../src/meta/client";
 import { DAY } from "../src/time";
 
 export interface Sent {
@@ -42,6 +42,9 @@ export class FakeMeta implements MetaClient {
   daysAsked: string[] = [];
   /** When set, the messaging id Meta returns for a commenter differs from the id on the comment. */
   messagingIds = new Map<string, string>();
+  /** What Meta's usage headers say on every answer; tests set it to bring the rate limit near. */
+  usagePercent: number | null = null;
+  lastUsage: MetaUsage | null = null;
   private failures = new Map<string, MetaError[]>();
 
   constructor(private readonly now: () => number) {}
@@ -53,8 +56,15 @@ export class FakeMeta implements MetaClient {
     this.failures.set(method, list);
   }
 
+  /** Meta stops refusing: the failures queued with failNext are dropped. */
+  clearFailures(): void {
+    this.failures.clear();
+  }
+
   private call(method: keyof MetaClient): void {
     this.calls.push(method);
+    // A fresh reading on every answer, as Meta's headers are.
+    if (this.usagePercent !== null) this.lastUsage = { percent: this.usagePercent, regainMs: null, detail: `app ${this.usagePercent}%` };
     const err = this.failures.get(method)?.shift();
     if (err) throw err;
   }

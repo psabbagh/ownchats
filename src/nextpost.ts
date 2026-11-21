@@ -3,9 +3,10 @@ import type { Ctx } from "./context";
 import { listedStatement } from "./insights";
 import { captionAsksFor } from "./match";
 import { explainError, type Media } from "./meta/client";
-import { recentMedia } from "./pipeline/poll";
+import { MEDIA_CACHE_TTL, recentMedia } from "./pipeline/poll";
 import { saveSettings, shortcutKeywords } from "./settings";
-import { PRIVATE_REPLY_WINDOW } from "./time";
+import { backgroundAllowed } from "./throttle";
+import { MINUTE, PRIVATE_REPLY_WINDOW } from "./time";
 
 /**
  * The post a waiting campaign belongs to: the first one published after it started
@@ -33,7 +34,7 @@ export interface UntakenPost {
  * Posts published since a campaign started waiting that no campaign has: usually a
  * caption without the "Comment KEYWORD" line. Nothing else would show it, because the
  * campaign just keeps waiting and the post's comments match nothing. Reads the list
- * the Cron refreshes every minute while a campaign waits, so a page load calls no one.
+ * the Cron keeps (10 minutes old at most) while a campaign waits, so a page load calls no one.
  */
 export function untakenPosts(ctx: Ctx, campaigns: Campaign[]): UntakenPost[] {
   const on = campaigns.filter((c) => c.active && c.nextPostAfter !== null);
@@ -90,8 +91,12 @@ export async function attachUntakenPost(ctx: Ctx, mediaId: string, campaignId: n
  * Called by the Cron every minute, before waiting comments are handled: attaches
  * each campaign that waits for the next post to its post (postFor). Comments on
  * that post that came in before, and that the campaign would have answered, go
- * back through the pipeline in the same run, so the minute between posting and
- * attaching misses nobody. Costs one Meta call a run, and only while a campaign waits.
+ * back through the pipeline in the same run, so the minutes between posting and
+ * attaching miss nobody. Reads the post list through its 10-minute cache, which
+ * costs about 6 Meta calls an hour while a campaign waits; it reads past the cache
+ * only when a comment arrived on a post OwnChats has never seen (newPostSeen),
+ * which is how a new post shows itself, so a Reel's first commenters still get
+ * their DM within a minute or two.
  */
 export async function attachNextPosts(ctx: Ctx): Promise<void> {
   if (!ctx.meta) return;
@@ -99,7 +104,7 @@ export async function attachNextPosts(ctx: Ctx): Promise<void> {
   if (!waiting.length) return;
   let media: Media[];
   try {
-    media = await recentMedia(ctx, true);
+    media = await recentMedia(ctx, (await newPostSeen(ctx)) && backgroundAllowed(ctx.load, ctx.now(), "high"));
   } catch (err) {
     await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { next_post_problem: `${ctx.now()}|${explainError(err).detail}` });
     return;
@@ -111,6 +116,25 @@ export async function attachNextPosts(ctx: Ctx): Promise<void> {
     const post = postFor(campaign, oldestFirst);
     if (post) await attach(ctx, campaign, post);
   }
+}
+
+/**
+ * Whether a comment came in, since the post list was last read, on a post that is in
+ * neither that list nor the account's hourly post list: a post that just went up.
+ * Old posts are in the hourly list, so comments on them never force a read.
+ */
+async function newPostSeen(ctx: Ctx): Promise<boolean> {
+  const cachedAt = Number(ctx.settings.media_cache_at ?? 0);
+  if (ctx.now() - cachedAt < MINUTE) return false;
+  const known = ctx.settings.media_cache ? (JSON.parse(ctx.settings.media_cache) as Media[]).map((m) => m.id) : [];
+  const row = await ctx.db
+    .prepare(
+      `SELECT 1 AS yes FROM comments WHERE received_at > ?1 AND media_id NOT IN (SELECT value FROM json_each(?2))
+         AND media_id NOT IN (SELECT media_id FROM media_stats) LIMIT 1`,
+    )
+    .bind(Math.max(cachedAt, ctx.now() - MEDIA_CACHE_TTL), JSON.stringify(known))
+    .first();
+  return !!row;
 }
 
 async function attach(ctx: Ctx, campaign: Campaign, post: Media): Promise<boolean> {

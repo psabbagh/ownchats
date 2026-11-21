@@ -3,7 +3,7 @@ import { trackLinks } from "../clicks";
 import { logStatement, type ActivityEntry, type Ctx } from "../context";
 import { explainError, explainReplyError, isTemplateRejection, MetaError, type IgComment } from "../meta/client";
 import { shortcutKeywords } from "../settings";
-import { HOUR, MINUTE, PRIVATE_REPLIES_PER_HOUR, PRIVATE_REPLY_WINDOW } from "../time";
+import { DAY, HOUR, MINUTE, PRIVATE_REPLIES_PER_HOUR, PRIVATE_REPLY_WINDOW } from "../time";
 import { claimConversation, getConversation, releaseClaim } from "./conversations";
 
 interface CommentRow {
@@ -22,7 +22,16 @@ interface CommentRow {
   attempts: number;
 }
 
-const MAX_ATTEMPTS = 5;
+/**
+ * When a private reply Meta refused for a passing reason (a rate limit, an outage) is
+ * tried again, after each failed attempt: spaced out, since a rate limit can last an
+ * hour and Meta allows the private reply for 7 days. 10 attempts over about 4 days.
+ */
+export const RETRY_AFTER = [MINUTE, 5 * MINUTE, 15 * MINUTE, HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR, DAY, 2 * DAY];
+const MAX_ATTEMPTS = RETRY_AFTER.length + 1;
+
+/** A private reply Meta kept refusing for a passing reason, after every retry: the owner can send it from To check. */
+export const GAVE_UP_REASON = "Meta rate limit or outage, stopped retrying: send it from To check";
 
 const FIRST_DM_REASON: Record<ConversationState, string> = {
   opened: "opening button",
@@ -138,14 +147,15 @@ function skipLog(ctx: Ctx, c: CommentFacts, reason: string, campaignId: number |
   });
 }
 
-/** Comments waiting for a retry: queued, never handled, or stuck mid-way. */
+/** Comments waiting for a retry that is due: queued, never handled, or stuck mid-way. */
 export async function pendingCommentIds(ctx: Ctx, limit = 20): Promise<string[]> {
   const { results } = await ctx.db
     .prepare(
-      `SELECT id FROM comments WHERE status IN ('new', 'queued') OR (status = 'processing' AND locked_at < ?)
-       ORDER BY received_at LIMIT ?`,
+      `SELECT id FROM comments
+       WHERE (status IN ('new', 'queued') AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)) OR (status = 'processing' AND locked_at < ?2)
+       ORDER BY received_at LIMIT ?3`,
     )
-    .bind(ctx.now() - STALE_LOCK, limit)
+    .bind(ctx.now(), ctx.now() - STALE_LOCK, limit)
     .all<{ id: string }>();
   return results.map((r) => r.id);
 }
@@ -193,11 +203,11 @@ export async function handleComment(ctx: Ctx, id: string, campaigns?: Campaign[]
     campaignId: row.campaign_id,
   };
   const who = { commentId: row.id, igUserId: row.from_id, username: row.from_username };
-  const settle = (status: string, reason: string | null, campaignId: number | null, extra: D1PreparedStatement[] = [], attempts = row.attempts) =>
+  const settle = (status: string, reason: string | null, campaignId: number | null, extra: D1PreparedStatement[] = [], attempts = row.attempts, nextAt: number | null = null) =>
     ctx.db.batch([
       ctx.db
-        .prepare("UPDATE comments SET status = ?, reason = ?, campaign_id = ?, attempts = ?, locked_at = NULL WHERE id = ?")
-        .bind(status, reason, campaignId, attempts, row.id),
+        .prepare("UPDATE comments SET status = ?, reason = ?, campaign_id = ?, attempts = ?, next_attempt_at = ?, locked_at = NULL WHERE id = ?")
+        .bind(status, reason, campaignId, attempts, nextAt, row.id),
       ...extra,
     ]);
   const skip = (reason: string, campaignId: number | null = null, silent = false) =>
@@ -256,10 +266,14 @@ export async function handleComment(ctx: Ctx, id: string, campaigns?: Campaign[]
     await releaseClaim(ctx.db, conversationId);
     const { reason, detail } = explainError(err);
     const attempts = row.attempts + 1;
-    const retry = err instanceof MetaError && err.transient && attempts < MAX_ATTEMPTS;
-    return void (await settle(retry ? "queued" : "failed", reason, cid, [
-      logStatement(ctx, { kind: "private_reply", outcome: "failed", reason, campaignId: cid, ...who, detail }),
-    ], attempts));
+    const transient = err instanceof MetaError && err.transient;
+    const retry = transient && attempts < MAX_ATTEMPTS;
+    // Once the retries are used up, the comment waits under To check for the owner's click.
+    const said = transient && !retry ? GAVE_UP_REASON : reason;
+    const nextAt = retry ? ctx.now() + RETRY_AFTER[attempts - 1]! : null;
+    return void (await settle(retry ? "queued" : "failed", said, cid, [
+      logStatement(ctx, { kind: "private_reply", outcome: "failed", reason: said, campaignId: cid, ...who, detail }),
+    ], attempts, nextAt));
   }
   ctx.sentLastHour = (ctx.sentLastHour ?? 0) + 1;
 

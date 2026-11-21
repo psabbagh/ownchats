@@ -4,10 +4,15 @@ import { handleComment, pendingCommentIds, QUERIES_PER_COMMENT } from "./pipelin
 import { listCampaigns } from "./campaigns";
 import { deliverDue, KEEP_DELIVERIES } from "./leadwebhook";
 import { attachNextPosts } from "./nextpost";
+import { retryPendingMessages } from "./pipeline/messages";
 import { pollComments } from "./pipeline/poll";
 import { saveSettings } from "./settings";
 import { DAY } from "./time";
+import { paused, RETRIES_WHILE_PAUSED, saveMetaLoad } from "./throttle";
 import { checkToken } from "./token";
+
+/** Messages after a tap that the Cron sends again in one run, at most. */
+const MESSAGE_RETRIES_PER_RUN = 10;
 
 /** Activity older than this is deleted. Leads are kept until you delete them. */
 const KEEP_ACTIVITY = 90 * DAY;
@@ -15,29 +20,36 @@ const KEEP_ACTIVITY = 90 * DAY;
 const KEEP_COMMENTS = 30 * DAY;
 
 /**
- * Runs every minute: attach campaigns waiting for the next post, retry what waited,
- * poll for missed comments, read Instagram's numbers that are due (posts and the
- * account's days), send what the lead webhook has waiting, and once a day, upkeep.
+ * Runs every minute: attach campaigns waiting for the next post, retry the private
+ * replies and the messages after a tap that wait, poll for missed comments, read
+ * Instagram's numbers that are due (posts and the account's days), send what the lead
+ * webhook has waiting, and once a day, upkeep. Sends go first; the reads are held
+ * back while Meta's rate limit is near (throttle.ts).
  */
 export async function runCron(ctx: Ctx): Promise<void> {
   // Leads already saved still go to the webhook while Instagram is disconnected.
   if (!ctx.meta) return deliverDue(ctx);
   // First, so the comments it hands back are answered in this same run.
   await attachNextPosts(ctx);
+  // Sends before reads. While Meta has paused the app, only a few retries go, to see whether it lets them through.
+  let retries = paused(ctx.load, ctx.now()) ? RETRIES_WHILE_PAUSED : Infinity;
   const pending = await pendingCommentIds(ctx);
   if (pending.length) {
     const campaigns = await listCampaigns(ctx.db, true);
     for (const id of pending) {
-      if (ctx.budget.left < 2 || ctx.budget.queriesLeft < QUERIES_PER_COMMENT + 8) break;
+      if (retries-- <= 0 || ctx.budget.left < 2 || ctx.budget.queriesLeft < QUERIES_PER_COMMENT + 8) break;
       await handleComment(ctx, id, campaigns);
     }
   }
+  if (paused(ctx.load, ctx.now())) retries = Math.min(retries, RETRIES_WHILE_PAUSED);
+  await retryPendingMessages(ctx, Math.min(retries, MESSAGE_RETRIES_PER_RUN));
   await pollComments(ctx);
   await refreshPostList(ctx);
   await refreshMediaStats(ctx);
   await refreshAccountStats(ctx);
   await refreshAccountDays(ctx);
   await deliverDue(ctx);
+  await saveMetaLoad(ctx.db, ctx.env.ADMIN_PASSWORD, ctx.load);
   if (ctx.now() - Number(ctx.settings.daily_at ?? 0) > DAY) {
     await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { daily_at: String(ctx.now()) });
     await checkToken(ctx);
