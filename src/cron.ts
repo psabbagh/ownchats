@@ -31,8 +31,13 @@ const KEEP_COMMENTS = 30 * DAY;
 export async function runCron(ctx: Ctx): Promise<void> {
   // First, and even while Instagram is disconnected: the heartbeat says the Cron runs, and alerts say what needs the owner.
   await heartbeat(ctx);
+  // Campaigns are read once and shared by the steps below, read again only when a post was
+  // attached; the run itself changes nothing else on them (a public reply's variant is
+  // kept in memory too). Each read costs a row per campaign, every minute.
+  let all = await listCampaigns(ctx.db);
+  const active = () => all.filter((c) => c.active);
   try {
-    await checkAlerts(ctx);
+    await checkAlerts(ctx, active());
   } catch (err) {
     // An alert must never cost a DM: the rest of the run goes on.
     console.error("alerts", err);
@@ -40,20 +45,20 @@ export async function runCron(ctx: Ctx): Promise<void> {
   // Leads already saved still go to the webhook while Instagram is disconnected.
   if (!ctx.meta) return deliverDue(ctx);
   // First, so the comments it hands back are answered in this same run.
-  await attachNextPosts(ctx);
+  if (await attachNextPosts(ctx, all)) all = await listCampaigns(ctx.db);
+  const campaigns = active();
   // Sends before reads. Refused sends wait out a pause Meta imposed (throttle.ts), then go first.
   const pending = await pendingCommentIds(ctx);
   if (pending.length) {
-    const campaigns = await listCampaigns(ctx.db, true);
     for (const id of pending) {
       if (ctx.budget.left < 2 || ctx.budget.queriesLeft < QUERIES_PER_COMMENT + 8) break;
       await handleComment(ctx, id, campaigns);
     }
   }
   await retryPendingMessages(ctx, MESSAGE_RETRIES_PER_RUN);
-  await pollComments(ctx);
+  await pollComments(ctx, campaigns);
   await refreshPostList(ctx);
-  await refreshMediaStats(ctx);
+  await refreshMediaStats(ctx, campaigns);
   await refreshAccountStats(ctx);
   await refreshAccountDays(ctx);
   await deliverDue(ctx);

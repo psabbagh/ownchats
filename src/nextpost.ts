@@ -98,24 +98,26 @@ export async function attachUntakenPost(ctx: Ctx, mediaId: string, campaignId: n
  * which is how a new post shows itself, so a Reel's first commenters still get
  * their DM within a minute or two.
  */
-export async function attachNextPosts(ctx: Ctx): Promise<void> {
-  if (!ctx.meta) return;
-  const waiting = (await listCampaigns(ctx.db)).filter((c) => c.nextPostAfter !== null);
-  if (!waiting.length) return;
+export async function attachNextPosts(ctx: Ctx, campaigns?: Campaign[]): Promise<boolean> {
+  if (!ctx.meta) return false;
+  const waiting = (campaigns ?? (await listCampaigns(ctx.db))).filter((c) => c.nextPostAfter !== null);
+  if (!waiting.length) return false;
   let media: Media[];
   try {
     media = await recentMedia(ctx, (await newPostSeen(ctx)) && backgroundAllowed(ctx.load, ctx.now(), "high"));
   } catch (err) {
     await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { next_post_problem: `${ctx.now()}|${explainError(err).detail}` });
-    return;
+    return false;
   }
   if (ctx.settings.next_post_problem) await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { next_post_problem: "" });
 
   const oldestFirst = [...media].filter((m) => m.timestamp).sort((a, b) => a.timestamp - b.timestamp);
+  let attached = false;
   for (const campaign of waiting) {
     const post = postFor(campaign, oldestFirst);
-    if (post) await attach(ctx, campaign, post);
+    if (post && (await attach(ctx, campaign, post))) attached = true;
   }
+  return attached;
 }
 
 /**

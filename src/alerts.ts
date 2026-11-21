@@ -130,11 +130,11 @@ export function alertStates(ctx: Ctx): States {
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 /** Every problem present now, from what OwnChats has recorded. */
-export async function currentProblems(ctx: Ctx): Promise<Problem[]> {
+export async function currentProblems(ctx: Ctx, active?: Campaign[]): Promise<Problem[]> {
   const s = ctx.settings;
   const now = ctx.now();
   const problems: Problem[] = [];
-  const campaigns = await listCampaigns(ctx.db, true);
+  const campaigns = active ?? (await listCampaigns(ctx.db, true));
 
   // Meta's webhooks refused: nothing Meta sends is read.
   const [refusedAt, refusedWhy] = (s.last_webhook_problem ?? "").split("|");
@@ -368,7 +368,7 @@ async function send(ctx: Ctx, payload: AlertPayload, test = false): Promise<{ id
  * remembered, and sends what changed. Does nothing while no alert URL is set, and
  * forgets every problem then, so setting a URL later starts from what is true then.
  */
-export async function checkAlerts(ctx: Ctx): Promise<void> {
+export async function checkAlerts(ctx: Ctx, active?: Campaign[]): Promise<void> {
   if (!ctx.settings.alert_url) {
     if (ctx.settings.alert_state && ctx.settings.alert_state !== "{}") await saveAlertStates(ctx, {});
     return;
@@ -376,7 +376,7 @@ export async function checkAlerts(ctx: Ctx): Promise<void> {
   const now = ctx.now();
   const before = alertStates(ctx);
   const states: States = structuredClone(before);
-  const present = new Map((await currentProblems(ctx)).map((p) => [p.key, p]));
+  const present = new Map((await currentProblems(ctx, active)).map((p) => [p.key, p]));
   const keys = new Set<AlertKey>([...(Object.keys(states) as AlertKey[]), ...present.keys()]);
   for (const key of keys) {
     const p = present.get(key);

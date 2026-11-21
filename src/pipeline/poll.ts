@@ -1,4 +1,4 @@
-import { listCampaigns, onAllPosts } from "../campaigns";
+import { listCampaigns, onAllPosts, type Campaign } from "../campaigns";
 import type { Ctx } from "../context";
 import { explainError, type Media } from "../meta/client";
 import { alertStates } from "../alerts";
@@ -114,9 +114,9 @@ function lastPolled(ctx: Ctx): Record<string, number> {
  * and feeds unseen ones into the comment pipeline. While Meta's rate limit is near
  * only new posts are read, and none during a pause (throttle.ts).
  */
-export async function pollComments(ctx: Ctx): Promise<void> {
+export async function pollComments(ctx: Ctx, active?: Campaign[]): Promise<void> {
   if (!ctx.meta) return;
-  const campaigns = await listCampaigns(ctx.db, true);
+  const campaigns = active ?? (await listCampaigns(ctx.db, true));
   if (!campaigns.length) return;
 
   const watched = new Map<string, number | null>();
