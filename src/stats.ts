@@ -278,6 +278,10 @@ export interface CommentLine {
   /** The conversation the comment started, when it was answered. */
   state: string | null;
   has_email: number;
+  /** The owner answered this comment in Instagram: OwnChats sent it nothing. */
+  comment_by_hand: number;
+  /** OwnChats sent the first DM, and the owner answered the rest in Instagram. */
+  conversation_by_hand: number;
 }
 
 export type CommentFilter = "all" | "answered" | "skipped" | "failed";
@@ -304,7 +308,8 @@ export async function listCampaignComments(
   const { results } = await ctx.db
     .prepare(
       `SELECT c.id, c.text, c.from_username, c.commented_at, c.status, c.reason, c.campaign_id, c.parent_id,
-         v.state, l.id IS NOT NULL AS has_email
+         v.state, l.id IS NOT NULL AS has_email, c.answered_by_hand_at IS NOT NULL AS comment_by_hand,
+         v.answered_by_hand_at IS NOT NULL AS conversation_by_hand
        FROM comments c
        LEFT JOIN conversations v ON v.comment_id = c.id AND v.campaign_id = c.campaign_id
        LEFT JOIN leads l ON l.campaign_id = v.campaign_id AND l.ig_user_id = v.ig_user_id

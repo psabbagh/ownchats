@@ -396,7 +396,9 @@ describe("sends refused before automatic retries, and answered by hand", () => {
     const res = await form(cookie, `/dashboard/campaigns/${id}/by-hand`, { type: "comment", id: c.id });
     expect(res.headers.get("location")).toBe(`/dashboard/campaigns/${id}?sent=byhand#to-check`);
     expect(w.meta.sent).toHaveLength(0);
-    expect(await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie } })).text()).not.toContain("Waiting on a refused send");
+    const after = await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie } })).text();
+    expect(after).not.toContain("Waiting on a refused send");
+    expect(after).toContain("by you, in Instagram");
     expect((await w.activity()).at(-1)).toMatchObject({ kind: "by_hand", outcome: "saved", reason: "first DM answered by hand", comment_id: c.id });
     // A second click marks nothing.
     expect((await form(cookie, `/dashboard/campaigns/${id}/by-hand`, { type: "comment", id: c.id })).headers.get("location")).toBe(`/dashboard/campaigns/${id}?sent=none#to-check`);
@@ -424,7 +426,10 @@ describe("sends refused before automatic retries, and answered by hand", () => {
     const conversationId = (await env.DB.prepare("SELECT id FROM conversations").first<{ id: number }>())!.id;
     await form(cookie, `/dashboard/campaigns/${id}/by-hand`, { type: "message", id: String(conversationId) });
     expect(await env.DB.prepare("SELECT state, answered_by_hand_at FROM conversations").first()).toEqual({ state: "done", answered_by_hand_at: w.clock.now() });
-    expect(await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie } })).text()).not.toContain("Waiting on a refused send");
+    const after = await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie } })).text();
+    expect(after).not.toContain("Waiting on a refused send");
+    expect(after).toContain("DM sent, rest by you in Instagram");
+    expect(after).not.toContain("link sent");
     expect(w.meta.sentTo(FAN.id).filter((s) => s.kind === "message")).toHaveLength(0);
   });
 
