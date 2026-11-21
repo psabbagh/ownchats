@@ -220,6 +220,39 @@ export async function answerMissed(
   return { status: after?.status ?? "new" };
 }
 
+/**
+ * For the owner's "Already answered by hand" on a comment under To check: takes one
+ * skipped comment this campaign could still answer, marks it done and answered by hand
+ * for this campaign, and returns it. Null when it can't be marked (already marked or
+ * answered, or not this campaign's). Works with the campaign off and Instagram
+ * disconnected, since nothing is sent. The caller records the conversation and log.
+ */
+export async function claimMissedByHand(
+  ctx: Ctx,
+  campaignId: number,
+  commentId: string,
+): Promise<{ id: string; from_id: string; from_username: string | null } | null> {
+  const campaign = await getCampaign(ctx.db, campaignId);
+  if (!campaign) return null;
+  const row = await ctx.db
+    .prepare(
+      `SELECT id, text, from_id, from_username, commented_at, reason, campaign_id, media_id FROM comments
+       WHERE id = ? AND status = 'skipped' AND from_id IS NOT NULL AND answered_by_hand_at IS NULL AND reason IN (${ANSWERABLE.map(() => "?").join(", ")})`,
+    )
+    .bind(commentId, ...ANSWERABLE)
+    .first<Candidate>();
+  if (!row) return null;
+  if (row.reason === NO_MATCH ? !onItsPosts(row, campaign) : row.campaign_id !== campaign.id) return null;
+  return ctx.db
+    .prepare(
+      `UPDATE comments SET status = 'done', reason = 'answered by hand', campaign_id = ?1, answered_by_hand_at = ?2, locked_at = NULL
+       WHERE id = ?3 AND status = 'skipped' AND answered_by_hand_at IS NULL AND reason IN (SELECT value FROM json_each(?4))
+       RETURNING id, from_id, from_username`,
+    )
+    .bind(campaign.id, ctx.now(), row.id, JSON.stringify(ANSWERABLE))
+    .first<{ id: string; from_id: string; from_username: string | null }>();
+}
+
 /** The outcome of an answer, read back from the comment, in the dashboard's words. */
 export async function answerOutcome(ctx: Ctx, commentId: string): Promise<{ ok: boolean; text: string } | null> {
   const row = await ctx.db

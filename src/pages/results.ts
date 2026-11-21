@@ -145,11 +145,12 @@ function whyMissed(m: MissedComment, campaign: Campaign): string {
 
 function missedSection(campaign: Campaign, missed: MissedComment[], tz: string): Html {
   if (!missed.length) return html``;
-  const action = `/dashboard/campaigns/${campaign.id}/answer`;
+  const base = `/dashboard/campaigns/${campaign.id}`;
+  const action = `${base}/answer`;
   return html`<h2>To check (${missed.length})</h2>
     <p class="muted small">Skipped comments this campaign can still answer. Answering sends its usual DM and public reply, once, to that one person.
-      If another tool already answered a comment, Meta refuses and nothing is sent.</p>
-    ${campaign.active ? "" : html`<p class="warn small">The campaign is off. Switch it on to answer these.</p>`}
+      If another tool already answered a comment, Meta refuses and nothing is sent. Answered them yourself in Instagram? Mark them answered by hand: nothing is sent.</p>
+    ${campaign.active ? "" : html`<p class="warn small">The campaign is off. Switch it on to answer these from OwnChats.</p>`}
     ${missed.slice(0, MISSED_SHOWN).map((m) => {
       const who = m.fromUsername ? `@${m.fromUsername}` : "this person";
       const ask = `Send this campaign's DM to ${who}?`;
@@ -157,17 +158,21 @@ function missedSection(campaign: Campaign, missed: MissedComment[], tz: string):
         <p style="margin:0"><b>${m.fromUsername ? `@${m.fromUsername}` : "Someone"}</b> <span class="muted small">${fmtTime(m.commentedAt, tz)}, ${timeLeft(m.left)}</span></p>
         <p style="margin:4px 0;overflow-wrap:anywhere">${m.text.length > 280 ? `${m.text.slice(0, 280)}...` : m.text}</p>
         <p class="muted small" style="margin:0">${whyMissed(m, campaign)}</p>
-        ${campaign.active
-          ? html`<div class="row" style="margin-top:8px">
-              <form method="post" action="${action}" data-ask="${ask}" onsubmit="return confirm(this.dataset.ask)">
+        <div class="row" style="margin-top:8px">
+          ${campaign.active
+            ? html`<form method="post" action="${action}" data-ask="${ask}" onsubmit="return confirm(this.dataset.ask)">
                 <input type="hidden" name="comment_id" value="${m.id}"><button>Answer</button></form>
               ${m.spelling && !campaign.anyComment
                 ? html`<form method="post" action="${action}" data-ask="${`Add ${m.spelling} as a spelling and send this campaign's DM to ${who}?`}" onsubmit="return confirm(this.dataset.ask)">
                     <input type="hidden" name="comment_id" value="${m.id}"><input type="hidden" name="spelling" value="${m.spelling}">
                     <button class="secondary">Add "${m.spelling}" and answer</button></form>`
-                : ""}
-            </div>`
-          : ""}
+                : ""}`
+            : ""}
+          <form method="post" action="${base}/by-hand" data-ask="${`Get a reply to paste to ${who} in Instagram, with your tracked link, and mark them answered by hand? Nothing is sent.`}" onsubmit="return confirm(this.dataset.ask)">
+            <input type="hidden" name="type" value="missed"><input type="hidden" name="id" value="${m.id}"><input type="hidden" name="reply" value="1"><button class="secondary">Reply by hand</button></form>
+          <form method="post" action="${base}/by-hand" data-ask="${`Mark ${who} as answered by hand? Nothing is sent.`}" onsubmit="return confirm(this.dataset.ask)">
+            <input type="hidden" name="type" value="missed"><input type="hidden" name="id" value="${m.id}"><button class="secondary">Already answered by hand</button></form>
+        </div>
       </div>`;
     })}
     ${missed.length > MISSED_SHOWN ? html`<p class="muted small">And ${missed.length - MISSED_SHOWN} more, older ones. Answer these first.</p>` : ""}`;

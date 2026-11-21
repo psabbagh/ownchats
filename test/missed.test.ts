@@ -187,7 +187,7 @@ describe("answering a missed comment", () => {
     await w.sendComment(c);
     const cookie = await w.signIn();
     const page = await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie } })).text();
-    expect(page).toContain("The campaign is off. Switch it on to answer these.");
+    expect(page).toContain("The campaign is off. Switch it on to answer these from OwnChats.");
     expect(page).not.toContain(">Answer</button>");
     const refused = await post(cookie, `/dashboard/campaigns/${id}/answer`, { comment_id: c.id });
     expect(refused.headers.get("location")).toContain("problem=off");
@@ -242,6 +242,47 @@ describe("answering a missed comment", () => {
     expect(missed.get(id)?.map((m) => [m.id, m.why, m.spelling])).toEqual([[long.id, "long", null]]);
     const page = await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie: await w.signIn() } })).text();
     expect(page).toContain("Has the keyword in a longer comment");
+  });
+
+  it("marks a skipped comment answered by hand, sends nothing, and counts the person once", async () => {
+    const id = await w.campaign();
+    const long = w.comment("Did the agents list hold up for you after a week of using it?", FAN);
+    await w.sendComment(long);
+    await w.sendComment(w.comment("could you send me the agnets list", FAN2));
+    const cookie = await w.signIn();
+    expect(await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie } })).text()).toContain("Already answered by hand");
+
+    const res = await post(cookie, `/dashboard/campaigns/${id}/by-hand`, { type: "missed", id: long.id });
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe(`/dashboard/campaigns/${id}?sent=byhand#to-check`);
+    expect(w.meta.sent).toHaveLength(0);
+    expect(await status(long.id)).toMatchObject({ status: "done", campaign_id: id, reason: "answered by hand" });
+
+    const after = await (await w.fetch(res.headers.get("location")!, { headers: { cookie } })).text();
+    expect(after).toContain("Marked as answered by hand. Nothing was sent.");
+    expect(after).toContain("To check (1)");
+    const missed = await missedComments(await w.ctx(), await listCampaigns(env.DB, true));
+    expect(missed.get(id)?.map((m) => m.id)).not.toContain(long.id);
+    expect(await (await w.fetch("/dashboard", { headers: { cookie } })).text()).toContain("1 comment to check");
+
+    // Once marked, Answer can't send a DM, marking again changes nothing, and a later keyword comment gets no second DM.
+    expect((await post(cookie, `/dashboard/campaigns/${id}/answer`, { comment_id: long.id })).headers.get("location")).toContain("problem=gone");
+    expect((await post(cookie, `/dashboard/campaigns/${id}/by-hand`, { type: "missed", id: long.id })).headers.get("location")).toContain("sent=none");
+    await w.sendComment(w.comment("AGENTS", FAN));
+    expect(privateReplies()).toHaveLength(0);
+    expect(await env.DB.prepare("SELECT COUNT(answered_by_hand_at) AS n FROM conversations WHERE campaign_id = ?").bind(id).first()).toEqual({ n: 1 });
+  });
+
+  it("gives a reply to paste when the owner replies by hand to a skipped comment, even with the campaign off", async () => {
+    const id = await w.campaign();
+    const long = w.comment("Did the agents list hold up for you after a week of using it?", FAN);
+    await w.sendComment(long);
+    await env.DB.prepare("UPDATE campaigns SET active = 0 WHERE id = ?").bind(id).run();
+    const cookie = await w.signIn();
+    const res = await post(cookie, `/dashboard/campaigns/${id}/by-hand`, { type: "missed", id: long.id, reply: "1" });
+    expect(res.headers.get("location")).toMatch(new RegExp(`^/dashboard/campaigns/${id}\\?sent=byhand&reply=\\d+#to-check$`));
+    expect(await (await w.fetch(res.headers.get("location")!, { headers: { cookie } })).text()).toContain("Paste this in your Instagram reply");
+    expect(w.meta.sent).toHaveLength(0);
   });
 
   it("lists near misses on any post for an all-posts campaign, and only on its own post otherwise", async () => {
