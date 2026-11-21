@@ -2,6 +2,7 @@ import { logStatement, type Ctx } from "./context";
 import { getCampaign, linkMessage } from "./campaigns";
 import { trackLinks } from "./clicks";
 import { plainText, TRANSIENT_REASON } from "./meta/client";
+import { claimMissedByHand } from "./missed";
 import { GAVE_UP_REASON, handleComment } from "./pipeline/comments";
 import { sendPendingNow } from "./pipeline/messages";
 import { MESSAGING_WINDOW, PRIVATE_REPLY_WINDOW } from "./time";
@@ -157,8 +158,9 @@ export async function sendRefused(ctx: Ctx, campaignId: number, type: string, id
  */
 export async function markAnsweredByHand(ctx: Ctx, campaignId: number, type: string, id: string): Promise<number | null> {
   const now = ctx.now();
-  if (type === "comment") {
-    const row = await ctx.db
+  if (type === "comment" || type === "missed") {
+    // "missed": a skipped comment under To check that the owner answered themselves, so OwnChats never sent it anything.
+    const row = type === "missed" ? await claimMissedByHand(ctx, campaignId, id) : await ctx.db
       .prepare(
         `UPDATE comments SET status = 'done', reason = 'answered by hand', answered_by_hand_at = ?1, next_attempt_at = NULL, locked_at = NULL
          WHERE id = ?2 AND campaign_id = ?3 AND status IN ('queued', 'failed') AND reason IN (SELECT value FROM json_each(?4))
@@ -175,7 +177,7 @@ export async function markAnsweredByHand(ctx: Ctx, campaignId: number, type: str
            VALUES (?1, ?2, ?2, ?3, 'comment', ?4, 'done', ?5, ?5, ?5) ON CONFLICT DO NOTHING`,
         )
         .bind(campaignId, row.from_id, row.from_username, row.id, now),
-      logStatement(ctx, { kind: "by_hand", outcome: "saved", reason: "first DM answered by hand", campaignId, commentId: row.id, igUserId: row.from_id, username: row.from_username }),
+      logStatement(ctx, { kind: "by_hand", outcome: "saved", reason: type === "missed" ? "skipped comment answered by hand" : "first DM answered by hand", campaignId, commentId: row.id, igUserId: row.from_id, username: row.from_username }),
     ]);
     const conversation = await ctx.db
       .prepare("SELECT id FROM conversations WHERE campaign_id = ?1 AND (ig_user_id = ?2 OR commenter_id = ?2) LIMIT 1")
