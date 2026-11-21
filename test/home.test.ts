@@ -313,7 +313,7 @@ describe("the order of the list", () => {
     expect(page).not.toContain("<details");
     expect(order(page)).toEqual([newer, old]);
     expect(row(page, newer)).toContain('class="card row campaign off"');
-    expect(row(page, newer)).toContain('<span class="pill off">Off</span>');
+    expect(row(page, newer)).toContain('<span class="pill off" title="Turned off today, at ');
     expect(row(page, old)).not.toContain(">Off</span>");
     expect(page).toContain("1 of 2 campaigns on.");
 
@@ -473,14 +473,14 @@ describe("deciding which campaigns to keep on", () => {
     const everywhere = await w.campaign({ name: "Everywhere", keywords: ["GUIDE"], mediaId: null });
     const page = await home();
     cases.forEach(([, , words], i) => {
-      expect(rowOf(page, ids[i]!)).toContain(`Costs ${words}</span>`);
+      expect(rowOf(page, ids[i]!)).toContain(`title="On, costing ${words}. Click to turn off."`);
       expect(rowOf(page, ids[i]!)).toContain(`It saves ${words}, and comments that arrive while it is off get no DM.`);
     });
-    expect(rowOf(page, everywhere)).not.toContain("Costs ");
+    expect(rowOf(page, everywhere)).toContain('title="On. Click to turn off."');
 
     // Off, it costs nothing, so nothing is said.
     await flip(ids[2]!, "off");
-    expect(rowOf(await home(), ids[2]!)).not.toContain("Costs ");
+    expect(rowOf(await home(), ids[2]!)).not.toContain("costing");
   });
 
   it("tags a campaign that is on and had no matching comment for a week, and lists those under Quiet", async () => {
@@ -535,14 +535,14 @@ describe("deciding which campaigns to keep on", () => {
     await flip(id, "off");
     w.clock.advance(HOUR);
     await flip(id, "off");
-    const since = (await home()).match(/Off since <b>([^<]+)<\/b>/)?.[1];
+    const since = (await home()).match(/<span class="pill off" title="Turned off today, at ([^"]+)">Off<\/span>/)?.[1];
     expect(since).toBeDefined();
     const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Toronto", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
     expect(since).toContain(fmt.format(offAt));
     expect((await env.DB.prepare("SELECT active_changed_at AS t FROM campaigns WHERE id = ?").bind(id).first<{ t: number }>())!.t).toBe(offAt);
 
     await flip(id, "on");
-    expect(await home()).not.toContain("Off since");
+    expect(await home()).not.toContain("Turned off today");
 
     // Saving the form with the box unticked turns it off too, and records when.
     w.clock.advance(HOUR);
@@ -564,6 +564,22 @@ describe("deciding which campaigns to keep on", () => {
     expect(saved.status).toBe(303);
     expect(await isOn(id)).toBe(false);
     expect((await env.DB.prepare("SELECT active_changed_at AS t FROM campaigns WHERE id = ?").bind(id).first<{ t: number }>())!.t).toBe(w.clock.now());
+  });
+
+  it("says when a campaign started in plain words, with the exact time on hover", async () => {
+    await saveSettings(env.DB, env.ADMIN_PASSWORD, { time_zone: "America/Toronto" });
+    const id = await w.campaign();
+    const started = () => home().then((p) => rowOf(p, id).match(/<span class="muted small" title="Started ([^"]+)">Started ([^<]+)<\/span>/)?.slice(1));
+    const [exact, words] = (await started())!;
+    expect(exact).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d E[SD]T$/);
+    expect(["today", "yesterday"]).toContain(words);
+    w.clock.advance(3 * DAY);
+    expect((await started())![1]).toMatch(/^(3|4) days ago$/);
+    w.clock.advance(10 * DAY);
+    expect((await started())![1]).toMatch(/^[A-Z][a-z]{2} \d{1,2}$/);
+    w.clock.advance(400 * DAY);
+    cookie = await w.signIn(); // the session from a year ago has expired
+    expect((await started())![1]).toMatch(/^[A-Z][a-z]{2} \d{1,2}, \d{4}$/);
   });
 
   it("draws first DMs per day over 14 days, the newest day on the right", async () => {

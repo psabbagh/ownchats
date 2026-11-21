@@ -242,7 +242,7 @@ function campaignSwitch(c: Campaign, calls: number | null = null, show: Show = "
   const saves = calls === null ? "" : ` It saves ${callsWords(calls)}, and comments`;
   const ask = `Turn off ${c.name}?${saves || " Comments"} that arrive while it is off get no DM.`;
   return html`<form class="switch-form" method="post" action="/dashboard/campaigns/${c.id}/switch"${c.active ? html` data-ask="${ask}" onsubmit="return confirm(this.dataset.ask)"` : ""}>
-    <input type="hidden" name="active" value="${c.active ? "off" : "on"}">${show !== "all" ? html`<input type="hidden" name="show" value="${show}">` : ""}<button class="switch${c.active ? " on" : ""}" role="switch" aria-checked="${c.active ? "true" : "false"}" title="${c.active ? "On. Click to turn off." : "Off. Click to turn on."}">${c.active ? "on" : "off"}</button></form>`;
+    <input type="hidden" name="active" value="${c.active ? "off" : "on"}">${show !== "all" ? html`<input type="hidden" name="show" value="${show}">` : ""}<button class="switch${c.active ? " on" : ""}" role="switch" aria-checked="${c.active ? "true" : "false"}" title="${c.active ? `On${calls === null ? "" : `, costing ${callsWords(calls)}`}. Click to turn off.` : "Off. Click to turn on."}">${c.active ? "on" : "off"}</button></form>`;
 }
 
 /** "Not for a campaign" on a flagged post: stop flagging it. */
@@ -342,6 +342,18 @@ export function campaignCalls(c: Campaign, postedAt: number | null, now: number)
   return HOUR / Math.max(pollEvery(postedAt, now), MINUTE);
 }
 
+/** A day in plain words, in the owner's zone: "today", "yesterday", "3 days ago", then "Nov 2" (with the year when it isn't this one). */
+export function dayWords(ms: number, now: number, tz: string): string {
+  const day = fmtDate(ms, tz);
+  if (day === fmtDate(now, tz)) return "today";
+  if (day === fmtDate(now - DAY, tz)) return "yesterday";
+  // Whole days between the two dates, so a campaign from 11 pm three days ago reads "3 days ago".
+  const days = Math.round((Date.parse(fmtDate(now, tz)) - Date.parse(day)) / DAY);
+  if (days > 1 && days < 7) return `${days} days ago`;
+  const sameYear = day.slice(0, 4) === fmtDate(now, tz).slice(0, 4);
+  return new Intl.DateTimeFormat("en-US", { timeZone: tz, month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }) }).format(ms);
+}
+
 /** "about 1 Meta call an hour", "about 4 Meta calls an hour", "1 Meta call every 3 hours". */
 export function callsWords(perHour: number): string {
   if (perHour < 1) return `1 Meta call every ${Math.round(1 / perHour)} hours`;
@@ -365,15 +377,12 @@ export function dmChart(days: number[]): Html {
 function recentLine(c: Campaign, postedAt: number | null, recent: CampaignRecent | undefined, now: number, tz: string): Html {
   const last = recent?.lastComment;
   const text = last?.text ? (last.text.length > 60 ? `${last.text.slice(0, 57).trimEnd()}...` : last.text) : "";
-  const calls = c.active ? campaignCalls(c, postedAt, now) : null;
   const parts = [
-    !c.active && recent?.offSince ? html`<span>Off since <b>${fmtTime(recent.offSince, tz)}</b></span>` : null,
     postedAt ? html`<span>Reel posted <b>${ago(postedAt, now)}</b></span>` : null,
     last
       ? html`<span>Last matching comment <b>${ago(last.at, now)}</b>${text ? html` <span class="muted">"${text}"</span>` : ""}</span>`
       : html`<span>No matching comment ${now - c.createdAt > KEPT_COMMENTS ? "in 30 days" : "yet"}</span>`,
     html`<span class="dms"><b>${fmtCount(recent?.dmsLastWeek ?? 0)}</b> ${recent?.dmsLastWeek === 1 ? "DM" : "DMs"} in the last 7 days ${dmChart(recent?.dmsByDay ?? new Array<number>(CHART_DAYS).fill(0))}</span>`,
-    calls !== null ? html`<span class="muted" title="Turning it off saves these calls, and it then answers nobody.">Costs ${callsWords(calls)}</span>` : null,
   ];
   return html`<p class="small recent">${parts.filter((p) => p !== null)}</p>`;
 }
@@ -435,7 +444,7 @@ export async function dashboardHome(ctx: Ctx, switched: string | null = null, sh
     return html`<div class="card row campaign${c.active ? "" : " off"}" id="c-${c.id}">
       <a class="cover" href="/dashboard/campaigns/${c.id}" aria-hidden="true" tabindex="-1">${cover ? html`<img src="${cover}" alt="" loading="lazy" onerror="this.remove()">` : ""}</a>
       <div class="body">
-      <div class="row"><h3 style="flex:1 1 auto"><a href="/dashboard/campaigns/${c.id}">${c.name}</a>${c.videoId ? html` <span class="muted small">${c.videoId}</span>` : ""}</h3>${c.active ? "" : html`<span class="pill off">Off</span>`}${quiet !== null ? html`<span class="pill quiet">No comment in ${quiet >= 30 && !recent.get(c.id)?.lastComment ? "30+ days" : plural(quiet, "day")}</span>` : ""}<span class="muted small">Started ${fmtDate(c.createdAt, tz)}</span>
+      <div class="row"><h3 style="flex:1 1 auto"><a href="/dashboard/campaigns/${c.id}">${c.name}</a>${c.videoId ? html` <span class="muted small">${c.videoId}</span>` : ""}</h3>${c.active ? "" : html`<span class="pill off" title="${recent.get(c.id)?.offSince ? `Turned off ${dayWords(recent.get(c.id)!.offSince!, now, tz)}, at ${fmtTime(recent.get(c.id)!.offSince, tz)}` : "Off"}">Off</span>`}${quiet !== null ? html`<span class="pill quiet">No comment in ${quiet >= 30 && !recent.get(c.id)?.lastComment ? "30+ days" : plural(quiet, "day")}</span>` : ""}<span class="muted small" title="Started ${fmtTime(c.createdAt, tz)}">Started ${dayWords(c.createdAt, now, tz)}</span>
         ${campaignSwitch(c, c.active ? campaignCalls(c, postedAt(c), now) : null, show)}</div>
       ${justSwitched
         ? html`<p class="small ${c.active ? "ok" : "warn"}" role="status">${c.active ? "Turned on. It answers new comments from now on." : "Turned off. New comments on it get no DM until you turn it back on."}</p>`
