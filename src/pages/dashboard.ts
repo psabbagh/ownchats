@@ -70,6 +70,7 @@ import type { Ctx } from "../context";
 import { trackingBase } from "../clicks";
 import { randomToken, sha256Hex } from "../crypto";
 import { leadsCsv, listLeads } from "../export";
+import { ALERT_NAME, HEARTBEAT_EVERY, openAlerts, sendTestAlert } from "../alerts";
 import { checkTestLead, getDelivery, MIN_SECRET_LENGTH, recentDeliveries, sendTestLead, webhookConfig, type DeliveryRow } from "../leadwebhook";
 import { parseKeywords } from "../match";
 import type { Media } from "../meta/client";
@@ -507,6 +508,7 @@ export const KIND_LABEL: Record<string, string> = {
   api: "API",
   follow: "Follow check",
   token: "Token",
+  alert: "Alert",
 };
 
 export function activityTable(rows: ActivityRow[], names: Map<number, string>, tz: string): Html {
@@ -632,6 +634,8 @@ const SAVED_NOTE = {
   "export-off": "Turned off",
   webhook: "Saved",
   "webhook-off": "Turned off",
+  alerts: "Saved",
+  "alerts-off": "Turned off",
   "api-token-off": "Revoked",
   "api-write-token-off": "Revoked",
   clicks: "Saved",
@@ -732,12 +736,75 @@ function webhookCard(ctx: Ctx, campaigns: Campaign[], deliveries: DeliveryRow[],
   </div>`;
 }
 
-export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string; apiWriteToken?: string; webhookError?: string; testId?: string | null; saved?: string | null } = {}): Promise<Response> {
+/** What happened to the test alert just sent, in words. */
+function testAlertNotice(d: DeliveryRow | null, tz: string): Html {
+  if (!d) return html``;
+  if (d.status === "delivered") return html`<div class="card"><p class="ok">Test alert delivered (${d.last_result}). Check that it arrived where you expect it.</p></div>`;
+  if (d.status === "failed") return html`<div class="card errors"><p>The test alert was refused (${d.last_result}). Check the URL.</p></div>`;
+  if (!d.attempts) return html`<div class="card notice"><p>The test alert is queued and goes out within a minute. Reload to see what happened.</p></div>`;
+  return html`<div class="card notice"><p>The test alert didn't get through yet (${d.last_result}). OwnChats tries again at ${fmtTime(d.next_attempt_at, tz)}.</p></div>`;
+}
+
+function alertsCard(ctx: Ctx, notes: { error?: string; test?: DeliveryRow | null; saved?: string | null }): Html {
+  const s = ctx.settings;
+  const tz = timeZoneOf(s);
+  const open = openAlerts(ctx);
+  const [beatAt, beatProblem] = (s.heartbeat_problem ?? "").split("|");
+  return html`<div class="card" id="alerts">
+    <h3>Alerts</h3>
+    <p>Tells you when something needs you: comments stopped arriving from Meta, Meta's webhooks refused, the Instagram token or connection broken, people waiting over half an hour on a DM Instagram refused, refused DMs only you can send now, a post that went up with no campaign, and a burst of failed DMs.
+      One message when a problem starts and one when it's fixed, a reminder at most every 12 hours while it lasts, and at most 10 messages a day. Alerts never name anyone.</p>
+    ${notes.error ? html`<div class="card errors"><p>${notes.error}</p></div>` : ""}
+    <form method="post" action="/dashboard/settings/alerts">
+      <label for="alert_url">Alert URL</label><input id="alert_url" name="alert_url" type="url" value="${s.alert_url ?? ""}" placeholder="https://ntfy.sh/your-own-random-topic">
+      <p class="hint">For a push on your phone with no account: install the ntfy app, subscribe to a topic with a long random name nobody would guess, and paste <code>https://ntfy.sh/</code> followed by that name.
+        A Slack or Discord webhook URL works too, and is recognised. OwnChats POSTs each alert there, and retries for about 20 minutes.</p>
+      <label for="alert_format">Format</label>
+      <select id="alert_format" name="alert_format">
+        <option value="text"${s.alert_format === "json" ? "" : " selected"}>Plain text, with a title (ntfy and most push services)</option>
+        <option value="json"${s.alert_format === "json" ? " selected" : ""}>JSON (your own tools)</option>
+      </select>
+      <label for="heartbeat_url">Heartbeat URL (optional)</label><input id="heartbeat_url" name="heartbeat_url" type="url" value="${s.heartbeat_url ?? ""}" placeholder="https://hc-ping.com/...">
+      <p class="hint">OwnChats visits this address every ${HEARTBEAT_EVERY / MINUTE} minutes. A service such as healthchecks.io alerts you when the visits stop, which covers the one problem OwnChats can't report itself: not running at all. Set the check's period to ${HEARTBEAT_EVERY / MINUTE} minutes.
+        ${s.heartbeat_url ? (beatProblem ? html`<span class="warn">The last visit failed (${fmtTime(Number(beatAt), tz)}): ${beatProblem}.</span>` : s.heartbeat_at ? html`Last visit: ${fmtTime(Number(s.heartbeat_at), tz)}.` : "") : ""}</p>
+      <p class="row"><button name="do" value="save">Save</button>${s.alert_url || s.heartbeat_url ? html`<button class="danger" name="do" value="off">Turn off</button>` : ""}${savedNote(notes.saved, "alerts", "alerts-off")}</p>
+    </form>
+    ${s.alert_url
+      ? html`${testAlertNotice(notes.test ?? null, tz)}
+          <form method="post" action="/dashboard/settings/test-alert"><button class="secondary">Send a test alert</button></form>
+          <p class="small">${open.length
+            ? html`Open now: ${open.map((a, i) => html`${i ? "; " : ""}${ALERT_NAME[a.key]} (since ${fmtTime(a.since, tz)})`)}.`
+            : html`<span class="ok">No alert is open.</span>`}</p>`
+      : ""}
+  </div>`;
+}
+
+/** Checks the alerts form. Returns the values to save, or the problem in words. */
+function alertsFromForm(form: FormData): { alert_url: string; heartbeat_url: string; alert_format: string } | { error: string } {
+  const out = { alert_url: "", heartbeat_url: "", alert_format: String(form.get("alert_format") ?? "") === "json" ? "json" : "text" };
+  for (const [key, what] of [["alert_url", "alert"], ["heartbeat_url", "heartbeat"]] as const) {
+    const url = String(form.get(key) ?? "").trim();
+    if (!url) continue;
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return { error: `Enter the full ${what} address, starting with https://` };
+    }
+    if (parsed.protocol !== "https:") return { error: `The ${what} address must start with https://.` };
+    if (url.length > 500) return { error: `That ${what} address is too long.` };
+    out[key] = url;
+  }
+  return out;
+}
+
+export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string; apiWriteToken?: string; webhookError?: string; testId?: string | null; alertError?: string; alertTestId?: string | null; saved?: string | null } = {}): Promise<Response> {
   const s = ctx.settings;
   const exportUrl = s.export_key ? `${s.base_url}/export/leads.csv?key=${s.export_key}` : "";
   const campaigns = await listCampaigns(ctx.db);
   const deliveries = await recentDeliveries(ctx);
   const test = fresh.testId ? await getDelivery(ctx, fresh.testId) : null;
+  const alertTest = fresh.alertTestId ? await getDelivery(ctx, fresh.alertTestId) : null;
   const clicksOn = s.click_tracking !== "off";
   return page(
     "Settings",
@@ -766,6 +833,7 @@ export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string; apiWrit
               <form method="post" action="/dashboard/settings/export" class="row"><button name="do" value="new">Create link</button>${savedNote(fresh.saved, "export-off")}</form>`}
       </div>
       ${webhookCard(ctx, campaigns, deliveries, { error: fresh.webhookError, test, saved: fresh.saved })}
+      ${alertsCard(ctx, { error: fresh.alertError, test: alertTest, saved: fresh.saved })}
       <div class="card" id="api-token">
         <h3>API token</h3>
         <p>For tools that read your campaigns and leads. See <code>GET ${s.base_url ?? ""}/api</code>.</p>
@@ -902,6 +970,23 @@ export async function settingsAction(ctx: Ctx, request: Request, what: string): 
     if ("error" in checked) return settingsPage(ctx, { webhookError: checked.error });
     const { id } = await sendTestLead(ctx, checked);
     return redirect(`/dashboard/settings?test=${encodeURIComponent(id)}#webhook`);
+  }
+  if (what === "alerts") {
+    if (action === "off") {
+      await deleteSettings(ctx.db, ["alert_url", "alert_format", "alert_state", "heartbeat_url", "heartbeat_at", "heartbeat_problem"]);
+      return saved("alerts-off", "alerts");
+    }
+    const values = alertsFromForm(form);
+    if ("error" in values) return settingsPage(ctx, { alertError: values.error });
+    const emptied = (["alert_url", "heartbeat_url"] as const).filter((k) => !values[k]);
+    await deleteSettings(ctx.db, [...emptied, ...(values.heartbeat_url ? [] : (["heartbeat_at", "heartbeat_problem"] as const))]);
+    await saveSettings(ctx.db, pw, { alert_format: values.alert_format, ...(values.alert_url ? { alert_url: values.alert_url } : {}), ...(values.heartbeat_url ? { heartbeat_url: values.heartbeat_url } : {}) });
+    return saved("alerts", "alerts");
+  }
+  if (what === "test-alert") {
+    const sent = await sendTestAlert(ctx);
+    if (!sent) return settingsPage(ctx, { alertError: "Save an alert URL first." });
+    return redirect(`/dashboard/settings?alert_test=${encodeURIComponent(sent.id)}#alerts`);
   }
   if (what === "clicks") {
     if (action === "off") await saveSettings(ctx.db, pw, { click_tracking: "off" });

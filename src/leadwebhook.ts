@@ -1,3 +1,4 @@
+import { alertFormat, alertRequest, type AlertPayload } from "./alertmessage";
 import { consentFor, DEFAULTS, fill, getCampaign, type Campaign } from "./campaigns";
 import { personalLink } from "./clicks";
 import { logStatement, type Ctx } from "./context";
@@ -12,10 +13,14 @@ import { DAY, HOUR, iso, MINUTE, SECOND } from "./time";
  * docs/lead-webhook.md.
  */
 export type LeadEvent = "lead.created" | "lead.deleted";
+/** Deliveries also carry the owner's alerts (alerts.ts), sent to the alert URL with the same queue and retries. */
+export type DeliveryEvent = LeadEvent | "alert";
 
 /** The waits between attempts. The eighth and last attempt comes about 22 hours after the first. */
 export const RETRY_DELAYS = [MINUTE, 5 * MINUTE, 15 * MINUTE, HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR];
 export const MAX_ATTEMPTS = RETRY_DELAYS.length + 1;
+/** An alert is tried for about 20 minutes (1, 5 and 15 minutes after the first): one that arrives hours late says something no longer true. */
+export const ALERT_ATTEMPTS = 4;
 export const TIMEOUT = 10 * SECOND;
 /** An attempt in progress holds its delivery this long, so a request and the Cron never send it at the same time. */
 const CLAIM = 2 * MINUTE;
@@ -43,7 +48,7 @@ export function webhookConfig(ctx: Ctx): WebhookConfig | null {
 
 export interface DeliveryRow {
   id: string;
-  event: LeadEvent;
+  event: DeliveryEvent;
   payload: string;
   test: number;
   campaign_id: number | null;
@@ -84,7 +89,7 @@ export function leadCreatedPayload(l: NewLead): Record<string, unknown> {
 /** A delivery to insert, and its id: new for each event, the same on every retry. */
 export function queueStatement(
   ctx: Ctx,
-  d: { event: LeadEvent; payload: Record<string, unknown>; test?: boolean; campaignId?: number | null; igUserId?: string | null; username?: string | null },
+  d: { event: DeliveryEvent; payload: Record<string, unknown>; test?: boolean; campaignId?: number | null; igUserId?: string | null; username?: string | null },
 ): { id: string; statement: D1PreparedStatement } {
   const id = crypto.randomUUID();
   const now = ctx.now();
@@ -153,6 +158,41 @@ function inWords(ms: number): string {
   return ms === MINUTE ? "1 minute" : `${ms / MINUTE} minutes`;
 }
 
+/** Where and what one attempt sends. */
+interface Target {
+  url: string;
+  headers: Record<string, string>;
+  body: string;
+}
+
+/** A lead event: signed JSON to the lead webhook, or null once it was turned off. */
+async function leadTarget(ctx: Ctx, row: DeliveryRow, now: number): Promise<Target | null> {
+  const config = webhookConfig(ctx);
+  if (!config) return null;
+  const body = eventBody(row, now);
+  const timestamp = String(Math.floor(now / 1000));
+  return {
+    url: config.url,
+    body,
+    headers: {
+      "content-type": "application/json",
+      "user-agent": "OwnChats-Webhook/1",
+      "x-ownchats-event": row.event,
+      "x-ownchats-delivery": row.id,
+      "x-ownchats-timestamp": timestamp,
+      "x-ownchats-signature": await signature(config.secret, timestamp, body),
+    },
+  };
+}
+
+/** An alert: shaped for the alert URL's receiver (alertmessage.ts), or null once the URL was turned off. */
+function alertTarget(ctx: Ctx, row: DeliveryRow, now: number): Target | null {
+  const url = ctx.settings.alert_url;
+  if (!url) return null;
+  const { body, headers } = alertRequest(url, alertFormat(ctx.settings.alert_format), JSON.parse(row.payload) as AlertPayload, { id: row.id, now, test: row.test === 1 });
+  return { url, body, headers: { ...headers, "user-agent": "OwnChats-Alerts/1", "x-ownchats-event": "alert", "x-ownchats-delivery": row.id } };
+}
+
 /** Takes due deliveries for this invocation; `id` limits it to one. */
 async function claim(ctx: Ctx, limit: number, id?: string): Promise<DeliveryRow[]> {
   const now = ctx.now();
@@ -182,13 +222,18 @@ export interface Attempt {
 async function attempt(ctx: Ctx, row: DeliveryRow): Promise<Attempt | null> {
   const now = ctx.now();
   const n = row.attempts + 1;
-  const label = `${row.test ? "Test " : ""}${row.event}`;
+  const isAlert = row.event === "alert";
+  const kind = isAlert ? "alert" : "lead_webhook";
+  const max = isAlert ? ALERT_ATTEMPTS : MAX_ATTEMPTS;
+  const alert = isAlert ? (JSON.parse(row.payload) as Partial<AlertPayload>) : null;
+  const label = isAlert ? `${row.test ? "Test alert" : "Alert"}${alert?.title ? ` "${alert.title}"` : ""}` : `${row.test ? "Test " : ""}${row.event}`;
   const who = { campaignId: row.campaign_id, igUserId: row.ig_user_id, username: row.username };
-  const config = webhookConfig(ctx);
-  if (!config) {
+  const target = isAlert ? alertTarget(ctx, row, now) : await leadTarget(ctx, row, now);
+  if (!target) {
+    const off = isAlert ? "the alert URL was turned off" : "the lead webhook was turned off";
     await ctx.db.batch([
-      settleStatement(ctx, row.id, "failed", row.attempts, null, "the lead webhook was turned off"),
-      logStatement(ctx, { kind: "lead_webhook", outcome: "failed", reason: `${label}: the lead webhook was turned off`, ...who, detail: row.id }),
+      settleStatement(ctx, row.id, "failed", row.attempts, null, off),
+      logStatement(ctx, { kind, outcome: "failed", reason: `${label}: ${off}`, ...who, detail: row.id }),
     ]);
     return null;
   }
@@ -198,23 +243,14 @@ async function attempt(ctx: Ctx, row: DeliveryRow): Promise<Attempt | null> {
     return null;
   }
 
-  const body = eventBody(row, now);
-  const timestamp = String(Math.floor(now / 1000));
   let status = 0;
   let result: string;
   let reply = "";
   try {
-    const res = await ctx.fetch(config.url, {
+    const res = await ctx.fetch(target.url, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "user-agent": "OwnChats-Webhook/1",
-        "x-ownchats-event": row.event,
-        "x-ownchats-delivery": row.id,
-        "x-ownchats-timestamp": timestamp,
-        "x-ownchats-signature": await signature(config.secret, timestamp, body),
-      },
-      body,
+      headers: target.headers,
+      body: target.body,
       redirect: "manual",
       signal: AbortSignal.timeout(TIMEOUT),
     });
@@ -230,27 +266,27 @@ async function attempt(ctx: Ctx, row: DeliveryRow): Promise<Attempt | null> {
   }
 
   const got = { status, result, reply };
-  const detail = `${row.id}, attempt ${n} of ${MAX_ATTEMPTS}${status >= 300 && status < 400 ? ": the URL redirects, use the address it redirects to" : reply ? `: ${reply}` : ""}`;
+  const detail = `${row.id}, attempt ${n} of ${max}${status >= 300 && status < 400 ? ": the URL redirects, use the address it redirects to" : reply ? `: ${reply}` : ""}`;
   if (status >= 200 && status < 300) {
     await ctx.db.batch([
       settleStatement(ctx, row.id, "delivered", n, null, result),
-      logStatement(ctx, { kind: "lead_webhook", outcome: "sent", reason: `${label} delivered (${result})`, ...who, detail }),
+      logStatement(ctx, { kind, outcome: "sent", reason: `${label} delivered (${result})`, ...who, detail }),
     ]);
     return got;
   }
   const retryable = status === 0 || status === 429 || status >= 500;
-  if (retryable && n < MAX_ATTEMPTS) {
+  if (retryable && n < max) {
     const wait = RETRY_DELAYS[n - 1]!;
     await ctx.db.batch([
       settleStatement(ctx, row.id, "pending", n, now + wait, result),
-      logStatement(ctx, { kind: "lead_webhook", outcome: "queued", reason: `${label}: ${result}, retrying in ${inWords(wait)}`, ...who, detail }),
+      logStatement(ctx, { kind, outcome: "queued", reason: `${label}: ${result}, retrying in ${inWords(wait)}`, ...who, detail }),
     ]);
     return got;
   }
   const why = retryable ? `${result}, gave up after ${n} attempts` : `${result}, not retried`;
   await ctx.db.batch([
     settleStatement(ctx, row.id, "failed", n, null, result),
-    logStatement(ctx, { kind: "lead_webhook", outcome: "failed", reason: `${label}: ${why}`, ...who, detail }),
+    logStatement(ctx, { kind, outcome: "failed", reason: `${label}: ${why}`, ...who, detail }),
   ]);
   return got;
 }
@@ -326,7 +362,7 @@ export async function sendTestLead(
 }
 
 export async function recentDeliveries(ctx: Ctx, limit = 10): Promise<DeliveryRow[]> {
-  const { results } = await ctx.db.prepare("SELECT * FROM deliveries ORDER BY created_at DESC, rowid DESC LIMIT ?").bind(limit).all<DeliveryRow>();
+  const { results } = await ctx.db.prepare("SELECT * FROM deliveries WHERE event <> 'alert' ORDER BY created_at DESC, rowid DESC LIMIT ?").bind(limit).all<DeliveryRow>();
   return results;
 }
 

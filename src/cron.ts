@@ -1,3 +1,4 @@
+import { checkAlerts, heartbeat } from "./alerts";
 import type { Ctx } from "./context";
 import { oldestKeptDay, POST_DAYS, refreshAccountDays, refreshAccountStats, refreshMediaStats, refreshPostList } from "./insights";
 import { handleComment, pendingCommentIds, QUERIES_PER_COMMENT } from "./pipeline/comments";
@@ -23,10 +24,19 @@ const KEEP_COMMENTS = 30 * DAY;
  * Runs every minute: attach campaigns waiting for the next post, retry the private
  * replies and the messages after a tap that wait, poll for missed comments, read
  * Instagram's numbers that are due (posts and the account's days), send what the lead
- * webhook has waiting, and once a day, upkeep. Sends go first; the reads are held
+ * webhook has waiting, and once a day, upkeep. It starts with the heartbeat and the
+ * owner's alerts (alerts.ts). Sends go first; the reads are held
  * back while Meta's rate limit is near (throttle.ts).
  */
 export async function runCron(ctx: Ctx): Promise<void> {
+  // First, and even while Instagram is disconnected: the heartbeat says the Cron runs, and alerts say what needs the owner.
+  await heartbeat(ctx);
+  try {
+    await checkAlerts(ctx);
+  } catch (err) {
+    // An alert must never cost a DM: the rest of the run goes on.
+    console.error("alerts", err);
+  }
   // Leads already saved still go to the webhook while Instagram is disconnected.
   if (!ctx.meta) return deliverDue(ctx);
   // First, so the comments it hands back are answered in this same run.

@@ -21,6 +21,8 @@ export interface RefusedSend {
   /** The next automatic try; null once the Cron stopped. */
   nextAt: number | null;
   attempts: number;
+  /** When Meta first refused it: the retry schedule counts from here. */
+  since: number;
   /** Milliseconds left in Meta's window: 7 days from the comment, or 24 hours from the tap. */
   left: number;
 }
@@ -48,7 +50,7 @@ export async function refusedSends(ctx: Ctx, campaignIds: number[]): Promise<Map
     // A comment whose person got this campaign's DM another way (a second comment) is left out.
     ctx.db
       .prepare(
-        `SELECT c.id, c.campaign_id, c.from_username, c.commented_at, c.status, c.next_attempt_at, c.attempts FROM comments c
+        `SELECT c.id, c.campaign_id, c.from_username, c.commented_at, c.status, c.next_attempt_at, c.attempts, c.first_refused_at FROM comments c
          WHERE c.campaign_id IN (SELECT value FROM json_each(?1)) AND c.status IN ('queued', 'failed')
            AND c.reason IN (SELECT value FROM json_each(?2)) AND c.commented_at > ?3 AND c.from_id IS NOT NULL AND c.first_refused_at IS NOT NULL
            AND NOT EXISTS (SELECT 1 FROM conversations v WHERE v.campaign_id = c.campaign_id AND (v.ig_user_id = c.from_id OR v.commenter_id = c.from_id))
@@ -57,7 +59,7 @@ export async function refusedSends(ctx: Ctx, campaignIds: number[]): Promise<Map
       .bind(ids, JSON.stringify(REFUSED_REASONS), now - PRIVATE_REPLY_WINDOW),
     ctx.db
       .prepare(
-        `SELECT id, campaign_id, username, pending_kind, pending_reason, pending_at, pending_attempts, last_inbound_at FROM conversations
+        `SELECT id, campaign_id, username, pending_kind, pending_reason, pending_at, pending_attempts, pending_since, last_inbound_at FROM conversations
          WHERE campaign_id IN (SELECT value FROM json_each(?1)) AND pending_message IS NOT NULL AND last_inbound_at > ?2
          ORDER BY last_inbound_at LIMIT 200`,
       )
@@ -72,6 +74,7 @@ export async function refusedSends(ctx: Ctx, campaignIds: number[]): Promise<Map
       what: "the first DM",
       nextAt: c.status === "queued" ? ((c.next_attempt_at as number | null) ?? now) : null,
       attempts: Number(c.attempts),
+      since: Number(c.first_refused_at),
       left: Number(c.commented_at) + PRIVATE_REPLY_WINDOW - now,
     });
   }
@@ -83,6 +86,7 @@ export async function refusedSends(ctx: Ctx, campaignIds: number[]): Promise<Map
       what: whatMessage(String(m.pending_kind), String(m.pending_reason)),
       nextAt: (m.pending_at as number | null) ?? null,
       attempts: Number(m.pending_attempts),
+      since: Number(m.pending_since ?? m.last_inbound_at),
       left: Number(m.last_inbound_at) + MESSAGING_WINDOW - now,
     });
   }
