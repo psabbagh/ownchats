@@ -391,3 +391,36 @@ describe("sends refused before this change", () => {
     expect(w.meta.sent).toHaveLength(0);
   });
 });
+
+describe("the rate-limit line on the campaigns page", () => {
+  const strip = (page: string) => /<div class="card notice" id="needs-you">.*?<\/ul><\/div>/s.exec(page)?.[0] ?? "";
+
+  it("tops Needs you while Meta refuses, with everyone waiting and the next try, and leaves once the pause ends", async () => {
+    await saveTimeZone("America/Toronto");
+    await twoPosts();
+    w.meta.failNext("sendPrivateReply", LIMIT());
+    await w.sendComment(w.comment("AGENTS", FAN, { media: YOUNG_POST }));
+    w.meta.failNext("sendPrivateReply", LIMIT());
+    await w.sendComment(w.comment("OLD", FAN2, { media: OLD_POST }));
+    const cookie = await w.signIn();
+    const home = async () => (await w.fetch("/dashboard", { headers: { cookie } })).text();
+
+    const page = await home();
+    const shown = strip(page);
+    expect(shown).toMatch(/<li><span class="warn"><b>Instagram's rate limit was reached\.<\/b><\/span> OwnChats holds back its background reads until [^.]+\. <b>2 people are waiting for a DM<\/b> Meta refused\. OwnChats tries again (from [^.]+|once the pause ends)\. To send one sooner, open its campaign below\.<\/li>/);
+    // Above the per-campaign lines that link to them, and no longer repeated in the grey line.
+    expect(shown.indexOf("rate limit was reached")).toBeLessThan(shown.indexOf("waiting on a refused send"));
+    expect(page.match(/rate limit was reached/g)).toHaveLength(1);
+
+    w.clock.advance(PAUSE + MINUTE);
+    expect(await home()).not.toContain("rate limit was reached");
+  });
+
+  it("says nobody is waiting when every DM went out", async () => {
+    await twoPosts();
+    await saveSettings(env.DB, env.ADMIN_PASSWORD, { meta_paused_until: String(w.clock.now() + PAUSE) });
+    const cookie = await w.signIn();
+    const shown = strip(await (await w.fetch("/dashboard", { headers: { cookie } })).text());
+    expect(shown).toContain("Nobody is waiting: new DMs still go out first.");
+  });
+});
