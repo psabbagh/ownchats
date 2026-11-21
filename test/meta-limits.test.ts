@@ -59,7 +59,8 @@ describe("one private reply per comment", () => {
     const c = w.comment("agents", FAN);
     await w.sendComment(c);
     expect(w.meta.sent).toHaveLength(0);
-    w.clock.advance(MINUTE);
+    // Code 4 pauses the app for 10 minutes; the retry goes once the pause is over.
+    w.clock.advance(13 * MINUTE);
     await w.cron();
     expect(w.meta.sent.filter((s) => s.kind === "private_reply")).toHaveLength(1);
   });

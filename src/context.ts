@@ -1,6 +1,7 @@
 import type { Env } from "./env";
 import type { MetaClient } from "./meta/client";
 import { loadSettings, type Settings } from "./settings";
+import { loadMetaLoad, saveMetaLoad, watchMeta, type MetaLoad } from "./throttle";
 
 /**
  * Everything a request or a Cron run needs. Built fresh for each one; tests build
@@ -18,6 +19,8 @@ export interface Ctx {
   budget: Budget;
   /** Outgoing requests other than Meta's: the lead webhook. Tests stand in a fake receiver. */
   fetch: typeof fetch;
+  /** How close Meta's rate limits are, and whether background reads are paused (throttle.ts). */
+  load: MetaLoad;
   /** Private replies sent in the last hour, counted once per invocation. */
   sentLastHour?: number;
 }
@@ -103,12 +106,16 @@ export async function buildCtx(env: Env, options: AppOptions): Promise<Ctx> {
   const budget = new Budget();
   const db = countingDb(env.DB, budget);
   const settings = await loadSettings(db, env.ADMIN_PASSWORD);
+  const now = options.now ?? Date.now;
+  const load = loadMetaLoad(settings);
+  const client = options.meta(env, settings);
   return {
     env,
     db,
     settings,
-    meta: options.meta(env, settings),
-    now: options.now ?? Date.now,
+    meta: client ? watchMeta(client, load, now, () => saveMetaLoad(db, env.ADMIN_PASSWORD, load)) : null,
+    load,
+    now,
     random: options.random ?? Math.random,
     budget,
     fetch: options.fetch ?? ((input, init) => fetch(input, init)),

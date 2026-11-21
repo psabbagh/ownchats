@@ -1,9 +1,11 @@
 import { fill, firstMessage, listCampaigns, matchComment, pickPublicReply, plainFirstMessage, type Campaign, type ConversationState } from "../campaigns";
 import { trackLinks } from "../clicks";
 import { logStatement, type ActivityEntry, type Ctx } from "../context";
-import { explainError, explainReplyError, isTemplateRejection, MetaError, type IgComment } from "../meta/client";
+import { explainError, explainReplyError, isTemplateRejection, MetaError, TRANSIENT_REASON, type IgComment } from "../meta/client";
+import { nextTry, privateReplyPlan, retryLog } from "../retry";
 import { shortcutKeywords } from "../settings";
 import { HOUR, MINUTE, PRIVATE_REPLIES_PER_HOUR, PRIVATE_REPLY_WINDOW } from "../time";
+import { paused } from "../throttle";
 import { claimConversation, getConversation, releaseClaim } from "./conversations";
 
 interface CommentRow {
@@ -20,9 +22,11 @@ interface CommentRow {
   reason: string | null;
   campaign_id: number | null;
   attempts: number;
+  first_refused_at: number | null;
 }
 
-const MAX_ATTEMPTS = 5;
+/** A private reply Meta kept refusing for a passing reason, after every retry: the owner can send it from To check. */
+export const GAVE_UP_REASON = "Meta rate limit or outage, stopped retrying: send it from To check";
 
 const FIRST_DM_REASON: Record<ConversationState, string> = {
   opened: "opening button",
@@ -138,14 +142,18 @@ function skipLog(ctx: Ctx, c: CommentFacts, reason: string, campaignId: number |
   });
 }
 
-/** Comments waiting for a retry: queued, never handled, or stuck mid-way. */
+/** Comments waiting for a retry that is due: queued, never handled, or stuck mid-way. */
 export async function pendingCommentIds(ctx: Ctx, limit = 20): Promise<string[]> {
+  // While Meta has paused the app, a refused one waits for the pause to end; a comment never tried still goes.
+  const refusedToo = paused(ctx.load, ctx.now()) ? 0 : 1;
   const { results } = await ctx.db
     .prepare(
-      `SELECT id FROM comments WHERE status IN ('new', 'queued') OR (status = 'processing' AND locked_at < ?)
-       ORDER BY received_at LIMIT ?`,
+      `SELECT id FROM comments
+       WHERE (status IN ('new', 'queued') AND (next_attempt_at IS NULL OR next_attempt_at <= ?1) AND (?4 = 1 OR first_refused_at IS NULL))
+         OR (status = 'processing' AND locked_at < ?2)
+       ORDER BY received_at LIMIT ?3`,
     )
-    .bind(ctx.now() - STALE_LOCK, limit)
+    .bind(ctx.now(), ctx.now() - STALE_LOCK, limit, refusedToo)
     .all<{ id: string }>();
   return results.map((r) => r.id);
 }
@@ -193,11 +201,11 @@ export async function handleComment(ctx: Ctx, id: string, campaigns?: Campaign[]
     campaignId: row.campaign_id,
   };
   const who = { commentId: row.id, igUserId: row.from_id, username: row.from_username };
-  const settle = (status: string, reason: string | null, campaignId: number | null, extra: D1PreparedStatement[] = [], attempts = row.attempts) =>
+  const settle = (status: string, reason: string | null, campaignId: number | null, extra: D1PreparedStatement[] = [], attempts = row.attempts, nextAt: number | null = null) =>
     ctx.db.batch([
       ctx.db
-        .prepare("UPDATE comments SET status = ?, reason = ?, campaign_id = ?, attempts = ?, locked_at = NULL WHERE id = ?")
-        .bind(status, reason, campaignId, attempts, row.id),
+        .prepare("UPDATE comments SET status = ?, reason = ?, campaign_id = ?, attempts = ?, next_attempt_at = ?, locked_at = NULL WHERE id = ?")
+        .bind(status, reason, campaignId, attempts, nextAt, row.id),
       ...extra,
     ]);
   const skip = (reason: string, campaignId: number | null = null, silent = false) =>
@@ -256,10 +264,21 @@ export async function handleComment(ctx: Ctx, id: string, campaigns?: Campaign[]
     await releaseClaim(ctx.db, conversationId);
     const { reason, detail } = explainError(err);
     const attempts = row.attempts + 1;
-    const retry = err instanceof MetaError && err.transient && attempts < MAX_ATTEMPTS;
-    return void (await settle(retry ? "queued" : "failed", reason, cid, [
-      logStatement(ctx, { kind: "private_reply", outcome: "failed", reason, campaignId: cid, ...who, detail }),
-    ], attempts));
+    if (!(err instanceof MetaError && err.transient)) {
+      return void (await settle("failed", reason, cid, [
+        logStatement(ctx, { kind: "private_reply", outcome: "failed", reason, campaignId: cid, ...who, detail }),
+      ], attempts));
+    }
+    // A passing refusal: tried again on the schedule (retry.ts); once it runs out, the comment waits under To check.
+    const since = row.first_refused_at ?? ctx.now();
+    const plan = privateReplyPlan(since, row.commented_at);
+    const next = nextTry(ctx, plan, attempts - 1);
+    return void (await ctx.db.batch([
+      ctx.db
+        .prepare("UPDATE comments SET status = ?, reason = ?, campaign_id = ?, attempts = ?, next_attempt_at = ?, first_refused_at = ?, locked_at = NULL WHERE id = ?")
+        .bind(next ? "queued" : "failed", next ? TRANSIENT_REASON : GAVE_UP_REASON, cid, attempts, next?.at ?? null, since, row.id),
+      logStatement(ctx, { kind: "private_reply", outcome: "failed", reason: retryLog(ctx, attempts - 1, next, plan.times.length), campaignId: cid, ...who, detail }),
+    ]));
   }
   ctx.sentLastHour = (ctx.sentLastHour ?? 0) + 1;
 
