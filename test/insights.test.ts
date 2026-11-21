@@ -68,7 +68,11 @@ describe("post numbers", () => {
     expect(page).toContain("0.0081% of views led to a DM");
   });
 
-  it("reads up to two posts per Cron run, a campaign's post every 15 minutes, and none for campaigns that are off", async () => {
+  it("reads up to two posts per Cron run, a campaign's post by its age, and none for campaigns that are off", async () => {
+    w.meta.media.push(
+      { id: REEL, caption: "Invented reel", permalink: "https://example.com/p/reel", timestamp: w.clock.now() - DAY, mediaType: "FEED" },
+      { id: OTHER_POST, caption: "Invented post", permalink: "https://example.com/p/other", timestamp: w.clock.now() - 5 * DAY, mediaType: "FEED" },
+    );
     await w.campaign();
     await w.campaign({ name: "Other", keywords: ["OTHER"], mediaId: OTHER_POST });
     await w.campaign({ name: "Off", keywords: ["OFF"], mediaId: "18000000000000099", active: false });
@@ -78,9 +82,13 @@ describe("post numbers", () => {
     await w.cron();
     await w.cron();
     expect(reads()).toBe(2);
+    // The day-old Reel every 15 minutes; the 5-day-old post hourly, campaign or not.
     w.clock.advance(STATS_EVERY);
     await w.cron();
-    expect(reads()).toBe(4);
+    expect(reads()).toBe(3);
+    w.clock.advance(HOUR - STATS_EVERY);
+    await w.cron();
+    expect(reads()).toBe(5);
     const { results } = await env.DB.prepare("SELECT media_id FROM media_stats ORDER BY media_id").all<{ media_id: string }>();
     expect(results.map((r) => r.media_id).sort()).toEqual([OTHER_POST, REEL].sort());
   });
@@ -89,7 +97,8 @@ describe("post numbers", () => {
     const id = await w.campaign();
     w.meta.insights.set(REEL, NUMBERS);
     await w.cron();
-    w.clock.advance(STATS_EVERY);
+    // A campaign post Meta gave no posting time for is read hourly.
+    w.clock.advance(HOUR);
     w.meta.failNext("mediaInsights", NO_PERMISSION);
     await w.cron();
 
@@ -285,13 +294,36 @@ describe("every recent post and the account", () => {
       w.meta.reelInsights.set("18000000000000421", { ig_reels_avg_watch_time: 15500, reels_skip_rate: 47.5 });
       await w.cron();
 
+      // Not with the post's other numbers every 15 minutes: every 6 hours in a Reel's first 2 days.
       w.clock.advance(15 * MINUTE);
+      await w.cron();
+      expect(reelReads()).toBe(2);
+      expect(reads()).toBe(2);
+
+      w.clock.advance(6 * HOUR);
       w.meta.insights.set("18000000000000421", { views: 180 });
       w.meta.reelInsights.set("18000000000000421", { ig_reels_avg_watch_time: 16000, reels_skip_rate: 50.1 });
       // The first request, the watch time, is refused; the skip rate still comes.
       w.meta.failNext("reelInsight", REFUSED);
       await w.cron();
       expect((await byId()).get("18000000000000421")).toMatchObject({ views: 180, avg_watch_time_ms: 15500, skip_rate_percent: 50.1 });
+    });
+
+    it("are read daily once the Reel is 2 days old", async () => {
+      post("18000000000000441", 3);
+      w.meta.reelInsights.set("18000000000000441", { ig_reels_avg_watch_time: 15500, reels_skip_rate: 47.5 });
+      await w.cron();
+      expect(reelReads()).toBe(2);
+      // The other numbers hourly, these once a day.
+      for (let i = 0; i < 23; i++) {
+        w.clock.advance(HOUR);
+        await w.cron();
+      }
+      expect(reads()).toBe(24);
+      expect(reelReads()).toBe(2);
+      w.clock.advance(HOUR);
+      await w.cron();
+      expect(reelReads()).toBe(4);
     });
 
     it("are not asked when the post's other numbers failed", async () => {

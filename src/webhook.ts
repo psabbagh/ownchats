@@ -4,6 +4,7 @@ import type { IgComment } from "./meta/client";
 import { receiveComments } from "./pipeline/comments";
 import { handleInbound, type InboundEvent } from "./pipeline/messages";
 import { saveSettings } from "./settings";
+import { saveMetaLoad } from "./throttle";
 
 /** Meta's verification handshake: echo hub.challenge, as plain text, if the token matches. */
 export async function verifyWebhook(ctx: Ctx, url: URL): Promise<Response> {
@@ -127,4 +128,6 @@ export async function processPayload(ctx: Ctx, payload: WebhookPayload): Promise
   const { comments, events } = parsePayload(payload, ctx.now());
   if (comments.length) await receiveComments(ctx, comments, "webhook");
   for (const ev of events) await handleInbound(ctx, ev);
+  // The usage Meta reported on these sends, for the next Cron run to go by.
+  await saveMetaLoad(ctx.db, ctx.env.ADMIN_PASSWORD, ctx.load);
 }

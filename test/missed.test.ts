@@ -131,7 +131,8 @@ describe("answering a missed comment", () => {
     const res = await post(cookie, `/dashboard/campaigns/${id}/answer`, { comment_id: c.id });
     expect(await status(c.id)).toMatchObject({ status: "queued", campaign_id: id });
     expect(await (await w.fetch(res.headers.get("location")!, { headers: { cookie } })).text()).toContain("On its way");
-    w.clock.advance(MINUTE);
+    // Code 4 pauses the app for 10 minutes; the retry goes once the pause is over.
+    w.clock.advance(13 * MINUTE);
     await w.cron();
     expect(privateReplies().map((s) => s.to)).toEqual([c.id]);
     expect(await status(c.id)).toMatchObject({ status: "done", campaign_id: id });

@@ -50,6 +50,66 @@ export interface MetaClient {
    * midnight to midnight Pacific time. Null where Meta has no number yet.
    */
   accountDay(day: string): Promise<AccountDay>;
+  /**
+   * How close the app is to Meta's rate limits, as Meta reported on its latest
+   * response (X-App-Usage, X-Business-Use-Case-Usage). Null until a response carried it.
+   */
+  readonly lastUsage: MetaUsage | null;
+}
+
+/** Meta's own count of how much of a rate limit the app has used, from its response headers. */
+export interface MetaUsage {
+  /** The highest share used, 0 to 100 (it can pass 100 once Meta refuses). */
+  percent: number;
+  /** How long until Meta lets calls through again, when it said; null otherwise. */
+  regainMs: number | null;
+  /** Which limit is at what, for the dashboard: "app 72%, instagram 4%". */
+  detail: string;
+}
+
+const USAGE_FIELDS = ["call_count", "total_cputime", "total_time"] as const;
+
+/**
+ * Reads Meta's usage headers. X-App-Usage counts every call the app makes in a rolling
+ * hour (`{"call_count":28,"total_time":25,"total_cputime":25}`, percentages); Meta
+ * refuses with code 4 at 100. X-Business-Use-Case-Usage has the same per account and
+ * use case, with `estimated_time_to_regain_access` in minutes once it is reached.
+ * Null when neither header is there or neither can be read.
+ */
+export function parseUsage(appUsage: string | null, businessUsage: string | null): MetaUsage | null {
+  const parts: string[] = [];
+  let percent = -1;
+  let regain = 0;
+  const take = (label: string, o: unknown) => {
+    if (!o || typeof o !== "object") return;
+    const r = o as Record<string, unknown>;
+    const values = USAGE_FIELDS.map((f) => r[f]).filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+    if (!values.length) return;
+    const top = Math.max(...values);
+    percent = Math.max(percent, top);
+    parts.push(`${label} ${Math.round(top)}%`);
+    const minutes = r.estimated_time_to_regain_access;
+    if (typeof minutes === "number" && Number.isFinite(minutes)) regain = Math.max(regain, minutes);
+  };
+  const read = (header: string | null): unknown => {
+    if (!header) return null;
+    try {
+      return JSON.parse(header) as unknown;
+    } catch {
+      return null;
+    }
+  };
+  take("app", read(appUsage));
+  const business = read(businessUsage);
+  if (business && typeof business === "object") {
+    for (const list of Object.values(business as Record<string, unknown>)) {
+      for (const entry of Array.isArray(list) ? list : []) {
+        take(typeof (entry as { type?: unknown })?.type === "string" ? String((entry as { type: string }).type).toLowerCase() : "account", entry);
+      }
+    }
+  }
+  if (percent < 0) return null;
+  return { percent, regainMs: regain > 0 ? regain * 60_000 : null, detail: parts.join(", ") };
 }
 
 export interface AccountStats {
@@ -131,7 +191,15 @@ export class MetaError extends Error {
 
   /** Worth trying again later: rate limits and Meta-side errors. */
   get transient(): boolean {
-    return this.status >= 500 || this.status === 429 || [1, 2, 4, 17, 32, 341, 613].includes(this.code ?? -1);
+    return this.status >= 500 || this.status === 429 || [1, 2, 4, 17, 32, 341, 613, 80002].includes(this.code ?? -1);
+  }
+
+  /**
+   * One of Meta's rate limits refused the call: 4 is the app's (every call it makes counts),
+   * 17 the user's, 32 the page's, 613 a custom one, 80002 the Instagram account's.
+   */
+  get rateLimited(): boolean {
+    return this.status === 429 || [4, 17, 32, 613, 80002].includes(this.code ?? -1);
   }
 
   get detail(): string {
@@ -142,6 +210,12 @@ export class MetaError extends Error {
     return `${this.message} (${parts.join(", ")})`;
   }
 }
+
+/**
+ * The reason logged for a refusal worth trying again: a rate limit or an outage. Sends
+ * refused this way are retried by the Cron, and listed under To check meanwhile.
+ */
+export const TRANSIENT_REASON = "Meta rate limit or outage, will retry";
 
 /** A short reason for the activity log, in plain words where the error is known. */
 export function explainError(err: unknown): { reason: string; detail: string } {
@@ -169,7 +243,7 @@ function knownReason(err: MetaError): string | null {
   const m = err.message.toLowerCase();
   const sub = err.subcode ?? -1;
   if (err.code === 190) return "token expired or revoked: reconnect Instagram on /setup";
-  if (err.transient) return "Meta rate limit or outage, will retry";
+  if (err.transient) return TRANSIENT_REASON;
   if (sub === 2534025 || sub === 2534023 || err.code === 10900) return "Meta refused a private reply to this comment (already answered, or too old)";
   if (sub === 2534022 || sub === 2018278) return "outside Meta's 24-hour messaging window";
   if (sub === 2534037 || sub === 2018300 || m.includes("thread owner")) return "another app owns this conversation: check Conversation routing in Meta Business Suite";

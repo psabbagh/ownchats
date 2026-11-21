@@ -125,7 +125,8 @@ describe("a campaign on the next post", () => {
     expect((await campaignRow(agents))!.next_post_after).not.toBeNull();
     expect((await campaignRow(memory))!.next_post_after).not.toBeNull();
 
-    w.clock.advance(MINUTE);
+    // The post list is read through its 10-minute cache.
+    w.clock.advance(10 * MINUTE);
     w.meta.media = [media("18000000000000021", w.clock.now(), "How my agents remember. Comment MEMORY 👇"), ...w.meta.media];
     await w.cron();
     expect(await campaignRow(memory)).toMatchObject({ media_id: "18000000000000021", next_post_after: null });
@@ -145,6 +146,7 @@ describe("a campaign on the next post", () => {
     await w.cron();
     expect((await campaignRow(fresh))!.media_id).toBeNull();
 
+    w.clock.advance(10 * MINUTE);
     w.meta.media = [media(NEW_POST, w.clock.now()), ...w.meta.media];
     await w.cron();
     expect((await campaignRow(fresh))!.media_id).toBe(NEW_POST);
@@ -179,9 +181,39 @@ describe("a campaign on the next post", () => {
     await w.cron();
     expect(metaCalls("listMedia")).toBe(1);
     expect((await campaignRow(id))!.next_post_after).not.toBeNull();
+    // Through the 10-minute cache: about 6 reads an hour while a campaign waits, not 60.
+    for (let i = 0; i < 9; i++) {
+      w.clock.advance(MINUTE);
+      await w.cron();
+    }
+    expect(metaCalls("listMedia")).toBe(1);
     w.clock.advance(MINUTE);
     await w.cron();
     expect(metaCalls("listMedia")).toBe(2);
+  });
+
+  it("reads the post list at once when a comment arrives on a post it has never seen", async () => {
+    const id = await waiting();
+    w.meta.media = [media(OLD_POST, w.clock.now() - DAY)];
+    await w.cron();
+    expect(metaCalls("listMedia")).toBe(1);
+
+    // A comment on an old post the account already listed doesn't count.
+    await env.DB.prepare("INSERT INTO media_stats (media_id, fetched_at, posted_at) VALUES (?, 0, ?)").bind(OTHER_POST, w.clock.now() - 3 * DAY).run();
+    w.clock.advance(MINUTE);
+    await w.sendComment(w.comment("nice", FAN2, { media: OTHER_POST }));
+    await w.cron();
+    expect(metaCalls("listMedia")).toBe(1);
+
+    // The Reel goes up and its first comment arrives by webhook: the next run reads the list and attaches.
+    w.meta.media = [media(NEW_POST, w.clock.now()), ...w.meta.media];
+    const early = w.comment("AGENTS", FAN, { media: NEW_POST });
+    await w.sendComment(early);
+    w.clock.advance(MINUTE);
+    await w.cron();
+    expect(metaCalls("listMedia")).toBe(2);
+    expect((await campaignRow(id))!.media_id).toBe(NEW_POST);
+    expect(privateReplies().map((s) => s.to)).toEqual([early.id]);
   });
 
   it("answers the comments that reached the post before it attached", async () => {

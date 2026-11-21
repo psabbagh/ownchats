@@ -125,6 +125,8 @@ describe("a post no waiting campaign attached to", () => {
     expect(entry).toContain(`action="/dashboard/posts/dismiss"`);
 
     w.meta.media = [media(NEW_POST, posted, "A new reel. Comment AGENTS for the list")];
+    // The edited caption is seen on the next read of the post list, within 10 minutes.
+    w.clock.advance(10 * MINUTE);
     await w.cron();
     expect((await getCampaign(env.DB, id))!.mediaId).toBe(NEW_POST);
     expect(entries(await home())).toBe("");
@@ -224,7 +226,8 @@ describe("a post no waiting campaign attached to", () => {
     const picker = await (await w.fetch(`/dashboard/campaigns/${id}/edit`, { headers: { cookie } })).text();
     expect(picker).toContain(`name="media_id" value="${OLD_POST}"`);
 
-    w.clock.advance(MINUTE);
+    // The form read the list fresh; the Cron reads it again once its 10-minute cache runs out.
+    w.clock.advance(10 * MINUTE);
     w.meta.media = [media(NEW_POST, w.clock.now(), "Forgot the line"), media(OLD_POST, w.clock.now() - MINUTE, "A question for you. Yes or no in the comments")];
     await w.cron();
     const shown = entries(await home());
@@ -233,6 +236,7 @@ describe("a post no waiting campaign attached to", () => {
     expect(strip(await home())).toContain(POINTER);
 
     w.meta.media = [media(NEW_POST, w.clock.now(), "Forgot the line. Comment AGENTS for the list"), media(OLD_POST, w.clock.now() - MINUTE, "A question")];
+    w.clock.advance(10 * MINUTE);
     await w.cron();
     expect((await getCampaign(env.DB, id))!.mediaId).toBe(NEW_POST);
   });

@@ -3,9 +3,10 @@ import type { Ctx } from "./context";
 import { explainError, MetaError, REEL_METRICS, type AccountDay, type Media, type MediaInsights, type ReelMetric } from "./meta/client";
 import { MEDIA_PAGES } from "./meta/graph";
 import { saveSettings } from "./settings";
+import { backgroundAllowed } from "./throttle";
 import { DAY, HOUR, MINUTE } from "./time";
 
-/** How often the post of an active campaign is read again, whatever its age. */
+/** How often a post's numbers are read in its first 2 days. */
 export const STATS_EVERY = 15 * MINUTE;
 /** Posts younger than this are kept and read; older ones only while a campaign watches them. */
 export const POST_DAYS = 90;
@@ -107,16 +108,25 @@ export async function listPosts(ctx: Ctx, opts: { since?: number; limit: number 
 
 /**
  * How long a post's numbers count as fresh. New posts move fast, so they are read
- * often; a post that has settled is read daily. A campaign's post stays frequent.
+ * often; a post that has settled is read daily. A campaign's post is read like any
+ * other: every 15 minutes in its first 2 days, then by its age, but at least hourly
+ * when Meta gave no posting time.
  */
 export function refreshEvery(postedAt: number | null, watched: boolean, now: number): number {
-  if (watched) return STATS_EVERY;
-  if (postedAt === null) return DAY;
+  if (postedAt === null) return watched ? HOUR : DAY;
   const age = now - postedAt;
-  if (age < 2 * DAY) return 15 * MINUTE;
+  if (age < 2 * DAY) return STATS_EVERY;
   if (age < 8 * DAY) return HOUR;
   if (age < 30 * DAY) return 6 * HOUR;
   return DAY;
+}
+
+/**
+ * How often a Reel's watch time and skip rate are read: each costs a Meta call of its
+ * own and moves slowly, so every 6 hours in the Reel's first 2 days, then daily.
+ */
+export function reelEvery(postedAt: number | null, now: number): number {
+  return postedAt !== null && now - postedAt < 2 * DAY ? 6 * HOUR : DAY;
 }
 
 function problemText(err: unknown): string {
@@ -144,6 +154,7 @@ export function listedStatement(ctx: Ctx, m: Media, now: number): D1PreparedStat
 export async function refreshPostList(ctx: Ctx): Promise<void> {
   const now = ctx.now();
   if (!ctx.meta || now - Number(ctx.settings.posts_listed_at ?? 0) < LIST_EVERY) return;
+  if (!backgroundAllowed(ctx.load, now, "low")) return;
   if (ctx.budget.queriesLeft < 12 || !ctx.budget.take(MEDIA_PAGES)) return;
   let problem = "";
   try {
@@ -157,30 +168,35 @@ export async function refreshPostList(ctx: Ctx): Promise<void> {
 
 /**
  * Called by the Cron: reads Instagram's numbers for the posts that are most
- * overdue, up to READS_PER_RUN. Posts of active campaigns are due every 15
- * minutes; other posts by their age (refreshEvery). A failed read keeps the
- * last numbers.
+ * overdue, up to READS_PER_RUN, each by its age (refreshEvery), with a Reel's
+ * watch time and skip rate only when those are due too (reelEvery). A failed read
+ * keeps the last numbers. Skipped while Meta's rate limit is near (throttle.ts).
  */
 export async function refreshMediaStats(ctx: Ctx): Promise<void> {
   // A few queries, leaving room for the daily upkeep that runs after this.
-  if (!ctx.meta || ctx.budget.queriesLeft < 10) return;
+  if (!ctx.meta || ctx.budget.queriesLeft < 10 || !backgroundAllowed(ctx.load, ctx.now(), "low")) return;
   const watched = new Set((await listCampaigns(ctx.db, true)).flatMap((c) => (c.mediaId ? [c.mediaId] : [])));
   const { results } = await ctx.db
-    .prepare("SELECT media_id, posted_at, fetched_at, media_type FROM media_stats")
-    .all<{ media_id: string; posted_at: number | null; fetched_at: number; media_type: string | null }>();
+    .prepare("SELECT media_id, posted_at, fetched_at, media_type, reel_fetched_at FROM media_stats")
+    .all<{ media_id: string; posted_at: number | null; fetched_at: number; media_type: string | null; reel_fetched_at: number | null }>();
   const now = ctx.now();
   const known = new Map(results.map((r) => [r.media_id, r]));
-  for (const id of watched) if (!known.has(id)) known.set(id, { media_id: id, posted_at: null, fetched_at: 0, media_type: null });
+  for (const id of watched) if (!known.has(id)) known.set(id, { media_id: id, posted_at: null, fetched_at: 0, media_type: null, reel_fetched_at: null });
   const due = [...known.values()]
     .filter((p) => watched.has(p.media_id) || (p.posted_at !== null && now - p.posted_at < POST_DAYS * DAY))
-    .map((p) => ({ id: p.media_id, type: p.media_type, at: p.fetched_at + refreshEvery(p.posted_at, watched.has(p.media_id), now) }))
+    .map((p) => ({
+      id: p.media_id,
+      type: p.media_type,
+      at: p.fetched_at + refreshEvery(p.posted_at, watched.has(p.media_id), now),
+      reelDue: (p.reel_fetched_at ?? 0) + reelEvery(p.posted_at, now) <= now,
+    }))
     .filter((p) => p.at <= now)
     .sort((a, b) => a.at - b.at)
     .slice(0, READS_PER_RUN);
   for (const post of due) {
     // Two calls: Meta may refuse reposts and leave the rest to ask for again.
     if (ctx.budget.queriesLeft < 8 || !ctx.budget.take(2)) return;
-    await readOne(ctx, post.id, post.type, now);
+    await readOne(ctx, post.id, post.reelDue ? post.type : null, now);
   }
 }
 
@@ -210,18 +226,20 @@ async function readReel(ctx: Ctx, mediaId: string): Promise<Partial<Record<ReelM
   return out;
 }
 
-async function readOne(ctx: Ctx, mediaId: string, mediaType: string | null, now: number): Promise<void> {
+/** Reads one post's numbers; a Reel's watch time and skip rate too when `reelType` is a Reel's type (they are due). */
+async function readOne(ctx: Ctx, mediaId: string, reelType: string | null, now: number): Promise<void> {
   try {
     const n = await ctx.meta!.mediaInsights(mediaId);
-    const reel = mediaType && REEL_TYPES.has(mediaType) ? await readReel(ctx, mediaId) : {};
+    const isReel = !!reelType && REEL_TYPES.has(reelType);
+    const reel = isReel ? await readReel(ctx, mediaId) : {};
     await ctx.db
       .prepare(
         `INSERT INTO media_stats (media_id, views, reach, likes, comments, shares, saved, avg_watch_time_ms, skip_rate_percent,
-           fetched_at, updated_at, problem, reposts)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, NULL, ?11)
+           fetched_at, updated_at, problem, reposts, reel_fetched_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, NULL, ?11, ?12)
          ON CONFLICT (media_id) DO UPDATE SET views = ?2, reach = ?3, likes = ?4, comments = ?5, shares = ?6, saved = ?7,
            avg_watch_time_ms = COALESCE(?8, avg_watch_time_ms), skip_rate_percent = COALESCE(?9, skip_rate_percent),
-           fetched_at = ?10, updated_at = ?10, problem = NULL, reposts = ?11`,
+           fetched_at = ?10, updated_at = ?10, problem = NULL, reposts = ?11, reel_fetched_at = COALESCE(?12, reel_fetched_at)`,
       )
       .bind(
         mediaId,
@@ -235,6 +253,7 @@ async function readOne(ctx: Ctx, mediaId: string, mediaType: string | null, now:
         reel.reels_skip_rate ?? null,
         now,
         n.reposts ?? null,
+        isReel ? now : null,
       )
       .run();
   } catch (err) {
@@ -252,6 +271,7 @@ async function readOne(ctx: Ctx, mediaId: string, mediaType: string | null, now:
 export async function refreshAccountStats(ctx: Ctx): Promise<void> {
   const now = ctx.now();
   if (!ctx.meta || now - Number(ctx.settings.account_stats_at ?? 0) < LIST_EVERY) return;
+  if (!backgroundAllowed(ctx.load, now, "low")) return;
   if (ctx.budget.queriesLeft < 4 || !ctx.budget.take()) return;
   try {
     const a = await ctx.meta.getAccountStats();
@@ -269,7 +289,7 @@ export async function refreshAccountStats(ctx: Ctx): Promise<void> {
 
 /** After a reconnect the permissions may have changed: every post's numbers and every recent day are due again, from the next Cron run. */
 export async function refreshMediaStatsSoon(ctx: Ctx): Promise<void> {
-  await ctx.db.batch([ctx.db.prepare("UPDATE media_stats SET fetched_at = 0"), ctx.db.prepare("UPDATE account_days SET fetched_at = 0")]);
+  await ctx.db.batch([ctx.db.prepare("UPDATE media_stats SET fetched_at = 0, reel_fetched_at = NULL"), ctx.db.prepare("UPDATE account_days SET fetched_at = 0")]);
 }
 
 /** Days of account numbers read from Meta, back from yesterday: enough to fill a month of follower history. */
@@ -311,6 +331,7 @@ export interface AccountDayStats extends AccountDay {
 export async function refreshAccountDays(ctx: Ctx): Promise<void> {
   if (!ctx.meta || ctx.budget.queriesLeft < 6) return;
   const now = ctx.now();
+  if (!backgroundAllowed(ctx.load, now, "low")) return;
   const yesterday = daysBefore(metaDay(now), 1);
   const { results } = await ctx.db
     .prepare("SELECT day, fetched_at, updated_at FROM account_days WHERE day >= ?")
