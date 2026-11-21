@@ -160,11 +160,15 @@ export async function currentProblems(ctx: Ctx): Promise<Problem[]> {
   }
   const stopped = refused.filter((r) => r.nextAt === null);
   if (stopped.length) {
-    const closes = Math.min(...stopped.map((r) => now + r.left));
+    // Listed until the owner sends it or marks it answered by hand, even after Meta's window closed.
+    const open = stopped.filter((r) => r.canSend && r.left > 0);
+    const closes = open.length ? Math.min(...open.map((r) => now + r.left)) : null;
     problems.push({
       key: "gave_up",
       title: `${plural(stopped.length, "person", "people")} need you to send their DM`,
-      message: `Instagram refused ${stopped.length === 1 ? "a DM" : `${stopped.length} DMs`} and OwnChats has stopped retrying. Send ${stopped.length === 1 ? "it" : "each"} from To check while Meta still allows it (the first window closes ${clockTime(ctx, closes)}).`,
+      message: `Instagram refused ${stopped.length === 1 ? "a DM" : `${stopped.length} DMs`} and OwnChats has stopped retrying. ${
+        closes ? `Send ${open.length === 1 ? "it" : "each"} from To check while Meta still allows it (the first window closes ${clockTime(ctx, closes)}), or` : "Meta's window has closed, so"
+      } answer by hand in Instagram and mark it so under To check.`,
       people: stopped.length,
       path: "/dashboard#needs-you",
     });
