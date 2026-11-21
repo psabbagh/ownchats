@@ -195,7 +195,7 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
   if (path === "/api") {
     return json({
       endpoints: {
-        "GET /api/campaigns": "campaigns with their counts (clicks: people who clicked a link; failed split into failedDms, refusedPublicReplies, failedLeadWebhooks), their post's views, and what would stop them working (warnings), with the shortcut keywords from Settings that every keyword campaign on one post also answers",
+        "GET /api/campaigns": "campaigns with their counts (clicks: people who clicked a link; failed split into failedDms, refusedPublicReplies, failedLeadWebhooks; answeredByHand: people the owner answered by hand after a refused send), their post's views, and what would stop them working (warnings), with the shortcut keywords from Settings that every keyword campaign on one post also answers",
         "GET /api/leads?campaign_id=&since=ISO-8601&limit=": "emails collected, newest first",
         "GET /api/activity?campaign_id=&outcome=sent|skipped|failed&limit=": "what happened and why, newest first, with Meta's error code in detail",
         "GET /api/posts?since=ISO-8601&limit=": "the account's posts from the last 90 days with Instagram's numbers, newest first; Reels also carry avg_watch_time_ms and skip_rate_percent (views skipped within 3 seconds, 0 to 100)",

@@ -19,6 +19,8 @@ export interface CampaignCounts {
   refusedPublicReplies: number;
   /** Lead webhook deliveries given up on. */
   failedLeadWebhooks: number;
+  /** People the owner answered by hand after Instagram refused OwnChats' send. A count only: it names nobody. */
+  answeredByHand: number;
 }
 
 /** People who clicked a link, per campaign: the first click per person counts, however many links or clicks. */
@@ -29,7 +31,8 @@ const CLICKED = `SELECT campaign_id, COUNT(DISTINCT conversation_id) AS n FROM t
 export async function campaignCounts(ctx: Ctx): Promise<Map<number, CampaignCounts>> {
   const [conv, taps, leads, failed, clicks] = await ctx.db.batch<Record<string, number> & { kind?: string }>([
     ctx.db.prepare(
-      `SELECT campaign_id, COUNT(*) AS people, COUNT(first_sent_at) AS dms, SUM(state IN ('done', 'optional_email', 'awaiting_open')) AS links
+      `SELECT campaign_id, COUNT(*) AS people, COUNT(first_sent_at) AS dms, SUM(state IN ('done', 'optional_email', 'awaiting_open') AND answered_by_hand_at IS NULL) AS links,
+         COUNT(answered_by_hand_at) AS by_hand
        FROM conversations GROUP BY campaign_id`,
     ),
     ctx.db.prepare("SELECT campaign_id, COUNT(*) AS n FROM activity WHERE kind = 'tap' AND outcome = 'received' GROUP BY campaign_id"),
@@ -41,12 +44,12 @@ export async function campaignCounts(ctx: Ctx): Promise<Map<number, CampaignCoun
   const get = (id: number) => {
     let c = out.get(id);
     if (!c) {
-      c = { campaignId: id, people: 0, dmsSent: 0, taps: 0, emails: 0, linksSent: 0, clicks: 0, failed: 0, failedDms: 0, refusedPublicReplies: 0, failedLeadWebhooks: 0 };
+      c = { campaignId: id, people: 0, dmsSent: 0, taps: 0, emails: 0, linksSent: 0, clicks: 0, failed: 0, failedDms: 0, refusedPublicReplies: 0, failedLeadWebhooks: 0, answeredByHand: 0 };
       out.set(id, c);
     }
     return c;
   };
-  for (const r of conv!.results) Object.assign(get(r.campaign_id!), { people: r.people, dmsSent: r.dms, linksSent: r.links ?? 0 });
+  for (const r of conv!.results) Object.assign(get(r.campaign_id!), { people: r.people, dmsSent: r.dms, linksSent: r.links ?? 0, answeredByHand: r.by_hand ?? 0 });
   for (const r of taps!.results) get(r.campaign_id!).taps = r.n!;
   for (const r of leads!.results) get(r.campaign_id!).emails = r.n!;
   for (const r of failed!.results) {
