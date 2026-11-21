@@ -143,13 +143,38 @@ const TRIGGERS: Record<string, Trigger> = {
   },
   comments: {
     async make() {
-      // A campaign on a Reel posted yesterday, and nothing from Meta for 7 hours.
+      // Comments only the check for missed comments finds: Meta's webhooks never bring them.
+      // Its post's age isn't listed yet: such a post is polled every run, and the hourly runs here don't read as a stalled check.
+      await w.campaign({ keywords: ["NEVERUSED"] });
+      for (const p of people(3, 100)) w.comment("hello", p);
+    },
+    async untilOpen() {
+      // The Cron checks alerts before it polls, so the run after the poll sees them.
+      await w.cron();
+      await runs(1, MINUTE);
+    },
+    // More keep coming the same way.
+    keep: async () => {
+      for (const p of people(2, 200 + (Math.floor(w.clock.now() / MINUTE) % 1000) * 2)) w.comment("hello", p);
+    },
+    // Webhooks bring comments again, more of them than the check finds.
+    fix: async () => {
+      for (const p of people(12, 5000)) await w.sendComment(w.comment("hello again", p));
+    },
+  },
+  poll: {
+    async make() {
+      // A campaign on a Reel posted yesterday, and Meta refuses to list its comments.
       await w.campaign();
       await postedAt(REEL, w.clock.now() - DAY);
-      await save({ last_webhook_at: String(w.clock.now() - 7 * HOUR) });
+      for (let i = 0; i < 300; i++) w.meta.failNext("listComments", PERMANENT());
     },
-    untilOpen: () => w.cron(),
-    fix: async () => void (await goodWebhook()),
+    async untilOpen() {
+      await w.cron(); // the check fails
+      await runs(1, MINUTE); // first seen failing
+      await runs(1, HOUR);
+    },
+    fix: async () => w.meta.clearFailures(),
   },
 };
 
@@ -197,6 +222,27 @@ describe("alerts", () => {
     expect(a!.message).toContain("(the first since 7:00 am)");
     // Alerts never name anyone.
     expect(JSON.stringify(alerts())).not.toContain(FAN.username);
+  });
+
+  it("stay quiet on a young Reel that simply gets no comments", async () => {
+    await alertsOn();
+    await w.campaign();
+    await postedAt(REEL, w.clock.now() - DAY);
+    await save({ last_webhook_at: String(w.clock.now()) });
+    // Eight quiet hours, the Cron running every 5 minutes.
+    await runs(96, 5 * MINUTE);
+    expect(alerts()).toEqual([]);
+  });
+
+  it("say when the check for missed comments is held back by Instagram's rate limit", async () => {
+    await alertsOn();
+    await w.campaign();
+    await postedAt(REEL, w.clock.now() - DAY);
+    await w.cron();
+    await save({ meta_paused_until: String(w.clock.now() + 3 * HOUR) });
+    await runs(9, 10 * MINUTE);
+    expect(alerts()).toMatchObject([{ problem: "poll", status: "open", title: "The check for missed comments isn't running", url: `${BASE}/dashboard` }]);
+    expect(alerts()[0]!.message).toContain("held back by Instagram's rate limit");
   });
 
   it("don't open for a problem that goes away within its grace period", async () => {

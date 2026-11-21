@@ -7,7 +7,7 @@ import { untakenPosts } from "./nextpost";
 import { refusedSends } from "./refused";
 import { clockTime } from "./retry";
 import { saveSettings } from "./settings";
-import { paused } from "./throttle";
+import { currentUsage, FULL_PERCENT, paused } from "./throttle";
 import { DAY, HOUR, MINUTE, SECOND } from "./time";
 
 /**
@@ -22,7 +22,7 @@ import { DAY, HOUR, MINUTE, SECOND } from "./time";
  * Checked by the Cron every minute, from what OwnChats already records: it costs D1
  * queries and no Meta call.
  */
-export type AlertKey = "comments" | "webhook" | "token" | "waiting" | "gave_up" | "untaken" | "failures";
+export type AlertKey = "comments" | "poll" | "webhook" | "token" | "waiting" | "gave_up" | "untaken" | "failures";
 
 export const REMIND_EVERY = 12 * HOUR;
 /** A problem must be gone this long before "fixed" goes out. */
@@ -34,10 +34,15 @@ export const DAILY_CAP = 10;
 export const MISSED_WINDOW = 3 * HOUR;
 /** That many, and more than the webhooks brought over the same window, mean webhooks stopped. */
 export const MISSED_AT_LEAST = 3;
-/** No webhook at all for this long, while a campaign's post is young, also means webhooks stopped. */
-export const QUIET_FOR = 6 * HOUR;
-/** A campaign's post younger than this gets comments steadily, so silence from Meta is suspicious. */
+/**
+ * A campaign's post younger than this is checked for missed comments every run (pipeline/poll.ts),
+ * so a check that has failed or not run for POLL_DOWN_FOR means a missed webhook would go unanswered.
+ */
 export const YOUNG_POST = 2 * DAY;
+/** The check counts as not running once its last run is this old; it runs every minute while a young post is watched. */
+export const POLL_STALE = 10 * MINUTE;
+/** How long the check must have failed or not run before it opens. */
+export const POLL_DOWN_FOR = HOUR;
 /** People waiting this long on a send Meta refused for a passing reason (a rate limit) need the owner to know. */
 export const WAITING_FOR = 30 * MINUTE;
 /** A burst of DM failures: this many people... */
@@ -47,8 +52,9 @@ export const BURST_WINDOW = HOUR;
 
 /** How long each problem must last before it opens. */
 const OPEN_AFTER: Record<AlertKey, number> = {
-  // Built from windows of their own (MISSED_WINDOW, QUIET_FOR, WAITING_FOR, BURST_WINDOW).
+  // Built from windows of their own (MISSED_WINDOW, WAITING_FOR, BURST_WINDOW).
   comments: 0,
+  poll: POLL_DOWN_FOR,
   waiting: 0,
   failures: 0,
   // A stray POST to /webhook from a scanner sets the problem too; a real webhook in the next 15 minutes clears it.
@@ -64,6 +70,7 @@ const OPEN_AFTER: Record<AlertKey, number> = {
 /** The problem's name in a "fixed" message. */
 const FIXED: Record<AlertKey, string> = {
   comments: "comments are arriving from Meta again",
+  poll: "the check for missed comments is running again",
   webhook: "Meta's webhooks are accepted again",
   token: "Instagram is connected and the token works",
   waiting: "nobody is waiting on a refused DM any more",
@@ -208,7 +215,6 @@ export async function currentProblems(ctx: Ctx): Promise<Problem[]> {
   if (connected && !webhookRefused) {
     const poll = Number(counts!.results[0]?.poll ?? 0);
     const webhook = Number(counts!.results[0]?.webhook ?? 0);
-    const quiet = quietPost(ctx, campaigns, await postedTimes(ctx, campaigns));
     if (poll >= MISSED_AT_LEAST && poll > webhook) {
       problems.push({
         key: "comments",
@@ -217,14 +223,27 @@ export async function currentProblems(ctx: Ctx): Promise<Problem[]> {
         people: poll,
         path: "/setup",
       });
-    } else if (quiet) {
-      const last = Number(s.last_webhook_at);
+    }
+  }
+
+  // The check for missed comments failing, or held back, while a campaign's post is young: a webhook Meta drops would then go unanswered.
+  if (connected) {
+    const posted = await postedTimes(ctx, campaigns);
+    const young = campaigns.find((c) => c.mediaId && posted.has(c.mediaId) && now - posted.get(c.mediaId)! < YOUNG_POST);
+    const lastRun = Number(s.last_poll_at ?? 0);
+    const [, pollWhy] = (s.last_poll_problem ?? "").split("|");
+    if (young && (pollWhy || now - lastRun >= POLL_STALE)) {
+      const limit = paused(ctx.load, now) || (currentUsage(ctx.load, now)?.percent ?? 0) >= FULL_PERCENT;
       problems.push({
-        key: "comments",
-        title: `Nothing from Meta for ${Math.floor((now - last) / HOUR)} hours`,
-        message: `No webhook since ${clockTime(ctx, last)}, while ${quiet.name} watches a post under ${YOUNG_POST / DAY} days old. If people are commenting, Meta has stopped sending comments and DMs. Check the webhook in setup.`,
+        key: "poll",
+        title: pollWhy ? "The check for missed comments is failing" : "The check for missed comments isn't running",
+        message: `${
+          pollWhy
+            ? `The check for missed comments has been failing for over an hour, while ${young.name} watches a Reel under ${YOUNG_POST / DAY} days old (latest: ${pollWhy}).`
+            : `The check for missed comments hasn't run ${lastRun ? `since ${clockTime(ctx, lastRun)}` : "yet"}${limit ? ", held back by Instagram's rate limit" : ""}.`
+        } Comments Meta's webhooks bring are still answered, but one Meta drops would go unanswered until it runs again.`,
         people: 0,
-        path: "/setup",
+        path: "/dashboard",
       });
     }
   }
@@ -258,14 +277,6 @@ async function postedTimes(ctx: Ctx, campaigns: Campaign[]): Promise<Map<string,
     .bind(JSON.stringify(ids))
     .all<{ media_id: string; posted_at: number }>();
   return new Map(results.map((r) => [r.media_id, r.posted_at]));
-}
-
-/** A campaign whose young post has heard nothing from Meta for QUIET_FOR, once webhooks have worked at least once. */
-function quietPost(ctx: Ctx, campaigns: Campaign[], posted: Map<string, number>): Campaign | null {
-  const last = Number(ctx.settings.last_webhook_at ?? 0);
-  const now = ctx.now();
-  if (!last || now - last < QUIET_FOR) return null;
-  return campaigns.find((c) => c.mediaId && now - (posted.get(c.mediaId) ?? 0) < YOUNG_POST) ?? null;
 }
 
 /** The full link to a dashboard path, when the Worker knows its own address. */
@@ -382,6 +393,7 @@ export function openAlerts(ctx: Ctx): Array<{ key: AlertKey; since: number }> {
 /** Each problem's name in Settings' list of open alerts. */
 export const ALERT_NAME: Record<AlertKey, string> = {
   comments: "Comments not arriving from Meta",
+  poll: "The check for missed comments not running",
   webhook: "Meta's webhooks refused",
   token: "Instagram token or connection",
   waiting: "People waiting on a refused DM",
