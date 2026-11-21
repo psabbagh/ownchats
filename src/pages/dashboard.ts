@@ -77,7 +77,7 @@ import type { Media } from "../meta/client";
 import { recentMedia } from "../pipeline/poll";
 import { MISSING_PERMISSION, readMediaStats } from "../insights";
 import { missedComments, timeLeft, type MissedComment } from "../missed";
-import { refusedSends, type RefusedSend } from "../refused";
+import { peopleCounts, refusedPeople, refusedSends, type RefusedPeople, type RefusedSend } from "../refused";
 import { BUSY_PERCENT, currentUsage, paused } from "../throttle";
 import { attachUntakenPost, dismissUntakenPost, untakenPosts, type UntakenPost } from "../nextpost";
 import { deleteSettings, saveSettings, shortcutKeywords, type Settings } from "../settings";
@@ -128,6 +128,66 @@ function metaLoadLine(ctx: Ctx): Html | string {
   return "";
 }
 
+/** ", 14 h left to answer" for the soonest of these still inside Meta's window, or nothing when none is. */
+function leftWords(list: RefusedSend[]): string {
+  const left = Math.min(...list.filter((r) => r.left > 0).map((r) => r.left));
+  if (!Number.isFinite(left)) return "";
+  if (left >= 2 * DAY) return `, ${Math.floor(left / DAY)} days left to answer`;
+  if (left >= HOUR) return `, ${Math.floor(left / HOUR)} h left to answer`;
+  return `, ${Math.max(1, Math.floor(left / MINUTE))} min left to answer`;
+}
+
+/** What Meta refused in the last 24 hours, for diagnosis: attempts, its code, and what became of the people. */
+export interface RefusalHealth {
+  attempts: number;
+  /** Meta's most frequent error code among them, when the log has one. */
+  code: number | null;
+  people: RefusedPeople;
+  /** Other failures in the log (follow checks, the lead webhook), public replies left out. */
+  other: number;
+}
+
+async function refusalHealth(ctx: Ctx, campaignIds: number[], refused: Map<number, RefusedSend[]>): Promise<RefusalHealth> {
+  const since = ctx.now() - DAY;
+  const { results } = await ctx.db
+    .prepare("SELECT detail FROM activity WHERE outcome = 'failed' AND kind IN ('private_reply', 'message') AND at > ?")
+    .bind(since)
+    .all<{ detail: string | null }>();
+  const codes = new Map<number, number>();
+  for (const r of results) {
+    const code = Number(/\bcode (\d+)/.exec(r.detail ?? "")?.[1]);
+    if (Number.isFinite(code) && code > 0) codes.set(code, (codes.get(code) ?? 0) + 1);
+  }
+  const code = [...codes].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  const people: RefusedPeople = { people: 0, recovered: 0, answeredByHand: 0, waiting: 0, unreached: 0 };
+  for (const p of (await refusedPeople(ctx, campaignIds, refused, since)).values()) {
+    for (const k of Object.keys(people) as Array<keyof RefusedPeople>) people[k] += p[k];
+  }
+  return { attempts: results.length, code, people, other: Math.max(0, (await failuresSince(ctx, since)) - results.length) };
+}
+
+/** Meta's error codes OwnChats can name. */
+const CODE_WORDS: Record<number, string> = { 4: "its app rate limit", 17: "its user rate limit", 32: "its page rate limit", 613: "a rate limit", 80002: "the account's rate limit", 2: "an outage", 1: "an outage" };
+
+/** The health line about refusals: what Meta refused and what became of the people, not a to-do. */
+function refusalLine(h: RefusalHealth): Html | string {
+  const parts: Html[] = [];
+  if (h.attempts) {
+    const why = h.code !== null ? ` (mostly code ${h.code}${CODE_WORDS[h.code] ? `, ${CODE_WORDS[h.code]}` : ""})` : "";
+    const p = h.people;
+    const fates = [
+      p.recovered ? `${plural(p.recovered, "person", "people")} got it on a retry` : "",
+      p.answeredByHand ? `${p.answeredByHand} answered by hand` : "",
+      p.waiting ? `${p.waiting} still waiting` : "",
+      p.unreached ? `${p.unreached} not reached` : "",
+    ].filter(Boolean);
+    const all = p.people > 0 && p.waiting === 0 && p.unreached === 0 ? ", all answered" : "";
+    parts.push(html`Instagram refused ${plural(h.attempts, "DM attempt")} in the last 24 hours${why}${all}${fates.length ? `: ${fates.join(", ")}` : ""}.`);
+  }
+  if (h.other) parts.push(html`<a href="/dashboard/activity?show=failed">${plural(h.other, "other failure")}</a> in the last 24 hours.`);
+  return parts.length ? html` ${parts.map((x, i) => (i ? html` ${x}` : x))}` : "";
+}
+
 /** Meta's rate limit was reached: until when, how many people wait for a send, and when the next try is. */
 function rateLimitLine(ctx: Ctx, refused: Map<number, RefusedSend[]>, tz: string): Html {
   const waiting = [...refused.values()].flat();
@@ -142,15 +202,22 @@ function rateLimitLine(ctx: Ctx, refused: Map<number, RefusedSend[]>, tz: string
 }
 
 /** What the owner should look at, most urgent first: each line says what, and links to where to act. */
-function needsYou(ctx: Ctx, campaigns: Campaign[], missed: Map<number, MissedComment[]>, refused: Map<number, RefusedSend[]>, failures: number, tz: string): Html[] {
+function needsYou(ctx: Ctx, campaigns: Campaign[], missed: Map<number, MissedComment[]>, refused: Map<number, RefusedSend[]>, tz: string): Html[] {
   const s = ctx.settings;
   const items: Array<Html | null> = [];
   // While Meta refuses, one line says so with everyone waiting, above the per-campaign lines that link to them.
   if (paused(ctx.load, ctx.now())) items.push(rateLimitLine(ctx, refused, tz));
-  // People who asked and got nothing yet come first: their window runs out.
+  // People who asked and got nothing yet come first: their window runs out. Only people still waiting: anyone answered, by OwnChats or by hand, has left the list.
   for (const c of campaigns) {
     const list = refused.get(c.id);
-    if (list?.length) items.push(html`<a href="/dashboard/campaigns/${c.id}#to-check">${plural(list.length, "person", "people")} waiting on a refused send on ${c.name}</a>`);
+    if (!list?.length) continue;
+    const tapped = list.filter((r) => r.type === "message");
+    const firstDm = list.filter((r) => r.type === "comment");
+    const parts = [
+      ...(tapped.length ? [`${plural(tapped.length, "person", "people")} tapped and got nothing${leftWords(tapped)}`] : []),
+      ...(firstDm.length ? [`${plural(firstDm.length, "person", "people")} never got the first DM${leftWords(firstDm)}`] : []),
+    ];
+    items.push(html`<a href="/dashboard/campaigns/${c.id}#to-check">${c.name}: ${parts.join("; ")}</a>`);
   }
   // Each problem is cleared by the next good run, and those runs only happen with work to do.
   if (campaigns.some((c) => c.active && c.nextPostAfter === null)) items.push(cronProblem(s.last_poll_problem, "The last check for missed comments", tz));
@@ -167,7 +234,6 @@ function needsYou(ctx: Ctx, campaigns: Campaign[], missed: Map<number, MissedCom
   for (const { c, n, left } of toCheck.sort((a, b) => a.left - b.left)) {
     items.push(html`<a href="/dashboard/campaigns/${c.id}#to-check">${plural(n, "comment")} to check on ${c.name}</a> <span class="muted">(${n > 1 ? "oldest: " : ""}${timeLeft(left)})</span>`);
   }
-  if (failures) items.push(html`<a href="/dashboard/activity?show=failed">${plural(failures, "failure")} in the last 24 hours</a>`);
   return items.filter((i): i is Html => i !== null);
 }
 
@@ -273,17 +339,19 @@ export async function dashboardHome(ctx: Ctx, switched: string | null = null): P
   const recent = await campaignRecent(ctx);
   const missed = await missedComments(ctx, on);
   const refused = await refusedSends(ctx, campaigns.map((c) => c.id));
-  const failures = await failuresSince(ctx, ctx.now() - DAY);
+  const health = await refusalHealth(ctx, campaigns.map((c) => c.id), refused);
+  const people = await peopleCounts(ctx, campaigns.map((c) => c.id), refused);
   const noPermission = on.some((c) => c.mediaId && stats.get(c.mediaId)?.problem === MISSING_PERMISSION);
   const s = ctx.settings;
   const tz = timeZoneOf(s);
   const clicksOn = trackingBase(ctx) !== null;
   const banner = healthBanner(ctx);
-  const items = needsYou(ctx, campaigns, missed, refused, failures, tz);
+  const items = needsYou(ctx, campaigns, missed, refused, tz);
   const untaken = untakenPosts(ctx, campaigns);
 
   const card = (c: Campaign) => {
     const n = counts.get(c.id);
+    const p = people.get(c.id);
     const views = c.mediaId ? stats.get(c.mediaId)?.views : undefined;
     // Instagram's cover image for the post: the Reel's first frame unless another cover was chosen. Kept fresh by the hourly post list.
     const cover = c.mediaId ? stats.get(c.mediaId)?.thumbnailUrl : null;
@@ -298,21 +366,18 @@ export async function dashboardHome(ctx: Ctx, switched: string | null = null): P
         : ""}
       ${recentLine(c, postedAt(c), recent.get(c.id), ctx.now())}
       <p class="muted small">${c.anyComment ? "Any comment" : `Keyword: ${c.keywords.join(", ")}`} on ${postWords(c)}, ${EMAIL_MODE_LABEL[c.emailMode]}</p>
-      ${refused.get(c.id)?.length
-        ? html`<p class="small"><a class="warn" href="/dashboard/campaigns/${c.id}#to-check">${plural(refused.get(c.id)!.length, "person", "people")} waiting on a refused send</a></p>`
-        : ""}
+      ${p?.waitingOnYou ? html`<p class="small"><a class="warn" href="/dashboard/campaigns/${c.id}#to-check">Waiting on you: ${p.waitingOnYou}</a></p>` : ""}
       ${missed.get(c.id)?.length
         ? html`<p class="small"><a class="warn" href="/dashboard/campaigns/${c.id}#to-check">${plural(missed.get(c.id)!.length, "comment")} to check</a></p>`
         : ""}
       <div class="stats small">
         ${views !== undefined ? html`<div><b>${fmtCount(views)}</b>views</div>` : ""}
-        <div><b>${n?.people ?? 0}</b>people</div><div><b>${n?.dmsSent ?? 0}</b>DMs sent</div>
-        ${c.openingButton ? html`<div><b>${n?.taps ?? 0}</b>taps</div>` : ""}
-        ${c.emailMode !== "none" ? html`<div><b>${n?.emails ?? 0}</b>emails</div>` : ""}
-        <div><b>${n?.linksSent ?? 0}</b>links sent</div>
+        <div><b>${p?.asked ?? 0}</b>asked</div>
+        <div title="${p?.answeredByHand ? `${p.answeredAutomatically} by OwnChats, ${p.answeredByHand} by hand` : "by OwnChats"}"><b>${(p?.answeredAutomatically ?? 0) + (p?.answeredByHand ?? 0)}</b>answered${p?.answeredByHand ? html` <span class="muted">(${p.answeredByHand} by hand)</span>` : ""}</div>
+        ${c.openingButton ? html`<div><b>${p?.tapped ?? 0}</b>tapped</div>` : ""}
+        <div><b>${n?.linksSent ?? 0}</b>got the link</div>
         ${clicksOn || n?.clicks ? html`<div><b>${n?.clicks ?? 0}</b>clicked</div>` : ""}
-        <div><b>${n?.failed ?? 0}</b>failed</div>
-        ${n?.answeredByHand ? html`<div><b>${n.answeredByHand}</b>answered by hand</div>` : ""}
+        ${c.emailMode !== "none" || n?.emails ? html`<div><b>${n?.emails ?? 0}</b>gave their email</div>` : ""}
       </div></div></div>`;
   };
 
@@ -325,7 +390,7 @@ export async function dashboardHome(ctx: Ctx, switched: string | null = null): P
         : s.ig_username && on.length && !banner.value
           ? html`<p class="ok small" id="needs-you">Nothing needs you right now.</p>`
           : ""}
-      ${s.ig_username ? html`<p class="muted">Connected to Instagram as @${s.ig_username}. Last webhook: ${fmtTime(Number(s.last_webhook_at), tz) || "none yet"}. Last check for missed comments: ${fmtTime(Number(s.last_poll_at), tz) || "none yet"}.${metaLoadLine(ctx)}${s.time_zone ? "" : html` Times are in UTC: <a href="/dashboard/settings#time-zone">choose your time zone</a>.`}</p>` : ""}
+      ${s.ig_username ? html`<p class="muted">Connected to Instagram as @${s.ig_username}. Last webhook: ${fmtTime(Number(s.last_webhook_at), tz) || "none yet"}. Last check for missed comments: ${fmtTime(Number(s.last_poll_at), tz) || "none yet"}.${metaLoadLine(ctx)}${refusalLine(health)}${s.time_zone ? "" : html` Times are in UTC: <a href="/dashboard/settings#time-zone">choose your time zone</a>.`}</p>` : ""}
       ${noPermission ? html`<p class="warn small">Instagram shares each post's views once your Meta login configuration includes <code>instagram_manage_insights</code>. <a href="/setup#step-3">Add it in setup</a>, then reconnect.</p>` : ""}
       ${untaken.length ? html`<div id="no-campaign">${untaken.map((u) => untakenEntry(u, tz))}</div>` : ""}
       ${campaigns.length === 0 ? html`<div class="card"><p>No campaigns yet. Create one: a keyword, the post it watches, and the link to send.</p></div>` : ""}

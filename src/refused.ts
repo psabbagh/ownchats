@@ -1,5 +1,7 @@
 import { logStatement, type Ctx } from "./context";
-import { TRANSIENT_REASON } from "./meta/client";
+import { getCampaign, linkMessage } from "./campaigns";
+import { trackLinks } from "./clicks";
+import { plainText, TRANSIENT_REASON } from "./meta/client";
 import { GAVE_UP_REASON, handleComment } from "./pipeline/comments";
 import { sendPendingNow } from "./pipeline/messages";
 import { MESSAGING_WINDOW, PRIVATE_REPLY_WINDOW } from "./time";
@@ -15,6 +17,8 @@ export interface RefusedSend {
   type: "comment" | "message";
   /** The comment id, or the conversation id. */
   id: string;
+  /** For a comment, the id on it, which identifies the person in the log. */
+  personId: string | null;
   username: string | null;
   /** What did not go out, in the page's words. */
   what: string;
@@ -55,7 +59,7 @@ export async function refusedSends(ctx: Ctx, campaignIds: number[]): Promise<Map
     // A comment whose person got this campaign's DM another way (a second comment) is left out.
     ctx.db
       .prepare(
-        `SELECT c.id, c.campaign_id, c.from_username, c.commented_at, c.status, c.next_attempt_at, c.attempts, c.first_refused_at FROM comments c
+        `SELECT c.id, c.campaign_id, c.from_id, c.from_username, c.commented_at, c.status, c.next_attempt_at, c.attempts, c.first_refused_at FROM comments c
          WHERE c.campaign_id IN (SELECT value FROM json_each(?1)) AND c.status IN ('queued', 'failed')
            AND c.reason IN (SELECT value FROM json_each(?2)) AND c.commented_at > ?3 AND c.from_id IS NOT NULL AND c.answered_by_hand_at IS NULL
            AND NOT EXISTS (SELECT 1 FROM conversations v WHERE v.campaign_id = c.campaign_id AND (v.ig_user_id = c.from_id OR v.commenter_id = c.from_id))
@@ -83,6 +87,7 @@ export async function refusedSends(ctx: Ctx, campaignIds: number[]): Promise<Map
     add(Number(c.campaign_id), {
       type: "comment",
       id: String(c.id),
+      personId: (c.from_id as string | null) ?? null,
       username: (c.from_username as string | null) ?? null,
       what: "the first DM",
       nextAt: c.status === "queued" ? ((c.next_attempt_at as number | null) ?? now) : null,
@@ -96,6 +101,7 @@ export async function refusedSends(ctx: Ctx, campaignIds: number[]): Promise<Map
     add(Number(m.campaign_id), {
       type: "message",
       id: String(m.id),
+      personId: null,
       username: (m.username as string | null) ?? null,
       what: m.pending_message !== null ? whatMessage(String(m.pending_kind), String(m.pending_reason)) : "the message after their tap",
       nextAt: (m.pending_at as number | null) ?? null,
@@ -143,10 +149,11 @@ export async function sendRefused(ctx: Ctx, campaignId: number, type: string, id
  * The owner's "Answered by hand": they wrote to the person themselves, in Instagram. Sends
  * nothing. The person leaves To check, OwnChats stops retrying, the activity log says so,
  * and the campaign counts them as answered by hand. A first DM that never went out gets a
- * conversation, so a later comment from them gets no second DM. Returns false when there
- * was nothing to mark (already marked, sent meanwhile, or not this campaign's).
+ * conversation, so a later comment from them gets no second DM. Returns the person's
+ * conversation id, or null when there was nothing to mark (already marked, sent
+ * meanwhile, or not this campaign's).
  */
-export async function markAnsweredByHand(ctx: Ctx, campaignId: number, type: string, id: string): Promise<boolean> {
+export async function markAnsweredByHand(ctx: Ctx, campaignId: number, type: string, id: string): Promise<number | null> {
   const now = ctx.now();
   if (type === "comment") {
     const row = await ctx.db
@@ -158,7 +165,7 @@ export async function markAnsweredByHand(ctx: Ctx, campaignId: number, type: str
       )
       .bind(now, id, campaignId, JSON.stringify(REFUSED_REASONS))
       .first<{ id: string; from_id: string; from_username: string | null }>();
-    if (!row) return false;
+    if (!row) return null;
     await ctx.db.batch([
       ctx.db
         .prepare(
@@ -168,11 +175,15 @@ export async function markAnsweredByHand(ctx: Ctx, campaignId: number, type: str
         .bind(campaignId, row.from_id, row.from_username, row.id, now),
       logStatement(ctx, { kind: "by_hand", outcome: "saved", reason: "first DM answered by hand", campaignId, commentId: row.id, igUserId: row.from_id, username: row.from_username }),
     ]);
-    return true;
+    const conversation = await ctx.db
+      .prepare("SELECT id FROM conversations WHERE campaign_id = ?1 AND (ig_user_id = ?2 OR commenter_id = ?2) LIMIT 1")
+      .bind(campaignId, row.from_id)
+      .first<{ id: number }>();
+    return conversation?.id ?? null;
   }
-  if (type !== "message") return false;
+  if (type !== "message") return null;
   const conversationId = Number(id);
-  if (!Number.isSafeInteger(conversationId)) return false;
+  if (!Number.isSafeInteger(conversationId)) return null;
   const row = await ctx.db
     .prepare(
       `UPDATE conversations SET state = 'done', answered_by_hand_at = ?1, updated_at = ?1, pending_message = NULL, pending_state = NULL,
@@ -183,7 +194,140 @@ export async function markAnsweredByHand(ctx: Ctx, campaignId: number, type: str
     )
     .bind(now, conversationId, campaignId)
     .first<{ ig_user_id: string; username: string | null }>();
-  if (!row) return false;
+  if (!row) return null;
   await logStatement(ctx, { kind: "by_hand", outcome: "saved", reason: "message after the tap answered by hand", campaignId, igUserId: row.ig_user_id, username: row.username }).run();
-  return true;
+  return conversationId;
+}
+
+/**
+ * A reply for the owner to paste in Instagram for someone answered by hand: the campaign's
+ * link message with the person's own /go/ links, so a click from it counts like one from
+ * a DM. Plain text, since a pasted message carries no buttons. Null when the person is
+ * not answered by hand on this campaign.
+ */
+export async function handReply(ctx: Ctx, campaignId: number, conversationId: number): Promise<{ username: string | null; text: string } | null> {
+  const conversation = await ctx.db
+    .prepare("SELECT id, username, name FROM conversations WHERE id = ? AND campaign_id = ? AND answered_by_hand_at IS NOT NULL")
+    .bind(conversationId, campaignId)
+    .first<{ id: number; username: string | null; name: string | null }>();
+  const campaign = conversation ? await getCampaign(ctx.db, campaignId) : null;
+  if (!conversation || !campaign) return null;
+  const message = linkMessage(campaign, { name: conversation.name, username: conversation.username });
+  const tracked = plainText(await trackLinks(ctx, conversation.id, campaign, message));
+  return { username: conversation.username, text: tracked.kind === "text" ? tracked.text : "" };
+}
+
+/** People Meta refused a DM to, by what became of them. Each person counts once, however many attempts were refused. */
+export interface RefusedPeople {
+  people: number;
+  /** OwnChats got it to them after all, on a retry or a later step. */
+  recovered: number;
+  answeredByHand: number;
+  /** Still listed under To check. */
+  waiting: number;
+  /** None of those: Meta's window closed, or the refusal was final (they can't be messaged). */
+  unreached: number;
+}
+
+/** A campaign's people, each counted once: the funnel the cards and the API show. */
+export interface PeopleCounts {
+  /** Commented the keyword or sent it by DM, and were taken on: a conversation, or a first DM still waiting. */
+  asked: number;
+  answeredAutomatically: number;
+  answeredByHand: number;
+  /** Tapped the opening button at least once. */
+  tapped: number;
+  /** Listed under To check: waiting on the owner. */
+  waitingOnYou: number;
+  refused: RefusedPeople;
+}
+
+const noRefusals = (): RefusedPeople => ({ people: 0, recovered: 0, answeredByHand: 0, waiting: 0, unreached: 0 });
+
+/**
+ * Who Meta refused, per campaign, as people: each refused attempt in the log (90 days),
+ * or only those since `since`, is matched to its person's conversation, and the person
+ * counted once as recovered, answered by hand, waiting or unreached.
+ */
+export async function refusedPeople(ctx: Ctx, campaignIds: number[], refused: Map<number, RefusedSend[]>, since = 0): Promise<Map<number, RefusedPeople>> {
+  const out = new Map<number, RefusedPeople>();
+  if (!campaignIds.length) return out;
+  const { results } = await ctx.db
+    .prepare(
+      `SELECT a.campaign_id, a.ig_user_id, v.id AS conversation_id, v.answered_by_hand_at, v.first_sent_at,
+         MAX(CASE WHEN a.kind = 'message' THEN a.at END) AS message_failed_at,
+         (SELECT MAX(s.at) FROM activity s WHERE s.campaign_id = a.campaign_id AND s.outcome = 'sent' AND s.kind IN ('message', 'link')
+            AND (s.ig_user_id = v.ig_user_id OR s.ig_user_id = a.ig_user_id)) AS sent_at
+       FROM activity a LEFT JOIN conversations v ON v.campaign_id = a.campaign_id AND (v.ig_user_id = a.ig_user_id OR v.commenter_id = a.ig_user_id)
+       WHERE a.outcome = 'failed' AND a.kind IN ('private_reply', 'message') AND a.ig_user_id IS NOT NULL AND a.at > ?2
+         AND a.campaign_id IN (SELECT value FROM json_each(?1))
+       GROUP BY a.campaign_id, a.ig_user_id`,
+    )
+    .bind(JSON.stringify(campaignIds), since)
+    .all<{ campaign_id: number; ig_user_id: string; conversation_id: number | null; answered_by_hand_at: number | null; first_sent_at: number | null; message_failed_at: number | null; sent_at: number | null }>();
+  const waiting = new Set<string>();
+  for (const [campaignId, list] of refused) {
+    for (const r of list) waiting.add(r.type === "message" ? `${campaignId}:c${r.id}` : `${campaignId}:p${r.personId}`);
+  }
+  // A person can be in the log under two ids (the comment's and the messaging id): one conversation, one person.
+  const seen = new Map<string, "recovered" | "answeredByHand" | "waiting" | "unreached">();
+  const rank = { waiting: 3, answeredByHand: 2, recovered: 1, unreached: 0 };
+  for (const r of results) {
+    const key = r.conversation_id !== null ? `${r.campaign_id}:c${r.conversation_id}` : `${r.campaign_id}:p${r.ig_user_id}`;
+    const state = r.answered_by_hand_at
+      ? "answeredByHand"
+      : waiting.has(key) || waiting.has(`${r.campaign_id}:p${r.ig_user_id}`)
+        ? "waiting"
+        : r.first_sent_at !== null && (r.message_failed_at === null || (r.sent_at ?? 0) > r.message_failed_at)
+          ? "recovered"
+          : "unreached";
+    const before = seen.get(key);
+    if (!before || rank[state] > rank[before]) seen.set(key, state);
+  }
+  for (const [key, state] of seen) {
+    const campaignId = Number(key.split(":")[0]);
+    const c = out.get(campaignId) ?? noRefusals();
+    c.people++;
+    c[state]++;
+    out.set(campaignId, c);
+  }
+  return out;
+}
+
+/** The people funnel of each campaign, with who Meta refused (refusedPeople) and who waits on the owner. */
+export async function peopleCounts(ctx: Ctx, campaignIds: number[], refused?: Map<number, RefusedSend[]>): Promise<Map<number, PeopleCounts>> {
+  const out = new Map<number, PeopleCounts>();
+  if (!campaignIds.length) return out;
+  refused ??= await refusedSends(ctx, campaignIds);
+  const ids = JSON.stringify(campaignIds);
+  const [conv, taps] = await ctx.db.batch<Record<string, number>>([
+    ctx.db
+      .prepare(
+        `SELECT campaign_id, COUNT(*) AS people, COUNT(first_sent_at) AS auto, COUNT(answered_by_hand_at) AS by_hand FROM conversations
+         WHERE campaign_id IN (SELECT value FROM json_each(?)) GROUP BY campaign_id`,
+      )
+      .bind(ids),
+    ctx.db
+      .prepare(
+        `SELECT campaign_id, COUNT(DISTINCT ig_user_id) AS n FROM activity
+         WHERE kind = 'tap' AND outcome = 'received' AND campaign_id IN (SELECT value FROM json_each(?)) GROUP BY campaign_id`,
+      )
+      .bind(ids),
+  ]);
+  const refusedBy = await refusedPeople(ctx, campaignIds, refused);
+  for (const id of campaignIds) {
+    const c = conv!.results.find((r) => r.campaign_id === id);
+    const list = refused.get(id) ?? [];
+    // A first DM still waiting has no conversation yet; everyone else does.
+    const waitingFirstDms = list.filter((r) => r.type === "comment").length;
+    out.set(id, {
+      asked: (c?.people ?? 0) + waitingFirstDms,
+      answeredAutomatically: c?.auto ?? 0,
+      answeredByHand: c?.by_hand ?? 0,
+      tapped: taps!.results.find((r) => r.campaign_id === id)?.n ?? 0,
+      waitingOnYou: list.length,
+      refused: refusedBy.get(id) ?? noRefusals(),
+    });
+  }
+  return out;
 }

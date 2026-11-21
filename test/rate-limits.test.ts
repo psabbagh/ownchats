@@ -276,7 +276,7 @@ describe("the step after a tap", () => {
     expect(page).toContain("Waiting on a refused send (1)");
     expect(page).toContain(`@${FAN.username}`);
     expect(page).toContain("OwnChats stopped retrying after 9 tries so far.");
-    expect(await (await w.fetch("/dashboard", { headers: { cookie } })).text()).toContain("1 person waiting on a refused send");
+    expect(await (await w.fetch("/dashboard", { headers: { cookie } })).text()).toContain("Agents library: 1 person tapped and got nothing, 1 h left to answer");
 
     w.meta.clearFailures();
     const conversationId = (await env.DB.prepare("SELECT id FROM conversations").first<{ id: number }>())!.id;
@@ -387,7 +387,8 @@ describe("sends refused before automatic retries, and answered by hand", () => {
     const page = await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie } })).text();
     expect(page).toContain("Waiting on a refused send (1)");
     expect(page).toContain("Refused before OwnChats retried on its own: answer by hand.");
-    expect(page).toContain("Answered by hand</button>");
+    expect(page).toContain("Already answered by hand</button>");
+    expect(page).toContain("Reply by hand</button>");
     expect(page).not.toContain(">Send</button>");
     // Send is refused for it all the same.
     expect((await form(cookie, `/dashboard/campaigns/${id}/send`, { type: "comment", id: c.id })).headers.get("location")).toBe(`/dashboard/campaigns/${id}?sent=none#to-check`);
@@ -400,7 +401,7 @@ describe("sends refused before automatic retries, and answered by hand", () => {
     // A second click marks nothing.
     expect((await form(cookie, `/dashboard/campaigns/${id}/by-hand`, { type: "comment", id: c.id })).headers.get("location")).toBe(`/dashboard/campaigns/${id}?sent=none#to-check`);
     // They count once, as a person answered by hand, and a later comment from them gets no second DM.
-    expect(await (await w.fetch("/dashboard", { headers: { cookie } })).text()).toContain("<b>1</b>answered by hand");
+    expect(await (await w.fetch("/dashboard", { headers: { cookie } })).text()).toContain("answered <span class=\"muted\">(1 by hand)</span>");
     await w.sendComment(w.comment("agents please", FAN));
     expect(w.meta.sent).toHaveLength(0);
   });
