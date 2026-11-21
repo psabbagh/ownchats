@@ -20,6 +20,8 @@ const PERMANENT = () => new MetaError("The user is not available", 400, 10, 2534
 
 beforeEach(async () => {
   w = await setupWorld();
+  // Subscribed to every webhook field, as setup leaves it; the daily check reads this.
+  w.meta.subscribed = ["comments", "messages", "messaging_postbacks"];
 });
 
 const save = (values: Record<string, string>) => saveSettings(env.DB, env.ADMIN_PASSWORD, values);
@@ -162,6 +164,39 @@ const TRIGGERS: Record<string, Trigger> = {
       for (const p of people(12, 5000)) await w.sendComment(w.comment("hello again", p));
     },
   },
+  taps: {
+    async make() {
+      // Ten first DMs with the button go out, and Meta sends back no tap.
+      await w.campaign();
+      for (const p of people(10, 300)) await w.sendComment(w.comment("agents", p));
+    },
+    async untilOpen() {
+      // A first DM counts once it is 15 minutes old.
+      await runs(1, 16 * MINUTE);
+    },
+    // Ten more every hour, still with no tap.
+    keep: async () => {
+      for (const p of people(10, 400 + (Math.floor(w.clock.now() / MINUTE) % 1000) * 10)) await w.sendComment(w.comment("agents", p));
+    },
+    // A tap arrives.
+    fix: async () => void (await w.tap(people(1, 300)[0]!.id, "anything")),
+  },
+  subscription: {
+    async make() {
+      // Meta stops sending taps: the account lost messaging_postbacks.
+      w.meta.subscribed = ["comments", "messages"];
+    },
+    async untilOpen() {
+      // The first run makes the daily check; the next one sees what it found.
+      await w.cron();
+      await runs(1, MINUTE);
+    },
+    async fix() {
+      // The owner subscribes again from setup; the next daily check reads it.
+      w.meta.subscribed = ["comments", "messages", "messaging_postbacks"];
+      await save({ daily_at: "0" });
+    },
+  },
   poll: {
     async make() {
       // A campaign on a Reel posted yesterday, and Meta refuses to list its comments.
@@ -243,6 +278,34 @@ describe("alerts", () => {
     await runs(9, 10 * MINUTE);
     expect(alerts()).toMatchObject([{ problem: "poll", status: "open", title: "The check for missed comments isn't running", url: `${BASE}/dashboard` }]);
     expect(alerts()[0]!.message).toContain("held back by Instagram's rate limit");
+  });
+
+  it("don't count first DMs without a button, or say anything while people tap", async () => {
+    await alertsOn();
+    await w.campaign({ name: "Plain", keywords: ["PLAIN"], openingButton: "" });
+    for (const p of people(12, 600)) await w.sendComment(w.comment("plain", p));
+    await runs(2, 20 * MINUTE);
+    expect(alerts()).toEqual([]);
+    await w.campaign({ name: "Button", keywords: ["BUTTON"] });
+    const some = people(12, 700);
+    for (const p of some) await w.sendComment(w.comment("button", p));
+    await w.tap(some[0]!.id, "anything");
+    await runs(2, 20 * MINUTE);
+    expect(alerts()).toEqual([]);
+  });
+
+  it("name the missing field and leave a failed subscription check alone", async () => {
+    await alertsOn();
+    w.meta.subscribed = [];
+    await w.cron();
+    await runs(1, MINUTE);
+    expect(alerts()).toMatchObject([{ problem: "subscription", status: "open", url: `${BASE}/setup#step-5` }]);
+    expect(alerts()[0]!.message).toContain("comments, messages, messaging_postbacks");
+    // A check Meta refuses keeps the last answer: nothing is fixed or opened by it.
+    w.meta.failNext("getSubscribedFields", PERMANENT());
+    await save({ daily_at: "0" });
+    await runs(6, 10 * MINUTE);
+    expect(statuses()).toEqual(["subscription:open"]);
   });
 
   it("don't open for a problem that goes away within its grace period", async () => {
