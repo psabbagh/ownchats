@@ -44,10 +44,10 @@ describe("Meta's usage headers", () => {
   });
 
   it("are read from X-App-Usage and X-Business-Use-Case-Usage, the highest share winning", () => {
-    expect(parseUsage('{"call_count":28,"total_time":25,"total_cputime":12}', null)).toEqual({ percent: 28, regainMs: null, detail: "app 28%" });
+    expect(parseUsage('{"call_count":28,"total_time":25,"total_cputime":12}', null)).toEqual({ percent: 28, regainMs: null, detail: "app 28%", limits: { app: 28 } });
     expect(
       parseUsage('{"call_count":40,"total_time":10,"total_cputime":10}', '{"17841400000000001":[{"type":"instagram","call_count":95,"total_cputime":3,"total_time":4,"estimated_time_to_regain_access":12}]}'),
-    ).toEqual({ percent: 95, regainMs: 12 * MINUTE, detail: "app 40%, instagram 95%" });
+    ).toEqual({ percent: 95, regainMs: 12 * MINUTE, detail: "app 40%, instagram 95%", limits: { app: 40, instagram: 95 } });
     expect(parseUsage(null, null)).toBeNull();
     expect(parseUsage("not json", "{}")).toBeNull();
   });
@@ -105,6 +105,36 @@ describe("sends first", () => {
     w.clock.advance(MINUTE);
     await w.cron();
     expect(backgroundCalls()).toBeGreaterThan(reads);
+  });
+
+  it("keeps a high reading of the app's limit when a later answer carries only the account's", async () => {
+    await twoPosts();
+    w.meta.usagePercent = 86;
+    w.clock.advance(MINUTE);
+    await w.cron();
+    // From here on, answers carry only the per-account header, at 1%.
+    w.meta.usagePercent = null;
+    w.meta.instagramPercent = 1;
+    const before = w.meta.calls.length;
+    for (let i = 0; i < 4; i++) {
+      w.clock.advance(MINUTE);
+      await w.cron();
+    }
+    const run = w.meta.calls.slice(before);
+    expect(run).not.toContain("mediaInsights");
+    expect(run).not.toContain("accountDay");
+    const saved = JSON.parse((await env.DB.prepare("SELECT value FROM settings WHERE key = 'meta_usage'").first<{ value: string }>())!.value) as {
+      readings: Record<string, { percent: number }>;
+    };
+    expect(saved.readings.app!.percent).toBe(86);
+    expect(saved.readings.instagram!.percent).toBe(1);
+
+    // The app's reading counts for 5 minutes; with no newer one, reads resume.
+    for (let i = 0; i < 20; i++) {
+      w.clock.advance(MINUTE);
+      await w.cron();
+    }
+    expect(w.meta.calls.slice(before)).toContain("mediaInsights");
   });
 
   it("pauses every background read for some minutes when Meta refuses with code 4, and keeps sending", async () => {

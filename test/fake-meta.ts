@@ -44,6 +44,8 @@ export class FakeMeta implements MetaClient {
   messagingIds = new Map<string, string>();
   /** What Meta's usage headers say on every answer; tests set it to bring the rate limit near. */
   usagePercent: number | null = null;
+  /** When set (and usagePercent isn't), answers carry only the per-account header, as some of Meta's do. */
+  instagramPercent: number | null = null;
   lastUsage: MetaUsage | null = null;
   private failures = new Map<string, MetaError[]>();
 
@@ -64,7 +66,10 @@ export class FakeMeta implements MetaClient {
   private call(method: keyof MetaClient): void {
     this.calls.push(method);
     // A fresh reading on every answer, as Meta's headers are.
-    if (this.usagePercent !== null) this.lastUsage = { percent: this.usagePercent, regainMs: null, detail: `app ${this.usagePercent}%` };
+    if (this.usagePercent !== null) this.lastUsage = { percent: this.usagePercent, regainMs: null, detail: `app ${this.usagePercent}%`, limits: { app: this.usagePercent } };
+    else if (this.instagramPercent !== null) {
+      this.lastUsage = { percent: this.instagramPercent, regainMs: null, detail: `instagram ${this.instagramPercent}%`, limits: { instagram: this.instagramPercent } };
+    }
     const err = this.failures.get(method)?.shift();
     if (err) throw err;
   }
