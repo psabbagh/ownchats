@@ -91,6 +91,20 @@ export function postWords(c: Campaign): string {
   return c.nextPostAfter !== null ? "your next post (waiting for it)" : "all posts";
 }
 
+/**
+ * What a campaign answers, in a few plain words: "Comment SKILLS on Claude skills pack reel",
+ * with its other spellings on hover, and the email ask only when there is one.
+ */
+export function askLine(c: Campaign): Html {
+  const email = c.emailMode === "optional" ? ", then asks for their email" : c.emailMode === "first" ? ", asks for their email first" : "";
+  if (c.anyComment || !c.keywords.length) return html`Any comment on ${postWords(c)}${email}`;
+  const [first, ...more] = c.keywords;
+  const others = more.length
+    ? html` <span title="Also answers: ${more.join(", ")}">(+${plural(more.length, "spelling")})</span>`
+    : "";
+  return html`Comment <b>${first}</b>${others} on ${postWords(c)}${email}`;
+}
+
 /** Whether a campaign answers the shortcut keywords from Settings, in a sentence, or nothing when none are set. */
 export function shortcutNote(c: Campaign, shortcuts: string[]): Html {
   if (!shortcuts.length || c.anyComment) return html``;
@@ -450,7 +464,7 @@ export async function dashboardHome(ctx: Ctx, switched: string | null = null, sh
         ? html`<p class="small ${c.active ? "ok" : "warn"}" role="status">${c.active ? "Turned on. It answers new comments from now on." : "Turned off. New comments on it get no DM until you turn it back on."}</p>`
         : ""}
       ${recentLine(c, postedAt(c), recent.get(c.id), now, tz)}
-      <p class="muted small">${c.anyComment ? "Any comment" : `Keyword: ${c.keywords.join(", ")}`} on ${postWords(c)}, ${EMAIL_MODE_LABEL[c.emailMode]}</p>
+      <p class="muted small">${askLine(c)}</p>
       ${p?.waitingOnYou ? html`<p class="small"><a class="warn" href="/dashboard/campaigns/${c.id}#to-check">Waiting on you: ${p.waitingOnYou}</a></p>` : ""}
       ${missed.get(c.id)?.length
         ? html`<p class="small"><a class="warn" href="/dashboard/campaigns/${c.id}#to-check">${plural(missed.get(c.id)!.length, "comment")} to check</a></p>`
@@ -475,7 +489,7 @@ export async function dashboardHome(ctx: Ctx, switched: string | null = null, sh
         : s.ig_username && on.length && !banner.value
           ? html`<p class="ok small" id="needs-you">Nothing needs you right now.</p>`
           : ""}
-      ${s.ig_username ? html`<p class="muted">Connected to Instagram as @${s.ig_username}. Last webhook: ${fmtTime(Number(s.last_webhook_at), tz) || "none yet"}. Last check for missed comments: ${fmtTime(Number(s.last_poll_at), tz) || "none yet"}.${metaLoadLine(ctx)}${refusalLine(health)}${s.time_zone ? "" : html` Times are in UTC: <a href="/dashboard/settings#time-zone">choose your time zone</a>.`}</p>` : ""}
+      ${s.ig_username ? html`<p class="muted small"><span title="Last webhook: ${fmtTime(Number(s.last_webhook_at), tz) || "none yet"}. Last check for missed comments: ${fmtTime(Number(s.last_poll_at), tz) || "none yet"}.">Connected to Instagram as @${s.ig_username}.</span>${metaLoadLine(ctx)}${refusalLine(health)}${s.time_zone ? "" : html` Times are in UTC: <a href="/dashboard/settings#time-zone">choose your time zone</a>.`}</p>` : ""}
       ${noPermission ? html`<p class="warn small">Instagram shares each post's views once your Meta login configuration includes <code>instagram_manage_insights</code>. <a href="/setup#step-3">Add it in setup</a>, then reconnect.</p>` : ""}
       ${untaken.length ? html`<div id="no-campaign">${untaken.map((u) => untakenEntry(u, tz))}</div>` : ""}
       ${campaigns.length === 0 ? html`<div class="card"><p>No campaigns yet. Create one: a keyword, the post it watches, and the link to send.</p></div>` : ""}
