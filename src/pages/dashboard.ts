@@ -356,7 +356,7 @@ export function quietDays(c: Campaign, recent: CampaignRecent | undefined, now: 
 
 /**
  * The Meta calls an hour a campaign that is on costs, and turning it off saves: its post's
- * comment checks (pollEvery), every Cron run while the post is new. Its post's numbers are
+ * comment checks (pollEvery), every 15 minutes while the post is new. Its post's numbers are
  * read whether or not a campaign watches it, so they don't count. Null for a campaign on
  * all posts or waiting for one, which watches no single post.
  */

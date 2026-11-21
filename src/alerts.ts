@@ -36,12 +36,12 @@ export const MISSED_WINDOW = 3 * HOUR;
 /** That many, and more than the webhooks brought over the same window, mean webhooks stopped. */
 export const MISSED_AT_LEAST = 3;
 /**
- * A campaign's post younger than this is checked for missed comments every run (pipeline/poll.ts),
+ * A campaign's post younger than this is checked for missed comments most often (pipeline/poll.ts),
  * so a check that has failed or not run for POLL_DOWN_FOR means a missed webhook would go unanswered.
  */
 export const YOUNG_POST = 2 * DAY;
-/** The check counts as not running once its last run is this old; it runs every minute while a young post is watched. */
-export const POLL_STALE = 10 * MINUTE;
+/** The check counts as not running once its last run is this old; while a young post is watched it runs at least every 19 minutes (15, plus up to 4 of jitter). */
+export const POLL_STALE = 30 * MINUTE;
 /** How long the check must have failed or not run before it opens. */
 export const POLL_DOWN_FOR = HOUR;
 /** First DMs with an opening button sent over this window... */
