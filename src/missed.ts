@@ -220,6 +220,23 @@ export async function answerMissed(
   return { status: after?.status ?? "new" };
 }
 
+/** The skip reason a comment gets when the owner says they answered it outside OwnChats. */
+export const BY_HAND = "answered by hand";
+
+/**
+ * The owner's "I answered it myself": the comment leaves To check and Needs you,
+ * and nothing is sent. It stays skipped, so it is never counted as a DM from
+ * OwnChats, and can't be handed to a campaign afterwards. Works whether the
+ * campaign is on or off, and without an Instagram connection.
+ */
+export async function markAnsweredByHand(ctx: Ctx, commentId: string): Promise<boolean> {
+  const done = await ctx.db
+    .prepare(`UPDATE comments SET reason = ? WHERE id = ? AND status = 'skipped' AND reason IN (${ANSWERABLE.map(() => "?").join(", ")})`)
+    .bind(BY_HAND, commentId, ...ANSWERABLE)
+    .run();
+  return done.meta.changes === 1;
+}
+
 /** The outcome of an answer, read back from the comment, in the dashboard's words. */
 export async function answerOutcome(ctx: Ctx, commentId: string): Promise<{ ok: boolean; text: string } | null> {
   const row = await ctx.db

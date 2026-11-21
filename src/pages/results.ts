@@ -3,7 +3,7 @@ import { trackingBase } from "../clicks";
 import type { Ctx } from "../context";
 import type { Media } from "../meta/client";
 import { MISSING_PERMISSION, readMediaStats, type MediaStats } from "../insights";
-import { ANSWER_PROBLEM, answerMissed, answerOutcome, missedComments, timeLeft, type AnswerProblem, type MissedComment } from "../missed";
+import { ANSWER_PROBLEM, BY_HAND, answerMissed, answerOutcome, markAnsweredByHand, missedComments, timeLeft, type AnswerProblem, type MissedComment } from "../missed";
 import { recentMedia } from "../pipeline/poll";
 import { shortcutKeywords } from "../settings";
 import {
@@ -119,6 +119,9 @@ function outcome(line: CommentLine, campaign: Campaign, names: Map<number, strin
     const progress = [line.state ? PROGRESS[line.state] : "", line.has_email ? "email saved" : ""].filter(Boolean).join(", ");
     return html`<span class="pill sent">answered</span> <span class="muted small">${progress}</span>`;
   }
+  if (line.status === "skipped" && line.reason === BY_HAND) {
+    return html`<span class="pill sent">answered</span> <span class="muted small">by you, outside OwnChats</span>`;
+  }
   if (line.status === "skipped" || line.status === "failed") {
     return html`<span class="pill ${line.status}">${line.status}</span> <span class="muted small">${reason(line.reason)}</span>`;
   }
@@ -145,9 +148,11 @@ function whyMissed(m: MissedComment, campaign: Campaign): string {
 function missedSection(campaign: Campaign, missed: MissedComment[], tz: string): Html {
   if (!missed.length) return html``;
   const action = `/dashboard/campaigns/${campaign.id}/answer`;
+  const handAction = `/dashboard/campaigns/${campaign.id}/answered-by-hand`;
   return html`<h2>To check (${missed.length})</h2>
     <p class="muted small">Skipped comments this campaign can still answer. Answering sends its usual DM and public reply, once, to that one person.
-      If another tool already answered a comment, Meta refuses and nothing is sent.</p>
+      If another tool already answered a comment, Meta refuses and nothing is sent.
+      Already answered it yourself? "I answered it myself" takes it off the list and sends nothing.</p>
     ${campaign.active ? "" : html`<p class="warn small">The campaign is off. Switch it on to answer these.</p>`}
     ${missed.slice(0, MISSED_SHOWN).map((m) => {
       const who = m.fromUsername ? `@${m.fromUsername}` : "this person";
@@ -156,17 +161,20 @@ function missedSection(campaign: Campaign, missed: MissedComment[], tz: string):
         <p style="margin:0"><b>${m.fromUsername ? `@${m.fromUsername}` : "Someone"}</b> <span class="muted small">${fmtTime(m.commentedAt, tz)}, ${timeLeft(m.left)}</span></p>
         <p style="margin:4px 0;overflow-wrap:anywhere">${m.text.length > 280 ? `${m.text.slice(0, 280)}...` : m.text}</p>
         <p class="muted small" style="margin:0">${whyMissed(m, campaign)}</p>
-        ${campaign.active
-          ? html`<div class="row" style="margin-top:8px">
+        <div class="row" style="margin-top:8px">
+          ${campaign.active
+            ? html`
               <form method="post" action="${action}" data-ask="${ask}" onsubmit="return confirm(this.dataset.ask)">
                 <input type="hidden" name="comment_id" value="${m.id}"><button>Answer</button></form>
               ${m.spelling && !campaign.anyComment
                 ? html`<form method="post" action="${action}" data-ask="${`Add ${m.spelling} as a spelling and send this campaign's DM to ${who}?`}" onsubmit="return confirm(this.dataset.ask)">
                     <input type="hidden" name="comment_id" value="${m.id}"><input type="hidden" name="spelling" value="${m.spelling}">
                     <button class="secondary">Add "${m.spelling}" and answer</button></form>`
-                : ""}
-            </div>`
-          : ""}
+                : ""}`
+            : ""}
+          <form method="post" action="${handAction}">
+            <input type="hidden" name="comment_id" value="${m.id}"><button class="secondary">I answered it myself</button></form>
+        </div>
       </div>`;
     })}
     ${missed.length > MISSED_SHOWN ? html`<p class="muted small">And ${missed.length - MISSED_SHOWN} more, older ones. Answer these first.</p>` : ""}`;
@@ -176,6 +184,7 @@ function missedSection(campaign: Campaign, missed: MissedComment[], tz: string):
 async function answerNotice(ctx: Ctx, url: URL): Promise<Html> {
   const problem = url.searchParams.get("problem") as AnswerProblem | null;
   if (problem && Object.hasOwn(ANSWER_PROBLEM, problem)) return html`<div class="card notice"><p>${ANSWER_PROBLEM[problem]}</p></div>`;
+  if (url.searchParams.get("by_hand")) return html`<div class="card"><p class="ok">Marked as answered by you. Nothing was sent.</p></div>`;
   const answered = url.searchParams.get("answered");
   const outcome = answered ? await answerOutcome(ctx, answered) : null;
   if (!outcome) return html``;
@@ -192,6 +201,15 @@ export async function answerMissedForm(ctx: Ctx, request: Request, id: number): 
   const result = await answerMissed(ctx, id, commentId, spelling);
   if ("problem" in result) return redirect(`${base}?problem=${result.problem}#to-check`);
   return redirect(`${base}?answered=${encodeURIComponent(commentId)}#to-check`);
+}
+
+/** "I answered it myself": marks the comment, sends nothing. */
+export async function markAnsweredByHandForm(ctx: Ctx, request: Request, id: number): Promise<Response> {
+  const form = await request.formData();
+  const commentId = String(form.get("comment_id") ?? "").trim();
+  const base = `/dashboard/campaigns/${id}`;
+  if (!commentId || !(await markAnsweredByHand(ctx, commentId))) return redirect(`${base}?problem=gone#to-check`);
+  return redirect(`${base}?by_hand=1#to-check`);
 }
 
 function tallyTable(day: CommentTally, month: CommentTally): Html {

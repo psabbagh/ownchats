@@ -243,6 +243,32 @@ describe("answering a missed comment", () => {
     expect(page).toContain("Has the keyword in a longer comment");
   });
 
+  it("takes a comment off the list when the owner answered it themselves, and sends nothing", async () => {
+    const id = await w.campaign();
+    const long = w.comment("Did the agents list hold up for you after a week of using it?", FAN);
+    await w.sendComment(long);
+    const cookie = await w.signIn();
+    const page = await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie } })).text();
+    expect(page).toContain("I answered it myself");
+
+    const res = await post(cookie, `/dashboard/campaigns/${id}/answered-by-hand`, { comment_id: long.id });
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe(`/dashboard/campaigns/${id}?by_hand=1#to-check`);
+    expect(w.meta.sent).toHaveLength(0);
+    expect(await status(long.id)).toMatchObject({ status: "skipped", reason: "answered by hand" });
+
+    const after = await (await w.fetch(res.headers.get("location")!, { headers: { cookie } })).text();
+    expect(after).toContain("Marked as answered by you. Nothing was sent.");
+    expect(after).not.toContain("To check (");
+    expect(after).toContain("by you, outside OwnChats");
+    expect(await (await w.fetch("/dashboard", { headers: { cookie } })).text()).not.toContain("comment to check");
+
+    // Once marked, Answer can't send it a DM, and marking again changes nothing.
+    expect((await post(cookie, `/dashboard/campaigns/${id}/answer`, { comment_id: long.id })).headers.get("location")).toContain("problem=gone");
+    expect((await post(cookie, `/dashboard/campaigns/${id}/answered-by-hand`, { comment_id: long.id })).headers.get("location")).toContain("problem=gone");
+    expect(privateReplies()).toHaveLength(0);
+  });
+
   it("lists near misses on any post for an all-posts campaign, and only on its own post otherwise", async () => {
     const all = await w.campaign({ name: "Gear", keywords: ["GEAR"], mediaId: null, mediaLabel: null });
     const reel = await w.campaign();
