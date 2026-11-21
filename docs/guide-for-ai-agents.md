@@ -53,7 +53,7 @@ The `/setup` checklist in the app is the main path. Its wording was written befo
 ### Test
 
 - The account owner's own comments never trigger anything. Test from a second account with no role on the app.
-- What to expect, measured on the first run: the comment reaches OwnChats by webhook within about a second, the DM goes out 3 to 4 seconds after the comment, and the public reply about 2 seconds after the DM. The poll every minute is the backup when a webhook is missed.
+- What to expect, measured on the first run: the comment reaches OwnChats by webhook within about a second, the DM goes out 3 to 4 seconds after the comment, and the public reply about 2 seconds after the DM. A poll every 15 minutes is the backup when a webhook is missed, and every minute while webhooks look unhealthy.
 - When the test is done, turn the test campaign off. An open conversation (one waiting for a tap) takes that person's next DM as their answer. On the first run, a leftover test conversation answered a DM sent 13 hours later with "reply with your email".
 
 ## Moving from ManyChat or another tool
