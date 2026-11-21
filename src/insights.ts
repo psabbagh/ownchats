@@ -1,4 +1,4 @@
-import { listCampaigns } from "./campaigns";
+import { listCampaigns, type Campaign } from "./campaigns";
 import type { Ctx } from "./context";
 import { explainError, MetaError, REEL_METRICS, type AccountDay, type Media, type MediaInsights, type ReelMetric } from "./meta/client";
 import { MEDIA_PAGES } from "./meta/graph";
@@ -172,10 +172,10 @@ export async function refreshPostList(ctx: Ctx): Promise<void> {
  * watch time and skip rate only when those are due too (reelEvery). A failed read
  * keeps the last numbers. Skipped while Meta's rate limit is near (throttle.ts).
  */
-export async function refreshMediaStats(ctx: Ctx): Promise<void> {
+export async function refreshMediaStats(ctx: Ctx, active?: Campaign[]): Promise<void> {
   // A few queries, leaving room for the daily upkeep that runs after this.
   if (!ctx.meta || ctx.budget.queriesLeft < 10 || !backgroundAllowed(ctx.load, ctx.now(), "low")) return;
-  const watched = new Set((await listCampaigns(ctx.db, true)).flatMap((c) => (c.mediaId ? [c.mediaId] : [])));
+  const watched = new Set((active ?? (await listCampaigns(ctx.db, true))).flatMap((c) => (c.mediaId ? [c.mediaId] : [])));
   const { results } = await ctx.db
     .prepare("SELECT media_id, posted_at, fetched_at, media_type, reel_fetched_at FROM media_stats")
     .all<{ media_id: string; posted_at: number | null; fetched_at: number; media_type: string | null; reel_fetched_at: number | null }>();

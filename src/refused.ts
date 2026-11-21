@@ -69,11 +69,17 @@ export async function refusedSends(ctx: Ctx, campaignIds: number[]): Promise<Map
       .bind(ids, JSON.stringify(REFUSED_REASONS), now - PRIVATE_REPLY_WINDOW),
     // A message waiting after a refusal, or, from before messages were kept, a refusal after
     // the person's last tap or message with nothing sent to them since.
+    // The first line only narrows the rows looked at, through two indexes, to those that
+    // could match (a message waiting, or a refusal inside the window): the conditions
+    // after it decide. Without it, every conversation was read every minute.
     ctx.db
       .prepare(
         `SELECT v.id, v.campaign_id, v.username, v.pending_message, v.pending_kind, v.pending_reason, v.pending_at, v.pending_attempts, v.pending_since, v.last_inbound_at
          FROM conversations v
-         WHERE v.campaign_id IN (SELECT value FROM json_each(?1)) AND v.answered_by_hand_at IS NULL AND v.last_inbound_at > ?2
+         WHERE v.id IN (SELECT id FROM conversations WHERE pending_message IS NOT NULL
+             UNION ALL SELECT w.id FROM activity f JOIN conversations w ON w.campaign_id = f.campaign_id AND w.ig_user_id = f.ig_user_id
+               WHERE f.kind = 'message' AND f.outcome = 'failed' AND f.at > ?2 AND f.reason LIKE 'Meta rate limit or outage%')
+           AND v.campaign_id IN (SELECT value FROM json_each(?1)) AND v.answered_by_hand_at IS NULL AND v.last_inbound_at > ?2
            AND ((v.pending_message IS NOT NULL AND (v.state NOT IN ('done', 'optional_email', 'awaiting_open') OR v.last_inbound_at > ?3))
              OR (v.state IN ('opened', 'awaiting_follow', 'follow_reasked', 'awaiting_email', 'reasked')
              AND EXISTS (SELECT 1 FROM activity a WHERE a.campaign_id = v.campaign_id AND a.ig_user_id = v.ig_user_id AND a.kind = 'message'
