@@ -832,7 +832,7 @@ function alertsCard(ctx: Ctx, notes: { error?: string; test?: DeliveryRow | null
   const [beatAt, beatProblem] = (s.heartbeat_problem ?? "").split("|");
   return html`<div class="card" id="alerts">
     <h3>Alerts</h3>
-    <p>Tells you when something needs you: comments stopped arriving from Meta, Meta's webhooks refused, the Instagram token or connection broken, people waiting over half an hour on a DM Instagram refused, refused DMs only you can send now, a post that went up with no campaign, and a burst of failed DMs.
+    <p>Tells you when something needs you: comments or button taps stopped arriving from Meta, a webhook field unsubscribed, Meta's webhooks refused, the Instagram token or connection broken, people waiting over half an hour on a DM Instagram refused, refused DMs only you can send now, a post that went up with no campaign, and a burst of failed DMs.
       One message when a problem starts and one when it's fixed, a reminder at most every 12 hours while it lasts, and at most 10 messages a day. Alerts never name anyone.</p>
     ${notes.error ? html`<div class="card errors"><p>${notes.error}</p></div>` : ""}
     <form method="post" action="/dashboard/settings/alerts">

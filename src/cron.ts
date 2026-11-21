@@ -1,4 +1,4 @@
-import { checkAlerts, heartbeat } from "./alerts";
+import { checkAlerts, checkSubscription, heartbeat } from "./alerts";
 import type { Ctx } from "./context";
 import { oldestKeptDay, POST_DAYS, refreshAccountDays, refreshAccountStats, refreshMediaStats, refreshPostList } from "./insights";
 import { handleComment, pendingCommentIds, QUERIES_PER_COMMENT } from "./pipeline/comments";
@@ -61,6 +61,7 @@ export async function runCron(ctx: Ctx): Promise<void> {
   if (ctx.now() - Number(ctx.settings.daily_at ?? 0) > DAY) {
     await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { daily_at: String(ctx.now()) });
     await checkToken(ctx);
+    await checkSubscription(ctx);
     await cleanup(ctx);
   }
 }

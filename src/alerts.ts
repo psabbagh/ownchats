@@ -3,6 +3,7 @@ import { listCampaigns, type Campaign } from "./campaigns";
 import { log, type Ctx } from "./context";
 import { deliverNow, queueStatement, type Attempt } from "./leadwebhook";
 import { TRANSIENT_REASON } from "./meta/client";
+import { WEBHOOK_FIELDS } from "./meta/graph";
 import { untakenPosts } from "./nextpost";
 import { refusedSends } from "./refused";
 import { clockTime } from "./retry";
@@ -22,7 +23,7 @@ import { DAY, HOUR, MINUTE, SECOND } from "./time";
  * Checked by the Cron every minute, from what OwnChats already records: it costs D1
  * queries and no Meta call.
  */
-export type AlertKey = "comments" | "poll" | "webhook" | "token" | "waiting" | "gave_up" | "untaken" | "failures";
+export type AlertKey = "comments" | "poll" | "taps" | "subscription" | "webhook" | "token" | "waiting" | "gave_up" | "untaken" | "failures";
 
 export const REMIND_EVERY = 12 * HOUR;
 /** A problem must be gone this long before "fixed" goes out. */
@@ -43,6 +44,13 @@ export const YOUNG_POST = 2 * DAY;
 export const POLL_STALE = 10 * MINUTE;
 /** How long the check must have failed or not run before it opens. */
 export const POLL_DOWN_FOR = HOUR;
+/** First DMs with an opening button sent over this window... */
+export const TAPS_WINDOW = 3 * HOUR;
+/** ...at least this many, and not one tap or typed reply since: Meta has likely stopped sending them. About half of people tap, so 10 in a row with none happens by chance about once in a thousand. */
+export const TAPS_AFTER_DMS = 10;
+/** A first DM this recent isn't counted: the person may not have opened it yet. */
+const TAP_TIME = 15 * MINUTE;
+
 /** People waiting this long on a send Meta refused for a passing reason (a rate limit) need the owner to know. */
 export const WAITING_FOR = 30 * MINUTE;
 /** A burst of DM failures: this many people... */
@@ -55,6 +63,9 @@ const OPEN_AFTER: Record<AlertKey, number> = {
   // Built from windows of their own (MISSED_WINDOW, WAITING_FOR, BURST_WINDOW).
   comments: 0,
   poll: POLL_DOWN_FOR,
+  taps: 0,
+  // Read once a day, like the token.
+  subscription: 0,
   waiting: 0,
   failures: 0,
   // A stray POST to /webhook from a scanner sets the problem too; a real webhook in the next 15 minutes clears it.
@@ -71,6 +82,8 @@ const OPEN_AFTER: Record<AlertKey, number> = {
 const FIXED: Record<AlertKey, string> = {
   comments: "comments are arriving from Meta again",
   poll: "the check for missed comments is running again",
+  taps: "taps and replies are arriving from Meta again",
+  subscription: "the webhook subscription has every field again",
   webhook: "Meta's webhooks are accepted again",
   token: "Instagram is connected and the token works",
   waiting: "nobody is waiting on a refused DM any more",
@@ -248,6 +261,45 @@ export async function currentProblems(ctx: Ctx): Promise<Problem[]> {
     }
   }
 
+  // First DMs with a button go out, and no tap or reply comes back: Meta has stopped sending them (messages, messaging_postbacks).
+  if (connected && !webhookRefused) {
+    const [dms, inbound] = await ctx.db.batch<{ n: number; last?: number | null }>([
+      ctx.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM activity a JOIN campaigns c ON c.id = a.campaign_id
+           WHERE a.kind = 'private_reply' AND a.outcome = 'sent' AND a.at > ? AND a.at <= ? AND c.opening_button <> ''`,
+        )
+        .bind(now - TAPS_WINDOW, now - TAP_TIME),
+      ctx.db.prepare("SELECT COUNT(*) AS n, (SELECT MAX(received_at) FROM inbound) AS last FROM inbound WHERE received_at > ?").bind(now - TAPS_WINDOW),
+    ]);
+    const sent = Number(dms!.results[0]?.n ?? 0);
+    if (sent >= TAPS_AFTER_DMS && Number(inbound!.results[0]?.n ?? 0) === 0) {
+      const last = Number(inbound!.results[0]?.last ?? 0);
+      problems.push({
+        key: "taps",
+        title: `No taps for ${TAPS_WINDOW / HOUR} hours after ${sent} first DMs`,
+        message: `${plural(sent, "person", "people")} got the first DM with its button in the last ${TAPS_WINDOW / HOUR} hours, and no tap or reply has arrived${last ? ` since ${clockTime(ctx, last)}` : ""}. About half of people usually tap, so Meta has likely stopped sending taps and DMs, and those people get nothing when they tap. Check the webhook subscription in setup.`,
+        people: sent,
+        path: "/setup#step-5",
+      });
+    }
+  }
+
+  // The account's webhook subscription lost a field (read daily, and by setup): Meta sends nothing for it.
+  if (connected && s.subscribed_fields !== undefined) {
+    const have = s.subscribed_fields.split(",").filter(Boolean);
+    const missing = WEBHOOK_FIELDS.filter((f) => !have.includes(f));
+    if (missing.length) {
+      problems.push({
+        key: "subscription",
+        title: "Meta's webhook subscription is missing a field",
+        message: `Your Instagram account is no longer subscribed to ${missing.join(", ")}, so Meta sends OwnChats no ${missing.map((f) => (f === "comments" ? "comments" : f === "messages" ? "DMs" : "button taps")).join(" or ")}. Open setup and subscribe again.`,
+        people: 0,
+        path: "/setup#step-5",
+      });
+    }
+  }
+
   // A burst of DM failures.
   const people = Number(failures!.results[0]?.people ?? 0);
   if (people >= BURST_PEOPLE) {
@@ -394,6 +446,8 @@ export function openAlerts(ctx: Ctx): Array<{ key: AlertKey; since: number }> {
 export const ALERT_NAME: Record<AlertKey, string> = {
   comments: "Comments not arriving from Meta",
   poll: "The check for missed comments not running",
+  taps: "No taps arriving from Meta",
+  subscription: "Webhook subscription missing a field",
   webhook: "Meta's webhooks refused",
   token: "Instagram token or connection",
   waiting: "People waiting on a refused DM",
@@ -449,4 +503,21 @@ export async function heartbeat(ctx: Ctx): Promise<void> {
   const values = { heartbeat_at: String(now), heartbeat_problem: problem ? `${now}|${problem}` : "" };
   Object.assign(ctx.settings, values);
   await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, values);
+}
+
+/**
+ * The daily look at the account's webhook subscription: which fields Meta says it sends.
+ * A field dropped (after a reconnect, or a change in the Meta app) stops comments, DMs or
+ * taps without any error, and the "subscription" alert reads what this saves. A failed
+ * read keeps the last answer: a check that failed is not a missing field.
+ */
+export async function checkSubscription(ctx: Ctx): Promise<void> {
+  if (!ctx.meta || !ctx.budget.take()) return;
+  try {
+    const fields = (await ctx.meta.getSubscribedFields()).join(",");
+    ctx.settings.subscribed_fields = fields;
+    await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { subscribed_fields: fields });
+  } catch {
+    // Kept as it was.
+  }
 }
