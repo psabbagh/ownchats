@@ -263,6 +263,8 @@ describe("answering a missed comment", () => {
     expect(after).toContain("To check (1)");
     const missed = await missedComments(await w.ctx(), await listCampaigns(env.DB, true));
     expect(missed.get(id)?.map((m) => m.id)).not.toContain(long.id);
+    expect(after).toContain("by you, in Instagram");
+    expect(after).not.toContain("link sent");
     expect(await (await w.fetch("/dashboard", { headers: { cookie } })).text()).toContain("1 comment to check");
 
     // Once marked, Answer can't send a DM, marking again changes nothing, and a later keyword comment gets no second DM.

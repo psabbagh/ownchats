@@ -117,7 +117,9 @@ function outcome(line: CommentLine, campaign: Campaign, names: Map<number, strin
       const by = line.campaign_id ? names.get(line.campaign_id) : undefined;
       return html`<span class="pill sent">answered</span> <span class="muted small">by ${by ?? "another campaign"}</span>`;
     }
-    const progress = [line.state ? PROGRESS[line.state] : "", line.has_email ? "email saved" : ""].filter(Boolean).join(", ");
+    // A conversation marked answered by hand is "done" though OwnChats never sent the link, so it isn't called "link sent".
+    const step = line.comment_by_hand ? "by you, in Instagram" : line.conversation_by_hand ? "DM sent, rest by you in Instagram" : line.state ? PROGRESS[line.state] : "";
+    const progress = [step, line.has_email ? "email saved" : ""].filter(Boolean).join(", ");
     return html`<span class="pill sent">answered</span> <span class="muted small">${progress}</span>`;
   }
   if (line.status === "skipped" || line.status === "failed") {
