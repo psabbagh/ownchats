@@ -73,14 +73,16 @@ export async function refusedSends(ctx: Ctx, campaignIds: number[]): Promise<Map
         `SELECT v.id, v.campaign_id, v.username, v.pending_message, v.pending_kind, v.pending_reason, v.pending_at, v.pending_attempts, v.pending_since, v.last_inbound_at
          FROM conversations v
          WHERE v.campaign_id IN (SELECT value FROM json_each(?1)) AND v.answered_by_hand_at IS NULL AND v.last_inbound_at > ?2
-           AND (v.pending_message IS NOT NULL OR (v.state IN ('opened', 'awaiting_follow', 'follow_reasked', 'awaiting_email', 'reasked')
+           AND ((v.pending_message IS NOT NULL AND (v.state NOT IN ('done', 'optional_email', 'awaiting_open') OR v.last_inbound_at > ?3))
+             OR (v.state IN ('opened', 'awaiting_follow', 'follow_reasked', 'awaiting_email', 'reasked')
              AND EXISTS (SELECT 1 FROM activity a WHERE a.campaign_id = v.campaign_id AND a.ig_user_id = v.ig_user_id AND a.kind = 'message'
                AND a.outcome = 'failed' AND a.reason LIKE 'Meta rate limit or outage%' AND a.at >= v.last_inbound_at)
              AND NOT EXISTS (SELECT 1 FROM activity a WHERE a.campaign_id = v.campaign_id AND a.ig_user_id = v.ig_user_id
                AND a.kind IN ('message', 'link') AND a.outcome = 'sent' AND a.at >= v.last_inbound_at)))
          ORDER BY v.last_inbound_at LIMIT 200`,
       )
-      .bind(ids, now - LISTED_FOR),
+      // Someone who already has their link (a refused email ask after their click) is listed only while Send can still reach them.
+      .bind(ids, now - LISTED_FOR, now - MESSAGING_WINDOW),
   ]);
   const add = (campaignId: number, r: RefusedSend) => out.set(campaignId, [...(out.get(campaignId) ?? []), r]);
   for (const c of comments!.results) {
@@ -231,8 +233,9 @@ export interface RefusedPeople {
 
 /** A campaign's people, each counted once: the funnel the cards and the API show. */
 export interface PeopleCounts {
-  /** Commented the keyword or sent it by DM, and were taken on: a conversation, or a first DM still waiting. */
+  /** Commented the keyword or sent it by DM, and were taken on: a conversation, or a first DM still waiting. answeredAutomatically + answeredByHand + waitingOnYou never exceeds it. */
   asked: number;
+  /** Got OwnChats' first DM and were not answered by hand later: someone OwnChats only partly answered and the owner finished counts by hand, once. */
   answeredAutomatically: number;
   answeredByHand: number;
   /** Tapped the opening button at least once. */
@@ -241,6 +244,12 @@ export interface PeopleCounts {
   waitingOnYou: number;
   refused: RefusedPeople;
 }
+
+/**
+ * States in which the person has their link: a message refused after it (the optional
+ * email ask after their first click) cost them nothing they asked for.
+ */
+const LINK_STATES_GOT = ["done", "optional_email", "awaiting_open"];
 
 const noRefusals = (): RefusedPeople => ({ people: 0, recovered: 0, answeredByHand: 0, waiting: 0, unreached: 0 });
 
@@ -254,7 +263,7 @@ export async function refusedPeople(ctx: Ctx, campaignIds: number[], refused: Ma
   if (!campaignIds.length) return out;
   const { results } = await ctx.db
     .prepare(
-      `SELECT a.campaign_id, a.ig_user_id, v.id AS conversation_id, v.answered_by_hand_at, v.first_sent_at,
+      `SELECT a.campaign_id, a.ig_user_id, v.id AS conversation_id, v.answered_by_hand_at, v.first_sent_at, v.state,
          MAX(CASE WHEN a.kind = 'message' THEN a.at END) AS message_failed_at,
          (SELECT MAX(s.at) FROM activity s WHERE s.campaign_id = a.campaign_id AND s.outcome = 'sent' AND s.kind IN ('message', 'link')
             AND (s.ig_user_id = v.ig_user_id OR s.ig_user_id = a.ig_user_id)) AS sent_at
@@ -264,7 +273,16 @@ export async function refusedPeople(ctx: Ctx, campaignIds: number[], refused: Ma
        GROUP BY a.campaign_id, a.ig_user_id`,
     )
     .bind(JSON.stringify(campaignIds), since)
-    .all<{ campaign_id: number; ig_user_id: string; conversation_id: number | null; answered_by_hand_at: number | null; first_sent_at: number | null; message_failed_at: number | null; sent_at: number | null }>();
+    .all<{
+      campaign_id: number;
+      ig_user_id: string;
+      conversation_id: number | null;
+      answered_by_hand_at: number | null;
+      first_sent_at: number | null;
+      state: string | null;
+      message_failed_at: number | null;
+      sent_at: number | null;
+    }>();
   const waiting = new Set<string>();
   for (const [campaignId, list] of refused) {
     for (const r of list) waiting.add(r.type === "message" ? `${campaignId}:c${r.id}` : `${campaignId}:p${r.personId}`);
@@ -278,7 +296,7 @@ export async function refusedPeople(ctx: Ctx, campaignIds: number[], refused: Ma
       ? "answeredByHand"
       : waiting.has(key) || waiting.has(`${r.campaign_id}:p${r.ig_user_id}`)
         ? "waiting"
-        : r.first_sent_at !== null && (r.message_failed_at === null || (r.sent_at ?? 0) > r.message_failed_at)
+        : r.first_sent_at !== null && (r.message_failed_at === null || (r.sent_at ?? 0) > r.message_failed_at || LINK_STATES_GOT.includes(r.state ?? ""))
           ? "recovered"
           : "unreached";
     const before = seen.get(key);
@@ -303,7 +321,7 @@ export async function peopleCounts(ctx: Ctx, campaignIds: number[], refused?: Ma
   const [conv, taps] = await ctx.db.batch<Record<string, number>>([
     ctx.db
       .prepare(
-        `SELECT campaign_id, COUNT(*) AS people, COUNT(first_sent_at) AS auto, COUNT(answered_by_hand_at) AS by_hand FROM conversations
+        `SELECT campaign_id, COUNT(*) AS people, SUM(first_sent_at IS NOT NULL AND answered_by_hand_at IS NULL) AS auto, COUNT(answered_by_hand_at) AS by_hand FROM conversations
          WHERE campaign_id IN (SELECT value FROM json_each(?)) GROUP BY campaign_id`,
       )
       .bind(ids),

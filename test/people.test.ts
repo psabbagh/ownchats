@@ -77,6 +77,32 @@ describe("people, not attempts", () => {
     expect(page).not.toContain("<h2>Comments</h2>");
   });
 
+  it("never counts more answered than asked, and a refused email ask after the link is no miss", async () => {
+    const id = await w.campaign({ emailMode: "optional" });
+    const cookie = await w.signIn();
+    // FAN: got the first DM, tapped, the link refused; answered by hand.
+    await w.sendComment(w.comment("agents", FAN));
+    for (let i = 0; i < 20; i++) w.meta.failNext("sendMessage", OUTAGE());
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
+    const conversationId = (await env.DB.prepare("SELECT id FROM conversations WHERE ig_user_id = ?").bind(FAN.id).first<{ id: number }>())!.id;
+    await form(cookie, `/dashboard/campaigns/${id}/by-hand`, { type: "message", id: String(conversationId) });
+    w.meta.clearFailures();
+    // FAN2: got the link and opened it; the email ask after the open was refused.
+    await w.sendComment(w.comment("agents", FAN2));
+    await w.tap(FAN2.id, `${OPEN_PAYLOAD_PREFIX}${id}`);
+    w.meta.failNext("sendMessage", OUTAGE());
+    await w.openLink(FAN2.id);
+    expect((await w.activity()).at(-1)).toMatchObject({ kind: "message", outcome: "failed" });
+    // The email ask is retried as any message; once Meta's window closes, nobody waits.
+    w.meta.clearFailures();
+    for (let i = 0; i < 30; i++) w.meta.failNext("sendMessage", OUTAGE());
+    w.clock.advance(2 * DAY);
+
+    const counts = await apiCounts(cookie);
+    expect(counts).toMatchObject({ asked: 2, answeredAutomatically: 1, answeredByHand: 1, waitingOnYou: 0 });
+    expect(counts.refused).toMatchObject({ people: 2, recovered: 1, answeredByHand: 1, unreached: 0 });
+  });
+
   it("shows no waiting line on a card when nobody waits", async () => {
     await w.campaign();
     await w.sendComment(w.comment("agents", FAN));
