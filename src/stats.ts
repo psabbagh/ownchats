@@ -60,6 +60,34 @@ export async function campaignCounts(ctx: Ctx): Promise<Map<number, CampaignCoun
   return out;
 }
 
+/** What a campaign has done lately, for deciding whether to keep it on. */
+export interface CampaignRecent {
+  /** The newest comment that matched it, while comments are kept (30 days); its text is gone after that. */
+  lastComment: { at: number; text: string | null } | null;
+  /** First DMs sent in the last 7 days. */
+  dmsLastWeek: number;
+}
+
+export async function campaignRecent(ctx: Ctx): Promise<Map<number, CampaignRecent>> {
+  const [comments, people, week] = await ctx.db.batch<{ campaign_id: number; at: number; text?: string; n?: number }>([
+    // SQLite returns the other columns from the row that holds the MAX.
+    ctx.db.prepare("SELECT campaign_id, MAX(commented_at) AS at, text FROM comments WHERE campaign_id IS NOT NULL GROUP BY campaign_id"),
+    // Conversations outlive comments, so a campaign quiet for over 30 days still shows when it last matched one.
+    ctx.db.prepare("SELECT campaign_id, MAX(created_at) AS at FROM conversations WHERE trigger = 'comment' GROUP BY campaign_id"),
+    ctx.db.prepare("SELECT campaign_id, COUNT(*) AS n, 0 AS at FROM conversations WHERE first_sent_at > ? GROUP BY campaign_id").bind(ctx.now() - 7 * DAY),
+  ]);
+  const out = new Map<number, CampaignRecent>();
+  const get = (id: number) => out.get(id) ?? out.set(id, { lastComment: null, dmsLastWeek: 0 }).get(id)!;
+  // A kept comment says when it was written; a conversation only says when it was handled, so it is the fallback.
+  for (const r of comments!.results) get(r.campaign_id).lastComment = { at: r.at, text: r.text ?? null };
+  for (const r of people!.results) {
+    const c = get(r.campaign_id);
+    c.lastComment ??= { at: r.at, text: null };
+  }
+  for (const r of week!.results) get(r.campaign_id).dmsLastWeek = r.n ?? 0;
+  return out;
+}
+
 /**
  * How many things failed since this time and need the owner, from the log. A public reply is left
  * out: it is only tried once its DM went out, so the person already has what they asked for.
