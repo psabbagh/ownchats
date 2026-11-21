@@ -78,6 +78,10 @@ The `/setup` checklist in the app is the main path. Its wording was written befo
 - **When the email ask is sent.** In "link plus optional email", the link goes out alone and the ask follows as its own message when the person first opens the link, within 24 hours of their tap. If they never open it, or open it later, nothing is asked. Without the first DM's button, or with click counting off, the ask goes under the link in the same message.
 - **Link clicks.** Campaign links go out as `<their OwnChats address>/go/<id>`, so a DM you see in Instagram shows that address, not the destination. That is expected. A person's first click counts; previews don't. If DMs with these links seem to stop arriving, switch counting off under Settings, Link clicks, and tell the person what you saw. To show the person's own domain in DMs, add it to the Worker as a custom domain and open the dashboard there once. OwnChats then keeps it, even if the `workers.dev` address is opened later. Leave that address on, because links already sent and Meta's webhook use it. Before reconnecting Instagram, add the new domain's `/setup/callback` to the app's redirect addresses in Meta.
 
+## Alerts
+
+Settings, Alerts takes one alert URL and an optional heartbeat URL. For a phone push with no account, the person installs the ntfy app and subscribes to a topic with a long random name they choose; the alert URL is `https://ntfy.sh/<that name>`. Treat the topic name like a password: anyone who knows it can read the alerts (they carry counts, never names). Have them press **Send a test alert** and confirm it arrived. For the heartbeat, they create a check at a service such as healthchecks.io with a 10-minute period and paste its ping URL. Alert attempts are in Activity as "Alert".
+
 ## The lead webhook
 
 It sends each new email to the person's email tool, signed. The format is in [lead-webhook.md](lead-webhook.md). To set it up with the person:

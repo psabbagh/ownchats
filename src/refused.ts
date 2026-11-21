@@ -21,6 +21,8 @@ export interface RefusedSend {
   /** The next automatic try; null once the Cron stopped. */
   nextAt: number | null;
   attempts: number;
+  /** When Meta first refused it: the retry schedule counts from here. */
+  since: number;
   /** Milliseconds left in Meta's window: 7 days from the comment, or 24 hours from the tap; 0 or less once it closed. */
   left: number;
   /** Whether Send is offered: a refusal OwnChats keeps retrying, inside Meta's window. Otherwise only "Answered by hand". */
@@ -64,7 +66,7 @@ export async function refusedSends(ctx: Ctx, campaignIds: number[]): Promise<Map
     // the person's last tap or message with nothing sent to them since.
     ctx.db
       .prepare(
-        `SELECT v.id, v.campaign_id, v.username, v.pending_message, v.pending_kind, v.pending_reason, v.pending_at, v.pending_attempts, v.last_inbound_at
+        `SELECT v.id, v.campaign_id, v.username, v.pending_message, v.pending_kind, v.pending_reason, v.pending_at, v.pending_attempts, v.pending_since, v.last_inbound_at
          FROM conversations v
          WHERE v.campaign_id IN (SELECT value FROM json_each(?1)) AND v.answered_by_hand_at IS NULL AND v.last_inbound_at > ?2
            AND (v.pending_message IS NOT NULL OR (v.state IN ('opened', 'awaiting_follow', 'follow_reasked', 'awaiting_email', 'reasked')
@@ -85,6 +87,7 @@ export async function refusedSends(ctx: Ctx, campaignIds: number[]): Promise<Map
       what: "the first DM",
       nextAt: c.status === "queued" ? ((c.next_attempt_at as number | null) ?? now) : null,
       attempts: Number(c.attempts),
+      since: Number(c.first_refused_at ?? c.commented_at),
       left: Number(c.commented_at) + PRIVATE_REPLY_WINDOW - now,
       canSend: c.first_refused_at !== null,
     });
@@ -97,6 +100,7 @@ export async function refusedSends(ctx: Ctx, campaignIds: number[]): Promise<Map
       what: m.pending_message !== null ? whatMessage(String(m.pending_kind), String(m.pending_reason)) : "the message after their tap",
       nextAt: (m.pending_at as number | null) ?? null,
       attempts: Number(m.pending_attempts),
+      since: Number(m.pending_since ?? m.last_inbound_at),
       left: Number(m.last_inbound_at) + MESSAGING_WINDOW - now,
       canSend: m.pending_message !== null && Number(m.last_inbound_at) + MESSAGING_WINDOW > now,
     });

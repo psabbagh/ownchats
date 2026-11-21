@@ -2,7 +2,8 @@ import { decryptText, encryptText } from "./crypto";
 import { parseKeywords } from "./match";
 
 /** Settings stored encrypted with a key derived from ADMIN_PASSWORD. */
-const SECRET_KEYS = new Set(["meta_app_secret", "access_token", "export_key", "lead_webhook_secret"]);
+/** The alert and heartbeat URLs too: an ntfy topic or a Slack webhook is readable, or writable, by anyone who knows it. */
+const SECRET_KEYS = new Set(["meta_app_secret", "access_token", "export_key", "lead_webhook_secret", "alert_url", "heartbeat_url"]);
 
 export type SettingKey =
   | "base_url"
@@ -28,6 +29,12 @@ export type SettingKey =
   | "sender_address"
   | "lead_webhook_url"
   | "lead_webhook_secret"
+  | "alert_url"
+  | "alert_format"
+  | "alert_state"
+  | "heartbeat_url"
+  | "heartbeat_at"
+  | "heartbeat_problem"
   | "click_tracking"
   | "default_optional_prompt"
   | "default_optional_thanks"
