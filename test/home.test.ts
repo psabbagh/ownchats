@@ -245,7 +245,7 @@ describe("the on/off switch", () => {
     w.clock.advance(MINUTE);
     const res = await flip(id, "off");
     expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toBe("/dashboard");
+    expect(res.headers.get("location")).toBe(`/dashboard?switched=${id}#c-${id}`);
     const after = (await getCampaign(env.DB, id))!;
     expect(after).toEqual({ ...before, active: false, updatedAt: w.clock.now() });
 
@@ -290,21 +290,80 @@ describe("the on/off switch", () => {
 });
 
 describe("the order of the list", () => {
-  it("puts campaigns that are on first, and folds away those that are off", async () => {
-    const old = await w.campaign({ name: "Old and on" });
+  const row = (page: string, id: number) => /<div class="card row campaign[^"]*" id="c-(\d+)">.*?(?=<div class="card row campaign|<script>)/gs
+    .exec(page.slice(page.indexOf(`id="c-${id}"`) - 40))?.[0] ?? "";
+  const order = (page: string) => [...page.matchAll(/ id="c-(\d+)"/g)].map((m) => Number(m[1]));
+  const posted = (mediaId: string, at: number) =>
+    env.DB.prepare("INSERT INTO media_stats (media_id, posted_at, fetched_at) VALUES (?, ?, 0)").bind(mediaId, at).run();
+
+  it("keeps campaigns that are off in place, dimmed and marked Off", async () => {
+    const old = await w.campaign({ name: "Old and on", mediaId: OLD_POST });
     w.clock.advance(HOUR);
-    const offOne = await w.campaign({ name: "Newest but off", active: false });
+    const newer = await w.campaign({ name: "Newest but off", active: false, mediaId: NEW_POST });
     const page = await home();
-    expect(page.indexOf("Old and on")).toBeLessThan(page.indexOf("<details"));
-    expect(page.indexOf("<details")).toBeLessThan(page.indexOf("Newest but off"));
-    expect(page).toContain("1 campaign off</summary>");
-    expect(page).not.toContain("<details open");
+    expect(page).not.toContain("<details");
+    expect(order(page)).toEqual([newer, old]);
+    expect(row(page, newer)).toContain('class="card row campaign off"');
+    expect(row(page, newer)).toContain('<span class="pill off">Off</span>');
+    expect(row(page, old)).not.toContain(">Off</span>");
+    expect(page).toContain("1 of 2 campaigns on.");
 
     await flip(old, "off");
-    expect(await home()).toContain("<details open");
-    await flip(offOne, "on");
-    await flip(old, "on");
-    expect(await home()).not.toContain("<details");
+    await flip(newer, "on");
+    expect(order(await home())).toEqual([newer, old]);
+  });
+
+  it("puts the newest Reel on top, whenever its campaign was made", async () => {
+    const reelLater = await w.campaign({ name: "Made first", mediaId: NEW_POST });
+    w.clock.advance(HOUR);
+    const reelEarlier = await w.campaign({ name: "Made second", mediaId: OLD_POST });
+    w.clock.advance(HOUR);
+    const next = await waiting({ name: "Waiting" });
+    await posted(OLD_POST, w.clock.now() - 5 * DAY);
+    await posted(NEW_POST, w.clock.now() - DAY);
+    expect(order(await home())).toEqual([next, reelLater, reelEarlier]);
+  });
+
+  it("confirms a switch on the row it changed", async () => {
+    const id = await w.campaign();
+    const other = await w.campaign({ name: "Other", keywords: ["OTHER"] });
+    await flip(id, "off");
+    const page = await (await w.fetch(`/dashboard?switched=${id}`, { headers: { cookie } })).text();
+    expect(row(page, id)).toContain("Turned off. New comments on it get no DM until you turn it back on.");
+    expect(row(page, other)).not.toContain('role="status"');
+    await flip(id, "on");
+    const back = await (await w.fetch(`/dashboard?switched=${id}`, { headers: { cookie } })).text();
+    expect(row(back, id)).toContain("Turned on. It answers new comments from now on.");
+    expect(await home()).not.toContain('role="status"');
+  });
+});
+
+describe("what each campaign row says about its recent days", () => {
+  const row = async (id: number) => {
+    const page = await home();
+    return /<p class="small recent">.*?<\/p>/s.exec(page.slice(page.indexOf(`id="c-${id}"`)))?.[0] ?? "";
+  };
+
+  it("says how old the Reel is, the last matching comment and the DMs of the last 7 days", async () => {
+    const id = await w.campaign();
+    await env.DB.prepare("INSERT INTO media_stats (media_id, posted_at, fetched_at) VALUES (?, ?, 0)").bind(REEL, w.clock.now() - 3 * DAY).run();
+    await w.sendComment(w.comment("AGENTS please", FAN, { ago: 9 * DAY }));
+    await w.sendComment(w.comment("agents", FAN2, { ago: 30 * MINUTE }));
+    const line = await row(id);
+    expect(line).toContain("Reel posted <b>3 days ago</b>");
+    expect(line).toContain('Last matching comment <b>30 minutes ago</b> <span class="muted">"agents"</span>');
+    expect(line).toContain("<b>1</b> DM in the last 7 days");
+  });
+
+  it("counts only the last 7 days, and says when nothing matched yet", async () => {
+    const id = await w.campaign();
+    expect(await row(id)).toContain("No matching comment yet");
+    expect(await row(id)).toContain("<b>0</b> DMs in the last 7 days");
+    await w.sendComment(w.comment("agents", FAN));
+    w.clock.advance(8 * DAY);
+    const line = await row(id);
+    expect(line).toContain("Last matching comment <b>8 days ago</b>");
+    expect(line).toContain("<b>0</b> DMs in the last 7 days");
   });
 });
 

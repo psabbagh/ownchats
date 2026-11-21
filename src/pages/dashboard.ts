@@ -78,9 +78,9 @@ import { MISSING_PERMISSION, readMediaStats } from "../insights";
 import { missedComments, timeLeft, type MissedComment } from "../missed";
 import { attachUntakenPost, dismissUntakenPost, untakenPosts, type UntakenPost } from "../nextpost";
 import { deleteSettings, saveSettings, shortcutKeywords, type Settings } from "../settings";
-import { campaignCounts, deletePerson, failuresSince, findPersonByUsername, listActivity, storedAboutPeople, type ActivityRow } from "../stats";
-import { copyField, fmtCount, fmtDate, fmtTime, html, page, plural, redirect, type Html } from "./html";
-import { DAY, isTimeZone, timeZoneOf } from "../time";
+import { campaignCounts, campaignRecent, deletePerson, failuresSince, findPersonByUsername, listActivity, storedAboutPeople, type ActivityRow, type CampaignRecent } from "../stats";
+import { copyField, fmtCount, fmtDate, fmtTime, html, page, plural, raw, redirect, type Html } from "./html";
+import { DAY, HOUR, isTimeZone, MINUTE, timeZoneOf } from "../time";
 
 /** Which post a campaign watches, in a few words. */
 export function postWords(c: Campaign): string {
@@ -140,7 +140,7 @@ function needsYou(ctx: Ctx, campaigns: Campaign[], missed: Map<number, MissedCom
 /** Says the state and changes it. The form sends the state wanted, so a double click or an old tab can't flip it back. */
 function campaignSwitch(c: Campaign): Html {
   const ask = `Turn off ${c.name}? Comments that arrive while it is off get no DM.`;
-  return html`<form method="post" action="/dashboard/campaigns/${c.id}/switch"${c.active ? html` data-ask="${ask}" onsubmit="return confirm(this.dataset.ask)"` : ""}>
+  return html`<form class="switch-form" method="post" action="/dashboard/campaigns/${c.id}/switch"${c.active ? html` data-ask="${ask}" onsubmit="return confirm(this.dataset.ask)"` : ""}>
     <input type="hidden" name="active" value="${c.active ? "off" : "on"}"><button class="switch${c.active ? " on" : ""}" role="switch" aria-checked="${c.active ? "true" : "false"}" title="${c.active ? "On. Click to turn off." : "Off. Click to turn on."}">${c.active ? "on" : "off"}</button></form>`;
 }
 
@@ -184,18 +184,60 @@ function untakenEntry({ post, waiting }: UntakenPost, tz: string): Html {
 
 export async function switchCampaign(ctx: Ctx, request: Request, id: number): Promise<Response> {
   const wanted = String((await request.formData()).get("active") ?? "");
-  if (wanted === "on" || wanted === "off") await setCampaignActive(ctx.db, id, wanted === "on", ctx.now());
-  return redirect("/dashboard");
+  if (wanted !== "on" && wanted !== "off") return redirect("/dashboard");
+  await setCampaignActive(ctx.db, id, wanted === "on", ctx.now());
+  // Back to the same row, which says what changed; the page's script puts the scroll back where it was.
+  return redirect(`/dashboard?switched=${id}#c-${id}`);
 }
 
-export async function dashboardHome(ctx: Ctx): Promise<Response> {
-  // Newest first here only: listCampaigns keeps id order, which DM keyword matching relies on.
-  const campaigns = (await listCampaigns(ctx.db)).sort((a, b) => b.createdAt - a.createdAt || b.id - a.id);
+/** How long ago, in the largest whole unit: "just now", "40 minutes ago", "5 hours ago", "3 days ago". */
+export function ago(ms: number, now: number): string {
+  const d = Math.max(0, now - ms);
+  if (d < MINUTE) return "just now";
+  if (d < HOUR) return `${plural(Math.floor(d / MINUTE), "minute")} ago`;
+  if (d < DAY) return `${plural(Math.floor(d / HOUR), "hour")} ago`;
+  return `${plural(Math.floor(d / DAY), "day")} ago`;
+}
+
+/** The list's order: newest post first, whether the campaign is on or off, so a switch never moves a row. */
+export function campaignOrder(campaigns: Campaign[], postedAt: (c: Campaign) => number | null): Campaign[] {
+  // A campaign waiting for the next post is for the newest post of all; one on all posts dates from its start.
+  const key = (c: Campaign) => (c.nextPostAfter !== null ? Infinity : postedAt(c) ?? c.createdAt);
+  return [...campaigns].sort((a, b) => key(b) - key(a) || b.createdAt - a.createdAt || b.id - a.id);
+}
+
+/** What the owner needs to decide whether a campaign is still worth having on, in one line. */
+function recentLine(c: Campaign, postedAt: number | null, recent: CampaignRecent | undefined, now: number): Html {
+  const last = recent?.lastComment;
+  const text = last?.text ? (last.text.length > 60 ? `${last.text.slice(0, 57).trimEnd()}...` : last.text) : "";
+  const parts = [
+    postedAt ? html`<span>Reel posted <b>${ago(postedAt, now)}</b></span>` : null,
+    last
+      ? html`<span>Last matching comment <b>${ago(last.at, now)}</b>${text ? html` <span class="muted">"${text}"</span>` : ""}</span>`
+      : html`<span>No matching comment ${now - c.createdAt > KEPT_COMMENTS ? "in 30 days" : "yet"}</span>`,
+    html`<span><b>${recent?.dmsLastWeek ?? 0}</b> ${recent?.dmsLastWeek === 1 ? "DM" : "DMs"} in the last 7 days</span>`,
+  ];
+  return html`<p class="small recent">${parts.filter((p) => p !== null)}</p>`;
+}
+
+/** How long comments are kept, so "no matching comment" can say over what period. */
+const KEPT_COMMENTS = 30 * DAY;
+
+/** Keeps the scroll where it was across a switch, so the row stays under the pointer, and drops "switched" from the address. */
+const KEEP_SCROLL = `document.addEventListener('submit',e=>{if(!e.defaultPrevented&&e.target.matches('form.switch-form')){try{sessionStorage.setItem('ownchats-y',String(scrollY))}catch(_){}}});
+try{const y=sessionStorage.getItem('ownchats-y');if(y!==null){sessionStorage.removeItem('ownchats-y');addEventListener('load',()=>scrollTo(0,Number(y)));}}catch(_){}
+if(location.search.includes('switched='))history.replaceState(null,'',location.pathname+location.hash);`;
+
+export async function dashboardHome(ctx: Ctx, switched: string | null = null): Promise<Response> {
+  const all = await listCampaigns(ctx.db);
+  const stats = await readMediaStats(ctx, all.flatMap((c) => (c.mediaId ? [c.mediaId] : [])));
+  const postedAt = (c: Campaign) => (c.mediaId ? stats.get(c.mediaId)?.postedAt ?? null : null);
+  // Sorted here only: listCampaigns keeps id order, which DM keyword matching relies on.
+  const campaigns = campaignOrder(all, postedAt);
   const on = campaigns.filter((c) => c.active);
-  const off = campaigns.filter((c) => !c.active);
   const counts = await campaignCounts(ctx);
+  const recent = await campaignRecent(ctx);
   const missed = await missedComments(ctx, on);
-  const stats = await readMediaStats(ctx, campaigns.flatMap((c) => (c.mediaId ? [c.mediaId] : [])));
   const failures = await failuresSince(ctx, ctx.now() - DAY);
   const noPermission = on.some((c) => c.mediaId && stats.get(c.mediaId)?.problem === MISSING_PERMISSION);
   const s = ctx.settings;
@@ -210,11 +252,16 @@ export async function dashboardHome(ctx: Ctx): Promise<Response> {
     const views = c.mediaId ? stats.get(c.mediaId)?.views : undefined;
     // Instagram's cover image for the post: the Reel's first frame unless another cover was chosen. Kept fresh by the hourly post list.
     const cover = c.mediaId ? stats.get(c.mediaId)?.thumbnailUrl : null;
-    return html`<div class="card row campaign">
+    const justSwitched = switched === String(c.id);
+    return html`<div class="card row campaign${c.active ? "" : " off"}" id="c-${c.id}">
       <a class="cover" href="/dashboard/campaigns/${c.id}" aria-hidden="true" tabindex="-1">${cover ? html`<img src="${cover}" alt="" loading="lazy" onerror="this.remove()">` : ""}</a>
       <div class="body">
-      <div class="row"><h3 style="flex:1 1 auto"><a href="/dashboard/campaigns/${c.id}">${c.name}</a>${c.videoId ? html` <span class="muted small">${c.videoId}</span>` : ""}</h3><span class="muted small">Started ${fmtDate(c.createdAt, tz)}</span>
+      <div class="row"><h3 style="flex:1 1 auto"><a href="/dashboard/campaigns/${c.id}">${c.name}</a>${c.videoId ? html` <span class="muted small">${c.videoId}</span>` : ""}</h3>${c.active ? "" : html`<span class="pill off">Off</span>`}<span class="muted small">Started ${fmtDate(c.createdAt, tz)}</span>
         ${campaignSwitch(c)}</div>
+      ${justSwitched
+        ? html`<p class="small ${c.active ? "ok" : "warn"}" role="status">${c.active ? "Turned on. It answers new comments from now on." : "Turned off. New comments on it get no DM until you turn it back on."}</p>`
+        : ""}
+      ${recentLine(c, postedAt(c), recent.get(c.id), ctx.now())}
       <p class="muted small">${c.anyComment ? "Any comment" : `Keyword: ${c.keywords.join(", ")}`} on ${postWords(c)}, ${EMAIL_MODE_LABEL[c.emailMode]}</p>
       ${missed.get(c.id)?.length
         ? html`<p class="small"><a class="warn" href="/dashboard/campaigns/${c.id}#to-check">${plural(missed.get(c.id)!.length, "comment")} to check</a></p>`
@@ -243,8 +290,9 @@ export async function dashboardHome(ctx: Ctx): Promise<Response> {
       ${noPermission ? html`<p class="warn small">Instagram shares each post's views once your Meta login configuration includes <code>instagram_manage_insights</code>. <a href="/setup#step-3">Add it in setup</a>, then reconnect.</p>` : ""}
       ${untaken.length ? html`<div id="no-campaign">${untaken.map((u) => untakenEntry(u, tz))}</div>` : ""}
       ${campaigns.length === 0 ? html`<div class="card"><p>No campaigns yet. Create one: a keyword, the post it watches, and the link to send.</p></div>` : ""}
-      ${on.map(card)}
-      ${off.length ? html`<details${on.length ? "" : html` open`} style="margin-top:20px"><summary class="muted">${plural(off.length, "campaign")} off</summary>${off.map(card)}</details>` : ""}`,
+      ${campaigns.length ? html`<p class="muted small">${on.length} of ${plural(campaigns.length, "campaign")} on.</p>` : ""}
+      ${campaigns.map(card)}
+      <script>${raw(KEEP_SCROLL)}</script>`,
     { nav: true },
   );
 }
