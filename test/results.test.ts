@@ -102,7 +102,7 @@ describe("campaign results", () => {
     expect(r.month).toMatchObject({ total: 2, answered: 2, skipped: 0 });
     const cookie = await w.signIn();
     const page = await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie } })).text();
-    expect(page).toContain("watches all posts");
+    expect(page).toContain("Comments that matched its keyword, on any post, last 30 days: 2 comments, 2 answered, 0 skipped.");
     expect(page).not.toContain("nice video");
   });
 

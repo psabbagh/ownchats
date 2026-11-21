@@ -76,13 +76,18 @@ describe("what needs you", () => {
     expect(strip(await home())).toBe("");
   });
 
-  it("counts failures from the last 24 hours, not forever", async () => {
+  it("reports failures from the last 24 hours on the health line, not as something to do", async () => {
     await w.campaign();
-    await env.DB.prepare("INSERT INTO activity (at, kind, outcome, reason) VALUES (?, 'private_reply', 'failed', 'invented refusal')").bind(w.clock.now()).run();
-    const shown = strip(await home());
-    expect(shown).toContain(`href="/dashboard/activity?show=failed">1 failure in the last 24 hours</a>`);
+    await env.DB.prepare("INSERT INTO activity (at, kind, outcome, reason, detail) VALUES (?, 'private_reply', 'failed', 'invented refusal', 'Application request limit reached (HTTP 403, code 4)')")
+      .bind(w.clock.now())
+      .run();
+    await env.DB.prepare("INSERT INTO activity (at, kind, outcome, reason) VALUES (?, 'lead_webhook', 'failed', 'invented refusal')").bind(w.clock.now()).run();
+    const page = await home();
+    expect(page).toContain("Nothing needs you right now.");
+    expect(page).toContain("Instagram refused 1 DM attempt in the last 24 hours (mostly code 4, its app rate limit).");
+    expect(page).toContain(`<a href="/dashboard/activity?show=failed">1 other failure</a> in the last 24 hours.`);
     w.clock.advance(25 * HOUR);
-    expect(await home()).toContain("Nothing needs you right now.");
+    expect(await home()).not.toContain("Instagram refused");
   });
 
   it("shows a check that failed, escaped, only while that check still runs", async () => {

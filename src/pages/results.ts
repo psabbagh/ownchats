@@ -5,7 +5,7 @@ import type { Media } from "../meta/client";
 import { MISSING_PERMISSION, readMediaStats, type MediaStats } from "../insights";
 import { ANSWER_PROBLEM, answerMissed, answerOutcome, missedComments, timeLeft, type AnswerProblem, type MissedComment } from "../missed";
 import { recentMedia } from "../pipeline/poll";
-import { markAnsweredByHand, refusedSends, sendRefused, type RefusedSend } from "../refused";
+import { handReply, markAnsweredByHand, peopleCounts, refusedSends, sendRefused, type PeopleCounts, type RefusedSend } from "../refused";
 import { shortcutKeywords } from "../settings";
 import {
   campaignResults,
@@ -207,8 +207,10 @@ function refusedSection(campaign: Campaign, refused: RefusedSend[], tz: string):
             ? html`<form method="post" action="${base}/send" data-ask="${`Send ${r.what.replace(/ \(.*\)$/, "")} to ${who} now?`}" onsubmit="return confirm(this.dataset.ask)">
                 <input type="hidden" name="type" value="${r.type}"><input type="hidden" name="id" value="${r.id}"><button>Send</button></form>`
             : ""}
+          <form method="post" action="${base}/by-hand" data-ask="${`Get a reply to paste to ${who} in Instagram, with your tracked link, and mark them answered by hand? Nothing is sent.`}" onsubmit="return confirm(this.dataset.ask)">
+            <input type="hidden" name="type" value="${r.type}"><input type="hidden" name="id" value="${r.id}"><input type="hidden" name="reply" value="1"><button class="secondary">Reply by hand</button></form>
           <form method="post" action="${base}/by-hand" data-ask="${`Mark ${who} as answered by hand? Nothing is sent.`}" onsubmit="return confirm(this.dataset.ask)">
-            <input type="hidden" name="type" value="${r.type}"><input type="hidden" name="id" value="${r.id}"><button class="secondary">Answered by hand</button></form>
+            <input type="hidden" name="type" value="${r.type}"><input type="hidden" name="id" value="${r.id}"><button class="secondary">Already answered by hand</button></form>
         </div>
       </div>`;
     })}`;
@@ -217,8 +219,20 @@ function refusedSection(campaign: Campaign, refused: RefusedSend[], tz: string):
 /** The "Answered by hand" button: marks the person, sends nothing. */
 export async function answeredByHandForm(ctx: Ctx, request: Request, id: number): Promise<Response> {
   const form = await request.formData();
-  const done = await markAnsweredByHand(ctx, id, String(form.get("type") ?? ""), String(form.get("id") ?? "").trim());
-  return redirect(`/dashboard/campaigns/${id}?sent=${done ? "byhand" : "none"}#to-check`);
+  const conversationId = await markAnsweredByHand(ctx, id, String(form.get("type") ?? ""), String(form.get("id") ?? "").trim());
+  if (conversationId === null) return redirect(`/dashboard/campaigns/${id}?sent=none#to-check`);
+  return redirect(`/dashboard/campaigns/${id}?sent=byhand${form.get("reply") ? `&reply=${conversationId}` : ""}#to-check`);
+}
+
+/** The reply to paste after "Reply by hand", with the person's own tracked link. */
+async function replyNotice(ctx: Ctx, campaignId: number, url: URL): Promise<Html> {
+  const id = Number(url.searchParams.get("reply"));
+  const reply = Number.isSafeInteger(id) && id > 0 ? await handReply(ctx, campaignId, id) : null;
+  if (!reply) return html``;
+  return html`<div class="card" id="hand-reply"><p class="ok">Marked ${reply.username ? `@${reply.username}` : "them"} as answered by hand. Paste this in your Instagram reply:</p>
+    <textarea readonly rows="4" style="margin:6px 0">${reply.text}</textarea>
+    <p class="row"><button type="button" class="secondary" data-copy="${reply.text}">Copy</button>
+      <span class="muted small">The link is theirs, so a click on it counts on this campaign like one from a DM.</span></p></div>`;
 }
 
 /** What the last "Send" did, from the address the form came back to. */
@@ -226,7 +240,7 @@ function sendNotice(url: URL): Html {
   const sent = url.searchParams.get("sent");
   if (sent === "1") return html`<div class="card"><p class="ok">Sent.</p></div>`;
   if (sent === "0") return html`<div class="card notice"><p>Instagram refused it again; the activity log has Meta's reason. OwnChats keeps trying while it can.</p></div>`;
-  if (sent === "byhand") return html`<div class="card"><p class="ok">Marked as answered by hand. Nothing was sent.</p></div>`;
+  if (sent === "byhand" && !url.searchParams.get("reply")) return html`<div class="card"><p class="ok">Marked as answered by hand. Nothing was sent.</p></div>`;
   if (sent === "none") return html`<div class="card notice"><p>Nothing was waiting there any more: it went out, or Meta's window for it closed.</p></div>`;
   return html``;
 }
@@ -260,18 +274,28 @@ export async function answerMissedForm(ctx: Ctx, request: Request, id: number): 
   return redirect(`${base}?answered=${encodeURIComponent(commentId)}#to-check`);
 }
 
-function tallyTable(day: CommentTally, month: CommentTally): Html {
-  const rows: Array<[string, keyof CommentTally]> = [
-    ["Comments", "total"],
-    ["Answered", "answered"],
-    ...(month.answeredElsewhere ? [["Answered by another campaign", "answeredElsewhere"] as [string, keyof CommentTally]] : []),
-    ["Skipped", "skipped"],
-    ["Failed", "failed"],
-    ...(month.waiting ? [["Waiting", "waiting"] as [string, keyof CommentTally]] : []),
+/** "190 asked: 174 answered by OwnChats, 16 by hand, none waiting on you." */
+function peopleLine(p: PeopleCounts | undefined): Html {
+  if (!p) return html`Nobody has asked yet.`;
+  const byHand = p.answeredByHand ? `, ${p.answeredByHand} by hand` : "";
+  const waiting = p.waitingOnYou ? html`, <a class="warn" href="#to-check">${p.waitingOnYou} waiting on you</a>` : ", none waiting on you";
+  const refused = p.refused.people
+    ? ` Instagram refused ${plural(p.refused.people, "person", "people")} at some point: ${p.refused.recovered} got it on a retry, ${p.refused.answeredByHand} answered by hand, ${p.refused.waiting} waiting${p.refused.unreached ? `, ${p.refused.unreached} not reached` : ""}.`
+    : "";
+  return html`<b>${p.asked} asked</b>: ${p.answeredAutomatically} answered by OwnChats${byHand}${waiting}.${refused}`;
+}
+
+/** One period's comments in words: "120 comments, 100 answered, 18 skipped, 2 waiting." */
+function commentsLine(t: CommentTally): string {
+  const parts = [
+    `${plural(t.total, "comment")}`,
+    `${t.answered} answered`,
+    ...(t.answeredElsewhere ? [`${t.answeredElsewhere} answered by another campaign`] : []),
+    `${t.skipped} skipped`,
+    ...(t.failed ? [`${t.failed} not answered after a refusal`] : []),
+    ...(t.waiting ? [`${t.waiting} waiting`] : []),
   ];
-  return html`<table class="figures"><thead><tr><th></th><th class="num">Last 24 hours</th><th class="num">Last ${COMMENT_DAYS} days</th></tr></thead><tbody>
-    ${rows.map(([label, key]) => html`<tr><td>${label}</td><td class="num">${day[key]}</td><td class="num">${month[key]}</td></tr>`)}
-  </tbody></table>`;
+  return `${parts.join(", ")}.`;
 }
 
 /** The page a campaign opens on: what happened to its comments and DMs. The form is behind Edit. */
@@ -291,7 +315,9 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
   }
   const notice = await answerNotice(ctx, url);
   const missed = (await missedComments(ctx, [campaign])).get(campaign.id) ?? [];
-  const refused = (await refusedSends(ctx, [campaign.id])).get(campaign.id) ?? [];
+  const refusedAll = await refusedSends(ctx, [campaign.id]);
+  const refused = refusedAll.get(campaign.id) ?? [];
+  const people = (await peopleCounts(ctx, [campaign.id], refusedAll)).get(campaign.id);
   const results = await campaignResults(ctx, campaign);
   const comments = await listCampaignComments(ctx, campaign, { show, before, limit: COMMENTS_PER_PAGE });
   const names = new Map((await listCampaigns(ctx.db)).map((c) => [c.id, c.name]));
@@ -332,25 +358,13 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
       ${waitingNotice(ctx, campaign)}
       ${postNumbers(campaign, stats, fc.dmsSent, fc.links, tz)}
 
-      <div id="to-check">${notice}${sendNotice(url)}${refusedSection(campaign, refused, tz)}${missedSection(campaign, missed, tz)}</div>
+      <div id="to-check">${notice}${sendNotice(url)}${await replyNotice(ctx, campaign.id, url)}${refusedSection(campaign, refused, tz)}${missedSection(campaign, missed, tz)}</div>
 
-      <h2>Comments</h2>
-      <p class="muted small">${campaign.mediaId
-        ? "Every comment on this post that OwnChats saw, except its own replies."
-        : campaign.nextPostAfter !== null
-          ? "Every comment on your next post will show here."
-          : html`This campaign watches all posts, so only the comments that matched its keyword are counted here. Comments with no keyword are in <a href="/dashboard/activity?show=all">Activity</a>.`}</p>
-      ${tallyTable(results.day, results.month)}
-      ${results.skipReasons.length
-        ? html`<p class="small" style="margin-bottom:4px">Why comments were skipped, last ${COMMENT_DAYS} days:</p>
-            <ul class="small" style="margin-top:0">${results.skipReasons.map((r) => html`<li>${reason(r.reason)}: ${r.n}</li>`)}</ul>
-            <p class="small"><a href="${base}?show=skipped#comments">See the skipped comments</a></p>`
-        : ""}
-
-      <h2>DMs</h2>
-      <p class="muted small">Everyone this campaign answered since it started.</p>
+      <h2>People</h2>
+      <p>${peopleLine(people)}</p>
+      <p class="muted small">Everyone this campaign answered since it started, each person once.</p>
       <table class="figures"><thead><tr><th></th><th class="num">From comments</th>${dmColumn ? html`<th class="num">From DMs</th>` : ""}</tr></thead><tbody>
-        <tr><td>First DM sent</td>${cell(fc.dmsSent)}${dmColumn ? cell(fd.dmsSent) : ""}</tr>
+        <tr><td>Answered by OwnChats</td>${cell(fc.dmsSent)}${dmColumn ? cell(fd.dmsSent) : ""}</tr>
         ${campaign.openingButton ? html`<tr><td>Tapped the button or replied</td>${cell(fc.opened, fc.dmsSent)}${dmColumn ? html`<td></td>` : ""}</tr>` : ""}
         ${followRows
           ? html`<tr><td>Already followed you</td>${cell(fc.alreadyFollowed, fc.opened)}${dmColumn ? cell(fd.alreadyFollowed, fd.dmsSent) : ""}</tr>
@@ -366,13 +380,22 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
         ${plural(lastDay.links, "link")} sent${clickRow ? `, ${plural(lastDay.clicks, "person", "people")} clicked for the first time` : ""}.${results.resent
           ? ` ${plural(results.resent, "link was", "links were")} sent again because someone sent the keyword by DM (last 90 days).`
           : ""}</p>
-
+      <p class="small">${campaign.mediaId
+        ? "Comments on this post"
+        : campaign.nextPostAfter !== null
+          ? "Comments on your next post"
+          : "Comments that matched its keyword, on any post"}, last ${COMMENT_DAYS} days: ${commentsLine(results.month)} Last 24 hours: ${commentsLine(results.day)}</p>
+      ${results.skipReasons.length
+        ? html`<details class="small"><summary>Why comments were skipped, last ${COMMENT_DAYS} days</summary>
+            <ul style="margin-top:4px">${results.skipReasons.map((r) => html`<li>${reason(r.reason)}: ${r.n}</li>`)}</ul>
+            <p><a href="${base}?show=skipped#comments">See the skipped comments</a></p></details>`
+        : ""}
       ${results.failures.length
-        ? html`<h2>Failures</h2>
-            <p class="muted small">From the last 90 days of the log.</p>
-            <ul class="small">${results.failures.map(
+        ? html`<details class="small" style="margin-top:8px"><summary>What Instagram refused, attempt by attempt (for diagnosis)</summary>
+            <p class="muted">From the last 90 days of the log. One person can be refused many times; who still waits is under To check.</p>
+            <ul>${results.failures.map(
               (f) => html`<li>${KIND_LABEL[f.kind] ?? f.kind}: ${f.reason}. ${plural(f.n, "time")}, last ${fmtTime(f.last, tz)}.</li>`,
-            )}</ul>`
+            )}</ul></details>`
         : ""}
 
       <h2 id="comments">Every comment</h2>

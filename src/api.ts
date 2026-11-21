@@ -1,3 +1,4 @@
+import { peopleCounts } from "./refused";
 import { apiAuthorized } from "./auth";
 import { getCampaign, listCampaigns, onAllPosts, saveCampaign, type Campaign } from "./campaigns";
 import { log, type Ctx } from "./context";
@@ -195,7 +196,7 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
   if (path === "/api") {
     return json({
       endpoints: {
-        "GET /api/campaigns": "campaigns with their counts (clicks: people who clicked a link; failed split into failedDms, refusedPublicReplies, failedLeadWebhooks; answeredByHand: people the owner answered by hand after a refused send), their post's views, and what would stop them working (warnings), with the shortcut keywords from Settings that every keyword campaign on one post also answers",
+        "GET /api/campaigns": "campaigns with their counts (clicks: people who clicked a link; people counted once: asked, answeredAutomatically, answeredByHand, tapped, waitingOnYou, and refused {people, recovered, answeredByHand, waiting, unreached}; failed, failedDms, refusedPublicReplies and failedLeadWebhooks count attempts, for diagnosis), their post's views, and what would stop them working (warnings), with the shortcut keywords from Settings that every keyword campaign on one post also answers",
         "GET /api/leads?campaign_id=&since=ISO-8601&limit=": "emails collected, newest first",
         "GET /api/activity?campaign_id=&outcome=sent|skipped|failed&limit=": "what happened and why, newest first, with Meta's error code in detail",
         "GET /api/posts?since=ISO-8601&limit=": "the account's posts from the last 90 days with Instagram's numbers, newest first; Reels also carry avg_watch_time_ms and skip_rate_percent (views skipped within 3 seconds, 0 to 100)",
@@ -211,9 +212,10 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
   if (path === "/api/campaigns") {
     const counts = await campaignCounts(ctx);
     const campaigns = await listCampaigns(ctx.db);
+    const people = await peopleCounts(ctx, campaigns.map((c) => c.id));
     const stats = await readMediaStats(ctx, campaigns.flatMap((c) => (c.mediaId ? [c.mediaId] : [])));
     return json({
-      campaigns: campaigns.map((c) => ({ ...campaignJson(c, !!webhookConfig(ctx)), counts: counts.get(c.id) ?? null, post: postJson(c.mediaId ? stats.get(c.mediaId) : undefined) })),
+      campaigns: campaigns.map((c) => ({ ...campaignJson(c, !!webhookConfig(ctx)), counts: counts.has(c.id) || people.has(c.id) ? { ...counts.get(c.id), ...people.get(c.id) } : null, post: postJson(c.mediaId ? stats.get(c.mediaId) : undefined) })),
       shortcut_keywords: shortcutKeywords(ctx.settings),
     });
   }
