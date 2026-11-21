@@ -65,6 +65,11 @@ export interface MetaUsage {
   regainMs: number | null;
   /** Which limit is at what, for the dashboard: "app 72%, instagram 4%". */
   detail: string;
+  /**
+   * Each limit's share on its own, by label ("app", "instagram"). Not every answer
+   * carries every header, so a reading of one limit says nothing about another.
+   */
+  limits: Record<string, number>;
 }
 
 const USAGE_FIELDS = ["call_count", "total_cputime", "total_time"] as const;
@@ -78,6 +83,7 @@ const USAGE_FIELDS = ["call_count", "total_cputime", "total_time"] as const;
  */
 export function parseUsage(appUsage: string | null, businessUsage: string | null): MetaUsage | null {
   const parts: string[] = [];
+  const limits: Record<string, number> = {};
   let percent = -1;
   let regain = 0;
   const take = (label: string, o: unknown) => {
@@ -88,6 +94,7 @@ export function parseUsage(appUsage: string | null, businessUsage: string | null
     const top = Math.max(...values);
     percent = Math.max(percent, top);
     parts.push(`${label} ${Math.round(top)}%`);
+    limits[label] = Math.max(limits[label] ?? 0, top);
     const minutes = r.estimated_time_to_regain_access;
     if (typeof minutes === "number" && Number.isFinite(minutes)) regain = Math.max(regain, minutes);
   };
@@ -109,7 +116,7 @@ export function parseUsage(appUsage: string | null, businessUsage: string | null
     }
   }
   if (percent < 0) return null;
-  return { percent, regainMs: regain > 0 ? regain * 60_000 : null, detail: parts.join(", ") };
+  return { percent, regainMs: regain > 0 ? regain * 60_000 : null, detail: parts.join(", "), limits };
 }
 
 export interface AccountStats {
