@@ -320,8 +320,8 @@ describe("alert messages", () => {
   it("go to ntfy as plain text with its title, click and priority headers", () => {
     const r = alertRequest(NTFY, "text", payload, delivery);
     expect(r.body).toBe(`Instagram has refused the DM of 3 people.\n${BASE}/dashboard#needs-you`);
-    expect(r.headers).toEqual({ "content-type": "text/plain; charset=utf-8", title: "3 people waiting for a DM", tags: "warning", priority: "high", click: `${BASE}/dashboard#needs-you` });
-    expect(alertRequest(NTFY, "text", { ...payload, status: "fixed", title: "Fixed: café" }, delivery).headers).toMatchObject({ title: "Fixed: caf", tags: "white_check_mark", priority: "default" });
+    expect(r.headers).toEqual({ "content-type": "text/plain; charset=utf-8", title: "OwnChats: 3 people waiting for a DM", tags: "warning", priority: "high", click: `${BASE}/dashboard#needs-you` });
+    expect(alertRequest(NTFY, "text", { ...payload, status: "fixed", title: "Fixed: café" }, delivery).headers).toMatchObject({ title: "OwnChats: Fixed: caf", tags: "white_check_mark", priority: "default" });
   });
 
   it("go to Slack and Discord in the JSON each expects, whatever the format chosen", () => {
@@ -330,8 +330,8 @@ describe("alert messages", () => {
     expect(receiverOf(slack)).toBe("slack");
     expect(receiverOf(discord)).toBe("discord");
     expect(receiverOf("https://discord.com/channels/1")).toBe("other");
-    expect(JSON.parse(alertRequest(slack, "text", payload, delivery).body)).toEqual({ text: `*3 people waiting for a DM*\nInstagram has refused the DM of 3 people.\n<${BASE}/dashboard#needs-you|Open OwnChats>` });
-    expect(JSON.parse(alertRequest(discord, "json", payload, delivery).body)).toEqual({ content: `**3 people waiting for a DM**\nInstagram has refused the DM of 3 people.\n${BASE}/dashboard#needs-you` });
+    expect(JSON.parse(alertRequest(slack, "text", payload, delivery).body)).toEqual({ text: `*OwnChats: 3 people waiting for a DM*\nInstagram has refused the DM of 3 people.\n<${BASE}/dashboard#needs-you|Open OwnChats>` });
+    expect(JSON.parse(alertRequest(discord, "json", payload, delivery).body)).toEqual({ content: `**OwnChats: 3 people waiting for a DM**\nInstagram has refused the DM of 3 people.\n${BASE}/dashboard#needs-you` });
   });
 
   it("carry every field as JSON for the owner's own tools", () => {
