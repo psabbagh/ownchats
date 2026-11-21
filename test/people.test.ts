@@ -62,9 +62,9 @@ describe("people, not attempts", () => {
     expect(Number(counts.failedDms)).toBeGreaterThan(3);
 
     const card = await (await w.fetch("/dashboard", { headers: { cookie } })).text();
-    expect(card).toContain("<b>4</b>asked");
-    expect(card).toContain("<b>4</b>answered <span class=\"muted\">(1 by hand)</span>");
-    expect(card).toContain("<b>1</b>tapped");
+    expect(card).toContain("<b>4</b> asked");
+    expect(card).toContain("<b>4</b> answered <span class=\"muted\">(1 by hand)</span>");
+    expect(card).toContain("<b>1</b> tapped");
     expect(card).toContain("Waiting on you: 1</a>");
     expect(card).not.toContain("DMs sent");
     expect(card).not.toContain("failed</div>");

@@ -74,14 +74,14 @@ import { ALERT_NAME, HEARTBEAT_EVERY, openAlerts, sendTestAlert } from "../alert
 import { checkTestLead, getDelivery, MIN_SECRET_LENGTH, recentDeliveries, sendTestLead, webhookConfig, type DeliveryRow } from "../leadwebhook";
 import { parseKeywords } from "../match";
 import type { Media } from "../meta/client";
-import { recentMedia } from "../pipeline/poll";
+import { pollEvery, recentMedia } from "../pipeline/poll";
 import { MISSING_PERMISSION, readMediaStats } from "../insights";
 import { missedComments, timeLeft, type MissedComment } from "../missed";
 import { peopleCounts, refusedPeople, refusedSends, type RefusedPeople, type RefusedSend } from "../refused";
 import { BUSY_PERCENT, currentUsage, paused } from "../throttle";
 import { attachUntakenPost, dismissUntakenPost, untakenPosts, type UntakenPost } from "../nextpost";
 import { deleteSettings, saveSettings, shortcutKeywords, type Settings } from "../settings";
-import { campaignCounts, campaignRecent, deletePerson, failuresSince, findPersonByUsername, listActivity, storedAboutPeople, type ActivityRow, type CampaignRecent } from "../stats";
+import { CHART_DAYS, campaignCounts, campaignRecent, deletePerson, failuresSince, findPersonByUsername, listActivity, storedAboutPeople, type ActivityRow, type CampaignRecent } from "../stats";
 import { copyField, fmtCount, fmtDate, fmtTime, html, page, plural, raw, redirect, type Html } from "./html";
 import { DAY, HOUR, isTimeZone, MINUTE, timeZoneOf } from "../time";
 
@@ -238,10 +238,11 @@ function needsYou(ctx: Ctx, campaigns: Campaign[], missed: Map<number, MissedCom
 }
 
 /** Says the state and changes it. The form sends the state wanted, so a double click or an old tab can't flip it back. */
-function campaignSwitch(c: Campaign): Html {
-  const ask = `Turn off ${c.name}? Comments that arrive while it is off get no DM.`;
+function campaignSwitch(c: Campaign, calls: number | null = null, show: Show = "all"): Html {
+  const saves = calls === null ? "" : ` It saves ${callsWords(calls)}, and comments`;
+  const ask = `Turn off ${c.name}?${saves || " Comments"} that arrive while it is off get no DM.`;
   return html`<form class="switch-form" method="post" action="/dashboard/campaigns/${c.id}/switch"${c.active ? html` data-ask="${ask}" onsubmit="return confirm(this.dataset.ask)"` : ""}>
-    <input type="hidden" name="active" value="${c.active ? "off" : "on"}"><button class="switch${c.active ? " on" : ""}" role="switch" aria-checked="${c.active ? "true" : "false"}" title="${c.active ? "On. Click to turn off." : "Off. Click to turn on."}">${c.active ? "on" : "off"}</button></form>`;
+    <input type="hidden" name="active" value="${c.active ? "off" : "on"}">${show !== "all" ? html`<input type="hidden" name="show" value="${show}">` : ""}<button class="switch${c.active ? " on" : ""}" role="switch" aria-checked="${c.active ? "true" : "false"}" title="${c.active ? "On. Click to turn off." : "Off. Click to turn on."}">${c.active ? "on" : "off"}</button></form>`;
 }
 
 /** "Not for a campaign" on a flagged post: stop flagging it. */
@@ -283,11 +284,14 @@ function untakenEntry({ post, waiting }: UntakenPost, tz: string): Html {
 }
 
 export async function switchCampaign(ctx: Ctx, request: Request, id: number): Promise<Response> {
-  const wanted = String((await request.formData()).get("active") ?? "");
-  if (wanted !== "on" && wanted !== "off") return redirect("/dashboard");
+  const form = await request.formData();
+  const wanted = String(form.get("active") ?? "");
+  const show = showFrom(String(form.get("show") ?? ""));
+  const filter = show === "all" ? "" : `show=${show}&`;
+  if (wanted !== "on" && wanted !== "off") return redirect(`/dashboard${filter ? `?${filter.slice(0, -1)}` : ""}`);
   await setCampaignActive(ctx.db, id, wanted === "on", ctx.now());
-  // Back to the same row, which says what changed; the page's script puts the scroll back where it was.
-  return redirect(`/dashboard?switched=${id}#c-${id}`);
+  // Back to the same row, in the same filter, which says what changed; the page's script puts the scroll back where it was.
+  return redirect(`/dashboard?${filter}switched=${id}#c-${id}`);
 }
 
 /** How long ago, in the largest whole unit: "just now", "40 minutes ago", "5 hours ago", "3 days ago". */
@@ -306,16 +310,70 @@ export function campaignOrder(campaigns: Campaign[], postedAt: (c: Campaign) => 
   return [...campaigns].sort((a, b) => key(b) - key(a) || b.createdAt - a.createdAt || b.id - a.id);
 }
 
+/** Which campaigns the list shows. "quiet": on, but no matching comment in the last 7 days. */
+export type Show = "all" | "on" | "off" | "quiet";
+const SHOWS: Show[] = ["all", "on", "off", "quiet"];
+const SHOW_LABEL: Record<Show, string> = { all: "All", on: "On", off: "Off", quiet: "Quiet 7 days" };
+export function showFrom(value: string | null): Show {
+  return SHOWS.includes(value as Show) ? (value as Show) : "all";
+}
+
+/** A campaign counts as quiet once it has gone this long without a matching comment. */
+const QUIET_AFTER = 7 * DAY;
+
+/**
+ * Days since a campaign that is on last matched a comment, once that is a week or more;
+ * null otherwise. A campaign still waiting for its post is not quiet, it has no post yet.
+ */
+export function quietDays(c: Campaign, recent: CampaignRecent | undefined, now: number): number | null {
+  if (!c.active || c.nextPostAfter !== null) return null;
+  const since = recent?.lastComment?.at ?? c.createdAt;
+  return now - since >= QUIET_AFTER ? Math.floor((now - since) / DAY) : null;
+}
+
+/**
+ * The Meta calls an hour a campaign that is on costs, and turning it off saves: its post's
+ * comment checks (pollEvery), every Cron run while the post is new. Its post's numbers are
+ * read whether or not a campaign watches it, so they don't count. Null for a campaign on
+ * all posts or waiting for one, which watches no single post.
+ */
+export function campaignCalls(c: Campaign, postedAt: number | null, now: number): number | null {
+  if (!c.mediaId || c.nextPostAfter !== null) return null;
+  return HOUR / Math.max(pollEvery(postedAt, now), MINUTE);
+}
+
+/** "about 1 Meta call an hour", "about 4 Meta calls an hour", "1 Meta call every 3 hours". */
+export function callsWords(perHour: number): string {
+  if (perHour < 1) return `1 Meta call every ${Math.round(1 / perHour)} hours`;
+  const n = Math.round(perHour);
+  return `about ${n} Meta ${n === 1 ? "call" : "calls"} an hour`;
+}
+
+/** First DMs per day over the last 14 days, as small bars: the newest day on the right. */
+export function dmChart(days: number[]): Html {
+  const max = Math.max(...days);
+  const total = days.reduce((a, b) => a + b, 0);
+  const label = `First DMs per day, last ${days.length} days: ${days.join(", ")} (${total} in all)`;
+  const bars = days.map((n, i) => {
+    const h = max ? Math.max(1, Math.round((n / max) * 18)) : 0;
+    return html`<rect x="${i * 6}" y="${20 - h}" width="4" height="${h}" rx="1"></rect>`;
+  });
+  return html`<svg class="dm-chart" viewBox="0 0 ${days.length * 6 - 2} 20" width="${days.length * 6 - 2}" height="20" role="img" aria-label="${label}"><title>${label}</title><line x1="0" y1="19.5" x2="${days.length * 6 - 2}" y2="19.5"></line>${bars}</svg>`;
+}
+
 /** What the owner needs to decide whether a campaign is still worth having on, in one line. */
-function recentLine(c: Campaign, postedAt: number | null, recent: CampaignRecent | undefined, now: number): Html {
+function recentLine(c: Campaign, postedAt: number | null, recent: CampaignRecent | undefined, now: number, tz: string): Html {
   const last = recent?.lastComment;
   const text = last?.text ? (last.text.length > 60 ? `${last.text.slice(0, 57).trimEnd()}...` : last.text) : "";
+  const calls = c.active ? campaignCalls(c, postedAt, now) : null;
   const parts = [
+    !c.active && recent?.offSince ? html`<span>Off since <b>${fmtTime(recent.offSince, tz)}</b></span>` : null,
     postedAt ? html`<span>Reel posted <b>${ago(postedAt, now)}</b></span>` : null,
     last
       ? html`<span>Last matching comment <b>${ago(last.at, now)}</b>${text ? html` <span class="muted">"${text}"</span>` : ""}</span>`
       : html`<span>No matching comment ${now - c.createdAt > KEPT_COMMENTS ? "in 30 days" : "yet"}</span>`,
-    html`<span><b>${recent?.dmsLastWeek ?? 0}</b> ${recent?.dmsLastWeek === 1 ? "DM" : "DMs"} in the last 7 days</span>`,
+    html`<span class="dms"><b>${fmtCount(recent?.dmsLastWeek ?? 0)}</b> ${recent?.dmsLastWeek === 1 ? "DM" : "DMs"} in the last 7 days ${dmChart(recent?.dmsByDay ?? new Array<number>(CHART_DAYS).fill(0))}</span>`,
+    calls !== null ? html`<span class="muted" title="Turning it off saves these calls, and it then answers nobody.">Costs ${callsWords(calls)}</span>` : null,
   ];
   return html`<p class="small recent">${parts.filter((p) => p !== null)}</p>`;
 }
@@ -326,9 +384,10 @@ const KEPT_COMMENTS = 30 * DAY;
 /** Keeps the scroll where it was across a switch, so the row stays under the pointer, and drops "switched" from the address. */
 const KEEP_SCROLL = `document.addEventListener('submit',e=>{if(!e.defaultPrevented&&e.target.matches('form.switch-form')){try{sessionStorage.setItem('ownchats-y',String(scrollY))}catch(_){}}});
 try{const y=sessionStorage.getItem('ownchats-y');if(y!==null){sessionStorage.removeItem('ownchats-y');addEventListener('load',()=>scrollTo(0,Number(y)));}}catch(_){}
-if(location.search.includes('switched='))history.replaceState(null,'',location.pathname+location.hash);`;
+try{const u=new URL(location.href);if(u.searchParams.has('switched')){u.searchParams.delete('switched');history.replaceState(null,'',u.pathname+u.search+u.hash)}}catch(_){}`;
 
-export async function dashboardHome(ctx: Ctx, switched: string | null = null): Promise<Response> {
+export async function dashboardHome(ctx: Ctx, switched: string | null = null, showParam: string | null = null): Promise<Response> {
+  const show = showFrom(showParam);
   const all = await listCampaigns(ctx.db);
   const stats = await readMediaStats(ctx, all.flatMap((c) => (c.mediaId ? [c.mediaId] : [])));
   const postedAt = (c: Campaign) => (c.mediaId ? stats.get(c.mediaId)?.postedAt ?? null : null);
@@ -349,6 +408,22 @@ export async function dashboardHome(ctx: Ctx, switched: string | null = null): P
   const items = needsYou(ctx, campaigns, missed, refused, tz);
   const untaken = untakenPosts(ctx, campaigns);
 
+  const now = ctx.now();
+  const matches: Record<Show, (c: Campaign) => boolean> = {
+    all: () => true,
+    on: (c) => c.active,
+    off: (c) => !c.active,
+    quiet: (c) => quietDays(c, recent.get(c.id), now) !== null,
+  };
+  // The row just switched stays in view even when it no longer fits the filter, so the switch visibly did something.
+  const shown = campaigns.filter((c) => matches[show](c) || switched === String(c.id));
+  const chips = html`<nav class="chips small" aria-label="Show">${SHOWS.map((f) => {
+    const n = campaigns.filter(matches[f]).length;
+    return f === show
+      ? html`<a class="chip current" aria-current="page" href="/dashboard${f === "all" ? "" : `?show=${f}`}">${SHOW_LABEL[f]} (${n})</a>`
+      : html`<a class="chip" href="/dashboard${f === "all" ? "" : `?show=${f}`}">${SHOW_LABEL[f]} (${n})</a>`;
+  })}</nav>`;
+
   const card = (c: Campaign) => {
     const n = counts.get(c.id);
     const p = people.get(c.id);
@@ -356,29 +431,30 @@ export async function dashboardHome(ctx: Ctx, switched: string | null = null): P
     // Instagram's cover image for the post: the Reel's first frame unless another cover was chosen. Kept fresh by the hourly post list.
     const cover = c.mediaId ? stats.get(c.mediaId)?.thumbnailUrl : null;
     const justSwitched = switched === String(c.id);
+    const quiet = quietDays(c, recent.get(c.id), now);
     return html`<div class="card row campaign${c.active ? "" : " off"}" id="c-${c.id}">
       <a class="cover" href="/dashboard/campaigns/${c.id}" aria-hidden="true" tabindex="-1">${cover ? html`<img src="${cover}" alt="" loading="lazy" onerror="this.remove()">` : ""}</a>
       <div class="body">
-      <div class="row"><h3 style="flex:1 1 auto"><a href="/dashboard/campaigns/${c.id}">${c.name}</a>${c.videoId ? html` <span class="muted small">${c.videoId}</span>` : ""}</h3>${c.active ? "" : html`<span class="pill off">Off</span>`}<span class="muted small">Started ${fmtDate(c.createdAt, tz)}</span>
-        ${campaignSwitch(c)}</div>
+      <div class="row"><h3 style="flex:1 1 auto"><a href="/dashboard/campaigns/${c.id}">${c.name}</a>${c.videoId ? html` <span class="muted small">${c.videoId}</span>` : ""}</h3>${c.active ? "" : html`<span class="pill off">Off</span>`}${quiet !== null ? html`<span class="pill quiet">No comment in ${quiet >= 30 && !recent.get(c.id)?.lastComment ? "30+ days" : plural(quiet, "day")}</span>` : ""}<span class="muted small">Started ${fmtDate(c.createdAt, tz)}</span>
+        ${campaignSwitch(c, c.active ? campaignCalls(c, postedAt(c), now) : null, show)}</div>
       ${justSwitched
         ? html`<p class="small ${c.active ? "ok" : "warn"}" role="status">${c.active ? "Turned on. It answers new comments from now on." : "Turned off. New comments on it get no DM until you turn it back on."}</p>`
         : ""}
-      ${recentLine(c, postedAt(c), recent.get(c.id), ctx.now())}
+      ${recentLine(c, postedAt(c), recent.get(c.id), now, tz)}
       <p class="muted small">${c.anyComment ? "Any comment" : `Keyword: ${c.keywords.join(", ")}`} on ${postWords(c)}, ${EMAIL_MODE_LABEL[c.emailMode]}</p>
       ${p?.waitingOnYou ? html`<p class="small"><a class="warn" href="/dashboard/campaigns/${c.id}#to-check">Waiting on you: ${p.waitingOnYou}</a></p>` : ""}
       ${missed.get(c.id)?.length
         ? html`<p class="small"><a class="warn" href="/dashboard/campaigns/${c.id}#to-check">${plural(missed.get(c.id)!.length, "comment")} to check</a></p>`
         : ""}
-      <div class="stats small">
-        ${views !== undefined ? html`<div><b>${fmtCount(views)}</b>views</div>` : ""}
-        <div><b>${p?.asked ?? 0}</b>asked</div>
-        <div title="${p?.answeredByHand ? `${p.answeredAutomatically} by OwnChats, ${p.answeredByHand} by hand` : "by OwnChats"}"><b>${(p?.answeredAutomatically ?? 0) + (p?.answeredByHand ?? 0)}</b>answered${p?.answeredByHand ? html` <span class="muted">(${p.answeredByHand} by hand)</span>` : ""}</div>
-        ${c.openingButton ? html`<div><b>${p?.tapped ?? 0}</b>tapped</div>` : ""}
-        <div><b>${n?.linksSent ?? 0}</b>got the link</div>
-        ${clicksOn || n?.clicks ? html`<div><b>${n?.clicks ?? 0}</b>clicked</div>` : ""}
-        ${c.emailMode !== "none" || n?.emails ? html`<div><b>${n?.emails ?? 0}</b>gave their email</div>` : ""}
-      </div></div></div>`;
+      <p class="small funnel">
+        ${views !== undefined ? html`<span><b>${fmtCount(views)}</b> views</span>` : ""}
+        <span><b>${fmtCount(p?.asked ?? 0)}</b> asked</span>
+        <span title="${p?.answeredByHand ? `${p.answeredAutomatically} by OwnChats, ${p.answeredByHand} by hand` : "by OwnChats"}"><b>${fmtCount((p?.answeredAutomatically ?? 0) + (p?.answeredByHand ?? 0))}</b> answered${p?.answeredByHand ? html` <span class="muted">(${p.answeredByHand} by hand)</span>` : ""}</span>
+        ${c.openingButton ? html`<span><b>${fmtCount(p?.tapped ?? 0)}</b> tapped</span>` : ""}
+        <span><b>${fmtCount(n?.linksSent ?? 0)}</b> got the link</span>
+        ${clicksOn || n?.clicks ? html`<span><b>${fmtCount(n?.clicks ?? 0)}</b> clicked</span>` : ""}
+        ${c.emailMode !== "none" || n?.emails ? html`<span><b>${fmtCount(n?.emails ?? 0)}</b> gave their email</span>` : ""}
+      </p></div></div>`;
   };
 
   return page(
@@ -394,8 +470,9 @@ export async function dashboardHome(ctx: Ctx, switched: string | null = null): P
       ${noPermission ? html`<p class="warn small">Instagram shares each post's views once your Meta login configuration includes <code>instagram_manage_insights</code>. <a href="/setup#step-3">Add it in setup</a>, then reconnect.</p>` : ""}
       ${untaken.length ? html`<div id="no-campaign">${untaken.map((u) => untakenEntry(u, tz))}</div>` : ""}
       ${campaigns.length === 0 ? html`<div class="card"><p>No campaigns yet. Create one: a keyword, the post it watches, and the link to send.</p></div>` : ""}
-      ${campaigns.length ? html`<p class="muted small">${on.length} of ${plural(campaigns.length, "campaign")} on.</p>` : ""}
-      ${campaigns.map(card)}
+      ${campaigns.length ? html`<div class="row list-head"><p class="muted small" style="flex:1;margin:0">${on.length} of ${plural(campaigns.length, "campaign")} on.</p>${chips}</div>` : ""}
+      ${campaigns.length && !shown.length ? html`<p class="muted">No campaign is ${show === "quiet" ? "quiet: every campaign that is on had a matching comment in the last 7 days" : show}.</p>` : ""}
+      ${shown.map(card)}
       <script>${raw(KEEP_SCROLL)}</script>`,
     { nav: true },
   );

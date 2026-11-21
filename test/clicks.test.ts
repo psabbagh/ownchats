@@ -131,7 +131,7 @@ describe("link clicks", () => {
 
     // The dashboard funnel and the campaign page.
     const cookie = await w.signIn();
-    expect(await (await w.fetch("/dashboard", { headers: { cookie } })).text()).toContain("<b>2</b>clicked");
+    expect(await (await w.fetch("/dashboard", { headers: { cookie } })).text()).toContain("<b>2</b> clicked");
     const page = await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie } })).text();
     expect(page).toContain('<tr><td>Clicked a link</td><td class="num">2 (100%)</td>');
     expect(page).toContain("2 people clicked for the first time");

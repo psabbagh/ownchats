@@ -46,7 +46,7 @@ async function adminRoutes(ctx: Ctx, request: Request, url: URL): Promise<Respon
   if (path === "/setup/published" && post) return confirmPublished(ctx);
   if (path === "/setup/test" && post) return testCampaign(ctx, request);
 
-  if (path === "/dashboard") return dashboardHome(ctx, url.searchParams.get("switched"));
+  if (path === "/dashboard") return dashboardHome(ctx, url.searchParams.get("switched"), url.searchParams.get("show"));
   if (path === "/dashboard/campaigns/new") return post ? saveCampaignForm(ctx, request, null) : newCampaignPage(ctx, url.searchParams.get("flow"));
   const campaign = path.match(/^\/dashboard\/campaigns\/(\d+)(\/delete|\/edit|\/answer|\/send|\/by-hand|\/switch)?$/);
   if (campaign) {

@@ -40,7 +40,7 @@ describe("post numbers", () => {
     expect(page).toContain("0.5% of views led to a DM from this campaign");
     expect(page).toContain("From Instagram, updated");
 
-    expect(await pageText("/dashboard")).toContain("<b>200</b>views");
+    expect(await pageText("/dashboard")).toContain("<b>200</b> views");
 
     const cookie = await w.signIn();
     const tokenPage = await (

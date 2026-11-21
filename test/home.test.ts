@@ -443,3 +443,136 @@ describe("a public reply Instagram refuses", () => {
     expect(campaign).toContain("Public reply: this comment");
   });
 });
+
+describe("deciding which campaigns to keep on", () => {
+  const posted = (mediaId: string, at: number) =>
+    env.DB.prepare("INSERT INTO media_stats (media_id, posted_at, fetched_at) VALUES (?, ?, 0) ON CONFLICT (media_id) DO UPDATE SET posted_at = excluded.posted_at")
+      .bind(mediaId, at)
+      .run();
+  const rowOf = (page: string, id: number) => {
+    const start = page.indexOf(`id="c-${id}"`);
+    if (start < 0) return "";
+    const next = page.indexOf('<div class="card row campaign', start);
+    return page.slice(start, next < 0 ? page.indexOf("<script>", start) : next);
+  };
+  const shownIds = (page: string) => [...page.matchAll(/ id="c-(\d+)"/g)].map((m) => Number(m[1]));
+  const at = (query: string) => w.fetch(`/dashboard${query}`, { headers: { cookie } }).then((r) => r.text());
+
+  it("says what a campaign costs in Meta calls, by its post's age, and asks with it before turning off", async () => {
+    const cases: Array<[string, number, string]> = [
+      ["18000000000000301", 1 * DAY, "about 60 Meta calls an hour"],
+      ["18000000000000302", 3 * DAY, "about 4 Meta calls an hour"],
+      ["18000000000000303", 10 * DAY, "about 1 Meta call an hour"],
+      ["18000000000000304", 40 * DAY, "1 Meta call every 3 hours"],
+    ];
+    const ids: number[] = [];
+    for (const [i, [mediaId, age]] of cases.entries()) {
+      ids.push(await w.campaign({ name: `Reel ${i}`, keywords: [`WORD${i}`], mediaId }));
+      await posted(mediaId, w.clock.now() - age);
+    }
+    const everywhere = await w.campaign({ name: "Everywhere", keywords: ["GUIDE"], mediaId: null });
+    const page = await home();
+    cases.forEach(([, , words], i) => {
+      expect(rowOf(page, ids[i]!)).toContain(`Costs ${words}</span>`);
+      expect(rowOf(page, ids[i]!)).toContain(`It saves ${words}, and comments that arrive while it is off get no DM.`);
+    });
+    expect(rowOf(page, everywhere)).not.toContain("Costs ");
+
+    // Off, it costs nothing, so nothing is said.
+    await flip(ids[2]!, "off");
+    expect(rowOf(await home(), ids[2]!)).not.toContain("Costs ");
+  });
+
+  it("tags a campaign that is on and had no matching comment for a week, and lists those under Quiet", async () => {
+    const quiet = await w.campaign({ name: "Quiet one" });
+    const busy = await w.campaign({ name: "Busy one", keywords: ["SETUP"], mediaId: OTHER_POST });
+    const off = await w.campaign({ name: "Off one", keywords: ["OFFWORD"], mediaId: "18000000000000305", active: false });
+    const next = await waiting({ name: "Waiting one", keywords: ["NEXT"] });
+    await w.sendComment(w.comment("agents", FAN, { ago: 30 * MINUTE }));
+    w.clock.advance(9 * DAY);
+    await w.sendComment(w.comment("setup", FAN2, { media: OTHER_POST }));
+
+    const page = await home();
+    expect(rowOf(page, quiet)).toContain('<span class="pill quiet">No comment in 9 days</span>');
+    expect(rowOf(page, busy)).not.toContain("pill quiet");
+    expect(rowOf(page, off)).not.toContain("pill quiet");
+    expect(rowOf(page, next)).not.toContain("pill quiet");
+    expect(page).toContain(">Quiet 7 days (1)</a>");
+    expect(shownIds(await at("?show=quiet"))).toEqual([quiet]);
+  });
+
+  it("filters the list, counts each filter, and keeps a switched row and the filter in view", async () => {
+    const a = await w.campaign({ name: "First" });
+    const b = await w.campaign({ name: "Second", keywords: ["SETUP"], mediaId: OTHER_POST, active: false });
+    const page = await home();
+    expect(page).toContain('aria-current="page" href="/dashboard">All (2)</a>');
+    expect(page).toContain('href="/dashboard?show=on">On (1)</a>');
+    expect(page).toContain('href="/dashboard?show=off">Off (1)</a>');
+    expect(shownIds(await at("?show=on"))).toEqual([a]);
+    expect(shownIds(await at("?show=off"))).toEqual([b]);
+    expect(shownIds(await at("?show=nonsense")).sort()).toEqual([a, b].sort());
+
+    // The switch keeps the filter, and the row it turned on stays, saying so, though it no longer is off.
+    expect(await at("?show=off")).toContain('<input type="hidden" name="show" value="off">');
+    const res = await w.fetch(`/dashboard/campaigns/${b}/switch`, {
+      method: "POST",
+      headers: { cookie, origin: BASE, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ active: "on", show: "off" }),
+    });
+    expect(res.headers.get("location")).toBe(`/dashboard?show=off&switched=${b}#c-${b}`);
+    const after = await at(`?show=off&switched=${b}`);
+    expect(shownIds(after)).toEqual([b]);
+    expect(rowOf(after, b)).toContain("Turned on.");
+    expect(shownIds(await at("?show=off"))).toEqual([]);
+    expect(await at("?show=off")).toContain("No campaign is off.");
+  });
+
+  it("says since when a campaign is off, set by the switch or the form and kept by a second click", async () => {
+    await saveSettings(env.DB, env.ADMIN_PASSWORD, { time_zone: "America/Toronto" });
+    const id = await w.campaign();
+    w.clock.advance(HOUR);
+    const offAt = w.clock.now();
+    await flip(id, "off");
+    w.clock.advance(HOUR);
+    await flip(id, "off");
+    const since = (await home()).match(/Off since <b>([^<]+)<\/b>/)?.[1];
+    expect(since).toBeDefined();
+    const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Toronto", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+    expect(since).toContain(fmt.format(offAt));
+    expect((await env.DB.prepare("SELECT active_changed_at AS t FROM campaigns WHERE id = ?").bind(id).first<{ t: number }>())!.t).toBe(offAt);
+
+    await flip(id, "on");
+    expect(await home()).not.toContain("Off since");
+
+    // Saving the form with the box unticked turns it off too, and records when.
+    w.clock.advance(HOUR);
+    const page = await (await w.fetch(`/dashboard/campaigns/${id}/edit`, { headers: { cookie } })).text();
+    const form = new URLSearchParams();
+    for (const m of page.matchAll(/<input[^>]*name="([^"]+)"[^>]*>/g)) {
+      const tag = m[0];
+      const name = m[1]!;
+      if (/type="(checkbox|radio)"/.test(tag) && !/ checked/.test(tag)) continue;
+      if (name === "active") continue;
+      form.append(name, /value="([^"]*)"/.exec(tag)?.[1] ?? "on");
+    }
+    for (const m of page.matchAll(/<textarea[^>]*name="([^"]+)"[^>]*>([^<]*)<\/textarea>/g)) form.append(m[1]!, m[2]!);
+    const saved = await w.fetch(`/dashboard/campaigns/${id}`, {
+      method: "POST",
+      headers: { cookie, origin: BASE, "content-type": "application/x-www-form-urlencoded" },
+      body: form,
+    });
+    expect(saved.status).toBe(303);
+    expect(await isOn(id)).toBe(false);
+    expect((await env.DB.prepare("SELECT active_changed_at AS t FROM campaigns WHERE id = ?").bind(id).first<{ t: number }>())!.t).toBe(w.clock.now());
+  });
+
+  it("draws first DMs per day over 14 days, the newest day on the right", async () => {
+    const id = await w.campaign();
+    await w.sendComment(w.comment("agents", FAN, { ago: 30 * MINUTE }));
+    w.clock.advance(10 * DAY);
+    await w.sendComment(w.comment("agents", FAN2, { ago: 30 * MINUTE }));
+    const row = rowOf(await home(), id);
+    expect(row).toContain('aria-label="First DMs per day, last 14 days: 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 (2 in all)"');
+    expect(row).toContain("<b>1</b> DM in the last 7 days");
+  });
+});
