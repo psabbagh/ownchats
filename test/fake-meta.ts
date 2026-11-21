@@ -25,7 +25,8 @@ export class FakeMeta implements MetaClient {
   privateReplied = new Set<string>();
   sent: Sent[] = [];
   calls: string[] = [];
-  subscribed: string[] = [];
+  /** A healthy account is subscribed to every webhook field. */
+  subscribed: string[] = ["comments", "messages", "messaging_postbacks"];
   token: TokenInfo = { valid: true, expiresAt: null, dataAccessExpiresAt: null, scopes: [] };
   usernames = new Map<string, string>();
   names = new Map<string, string>();

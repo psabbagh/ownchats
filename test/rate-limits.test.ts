@@ -5,7 +5,7 @@ import { MetaError, parseUsage, TRANSIENT_REASON } from "../src/meta/client";
 import { GraphMetaClient } from "../src/meta/graph";
 import { GAVE_UP_REASON } from "../src/pipeline/comments";
 import { saveSettings } from "../src/settings";
-import { pollEvery } from "../src/pipeline/poll";
+import { JITTER, jitterFor, pollEvery, webhookTrouble } from "../src/pipeline/poll";
 import { PAUSE } from "../src/throttle";
 import { DAY, HOUR, MINUTE } from "../src/time";
 import { BASE, FAN, FAN2, setupWorld } from "./helpers";
@@ -25,6 +25,17 @@ const LIMIT = () => new MetaError("Application request limit reached", 403, 4);
 const count = (method: string) => w.meta.calls.filter((c) => c === method).length;
 const backgroundCalls = () => w.meta.calls.filter((c) => ["listComments", "mediaInsights", "reelInsight", "accountDay", "listMediaSince", "getAccountStats"].includes(c)).length;
 const links = (to: string) => w.meta.sentTo(to).filter((s) => s.kind === "message");
+
+/** Records when one post's comments are read from now on; call the result for the times so far. */
+function pollTimes(mediaId: string): () => number[] {
+  const at: number[] = [];
+  const read = w.meta.listComments.bind(w.meta);
+  w.meta.listComments = async (id: string) => {
+    if (id === mediaId) at.push(w.clock.now());
+    return read(id);
+  };
+  return () => at;
+}
 
 /** Two watched posts: one a day old, one 10 days old, both Reels. */
 async function twoPosts() {
@@ -71,6 +82,9 @@ describe("Meta's usage headers", () => {
 describe("sends first", () => {
   it("near the limit, skips insights, account days and older posts, and still polls a new post and sends", async () => {
     await twoPosts();
+    // The webhook lost its comments field, so the day-old post is polled every run, and each poll brings a fresh reading.
+    w.meta.subscribed = ["messages", "messaging_postbacks"];
+    await saveSettings(env.DB, env.ADMIN_PASSWORD, { subscribed_fields: "messages,messaging_postbacks" });
     w.meta.usagePercent = 75;
     w.clock.advance(MINUTE);
     await w.cron(); // the first call reports 75%
@@ -116,6 +130,8 @@ describe("sends first", () => {
     w.meta.usagePercent = null;
     w.meta.instagramPercent = 1;
     const before = w.meta.calls.length;
+    // A DM is the next call: the new post is polled only every 15 minutes.
+    await w.sendComment(w.comment("AGENTS", FAN, { media: YOUNG_POST }));
     for (let i = 0; i < 4; i++) {
       w.clock.advance(MINUTE);
       await w.cron();
@@ -181,32 +197,112 @@ describe("sends first", () => {
 });
 
 describe("polling by age", () => {
-  it("polls a post in its first 2 days every run, and older ones less and less", async () => {
-    expect(pollEvery(Date.parse("2026-11-03T12:00:00Z"), Date.parse("2026-11-04T12:00:00Z"))).toBe(0);
-    expect(pollEvery(null, 0)).toBe(0);
-    expect(pollEvery(0, 5 * DAY)).toBe(15 * MINUTE);
+  it("polls a post in its first 2 days every 15 minutes, and older ones less and less", async () => {
+    expect(pollEvery(Date.parse("2026-11-03T12:00:00Z"), Date.parse("2026-11-04T12:00:00Z"))).toBe(15 * MINUTE);
+    expect(pollEvery(null, 0)).toBe(15 * MINUTE);
+    expect(pollEvery(0, 5 * DAY)).toBe(30 * MINUTE);
     expect(pollEvery(0, 10 * DAY)).toBe(HOUR);
     expect(pollEvery(0, 40 * DAY)).toBe(3 * HOUR);
+    // While the webhooks look unhealthy, a new post goes back to every run; older ones keep their pace.
+    expect(pollEvery(0, DAY, true)).toBe(0);
+    expect(pollEvery(null, 0, true)).toBe(0);
+    expect(pollEvery(0, 5 * DAY, true)).toBe(30 * MINUTE);
 
     await twoPosts();
-    const polls = () => count("listComments");
-    const start = polls();
-    for (let i = 0; i < 60; i++) {
+    const times = pollTimes(YOUNG_POST);
+    for (let i = 0; i < 3 * 60; i++) {
       w.clock.advance(MINUTE);
       await w.cron();
     }
-    // The young post every minute, the 10-day-old one hourly.
-    expect(polls() - start).toBe(61);
+    const young = times();
+    // At most once every 15 minutes, and never more than 19 apart (15, plus the post's jitter).
+    const gaps = young.slice(1).map((t, i) => (t - young[i]!) / MINUTE);
+    expect(gaps.length).toBeGreaterThanOrEqual(9);
+    for (const g of gaps) expect(g).toBe(15 + jitterFor(YOUNG_POST) / MINUTE);
+    // The 10-day-old post about hourly.
+    expect(count("listComments") - young.length).toBeGreaterThanOrEqual(3);
+    expect(count("listComments") - young.length).toBeLessThanOrEqual(4);
+  });
+
+  it("spreads posts over different minutes", () => {
+    const ids = Array.from({ length: 20 }, (_, i) => `1800000000000${String(i).padStart(4, "0")}`);
+    const jitters = ids.map(jitterFor);
+    for (const j of jitters) {
+      expect(j).toBeGreaterThanOrEqual(0);
+      expect(j).toBeLessThanOrEqual(JITTER);
+      expect(j % MINUTE).toBe(0);
+    }
+    expect(new Set(jitters).size).toBeGreaterThan(2);
+    expect(jitterFor(ids[0]!)).toBe(jitterFor(ids[0]!));
   });
 
   it("still finds a comment the webhook missed on an older post", async () => {
     await twoPosts();
     const missed = w.comment("OLD", FAN, { media: OLD_POST });
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < 65; i++) {
       w.clock.advance(MINUTE);
       await w.cron();
     }
     expect(w.meta.sent.filter((s) => s.kind === "private_reply").map((s) => s.to)).toEqual([missed.id]);
+  });
+});
+
+describe("falling back to every run when the webhooks look unhealthy", () => {
+  /** Runs the Cron for `minutes` and returns how many times the young post was polled. */
+  async function youngPolls(minutes: number): Promise<number> {
+    const times = pollTimes(YOUNG_POST);
+    for (let i = 0; i < minutes; i++) {
+      w.clock.advance(MINUTE);
+      await w.cron();
+    }
+    return times().length;
+  }
+
+  it("polls a new post every run while the poll keeps finding comments no webhook brought, and slows down an hour after the last", async () => {
+    await twoPosts();
+    expect(await youngPolls(30)).toBeLessThanOrEqual(2);
+    // Two comments Meta's webhook never delivered: the 15-minute poll finds them.
+    w.comment("AGENTS", FAN, { media: YOUNG_POST });
+    w.comment("AGENTS", FAN2, { media: YOUNG_POST });
+    await youngPolls(20);
+    expect(w.meta.sent.filter((s) => s.kind === "private_reply")).toHaveLength(2);
+    expect(await webhookTrouble(await w.ctx())).toBe("comments found only by the poll");
+    // Now every run.
+    expect(await youngPolls(10)).toBe(10);
+    // An hour after the last comment found only by the poll, back to every 15 minutes.
+    await youngPolls(60);
+    expect(await webhookTrouble(await w.ctx())).toBeNull();
+    expect(await youngPolls(30)).toBeLessThanOrEqual(2);
+  });
+
+  it("polls a new post every run while the comments field is unsubscribed, and only until it is back", async () => {
+    await twoPosts();
+    await saveSettings(env.DB, env.ADMIN_PASSWORD, { subscribed_fields: "messages,messaging_postbacks" });
+    expect(await youngPolls(10)).toBe(10);
+    await saveSettings(env.DB, env.ADMIN_PASSWORD, { subscribed_fields: "comments,messages,messaging_postbacks" });
+    expect(await youngPolls(30)).toBeLessThanOrEqual(2);
+  });
+
+  it("polls a new post every run while OwnChats refuses Meta's webhooks, until one is accepted", async () => {
+    await twoPosts();
+    await saveSettings(env.DB, env.ADMIN_PASSWORD, { last_webhook_problem: `${w.clock.now()}|signature did not match the app secret` });
+    expect(await youngPolls(10)).toBe(10);
+    await w.sendComment(w.comment("NOTHING", FAN));
+    expect(await youngPolls(30)).toBeLessThanOrEqual(2);
+  });
+
+  it("polls a new post every run while the alert that taps stopped arriving is open", async () => {
+    await twoPosts();
+    await saveSettings(env.DB, env.ADMIN_PASSWORD, { alert_url: "https://example.com/invented-alerts", alert_state: JSON.stringify({ taps: { open: true, since: 0, openedAt: 0 } }) });
+    expect(await youngPolls(10)).toBe(10);
+  });
+
+  it("leaves older posts at their own pace", async () => {
+    await twoPosts();
+    await saveSettings(env.DB, env.ADMIN_PASSWORD, { subscribed_fields: "" });
+    const old = pollTimes(OLD_POST);
+    await youngPolls(30);
+    expect(old()).toHaveLength(0);
   });
 });
 

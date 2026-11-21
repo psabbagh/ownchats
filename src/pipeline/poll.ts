@@ -1,6 +1,7 @@
 import { listCampaigns, onAllPosts } from "../campaigns";
 import type { Ctx } from "../context";
 import { explainError, type Media } from "../meta/client";
+import { alertStates } from "../alerts";
 import { saveSettings } from "../settings";
 import { backgroundAllowed, paused } from "../throttle";
 import { DAY, HOUR, MINUTE, PRIVATE_REPLY_WINDOW } from "../time";
@@ -33,23 +34,69 @@ export async function recentMedia(ctx: Ctx, force = false): Promise<Media[]> {
 }
 
 /**
- * How often a watched post's comments are read, by the post's age. Webhooks bring
- * comments as they are written; polling is the backstop for the ones Meta never
- * delivers, and a post gets most of its comments in its first days. So a new post is
- * read every run and an older one less and less, which keeps 18 watched Reels from
- * costing hundreds of Meta calls an hour. A post of unknown age counts as new.
+ * How often a watched post's comments are read, by the post's age. Meta's webhooks
+ * bring comments as they are written (over 99% of them since 2026-11-06), so polling is
+ * only the backup for one Meta never delivers. A post gets most of its comments in its
+ * first days, so a new post is read every 15 minutes and an older one less and less,
+ * which keeps watched Reels from costing most of the app's Meta calls. A post of unknown
+ * age counts as new. While the webhooks look unhealthy (webhookTrouble), a new post is
+ * read every run instead, until they recover.
  */
-export function pollEvery(postedAt: number | null, now: number): number {
-  if (postedAt === null) return 0;
-  const age = now - postedAt;
-  if (age < YOUNG) return 0;
-  if (age < 8 * DAY) return 15 * MINUTE;
+export function pollEvery(postedAt: number | null, now: number, webhooksDown = false): number {
+  const age = postedAt === null ? 0 : now - postedAt;
+  if (age < YOUNG) return webhooksDown ? 0 : BACKUP_EVERY;
+  if (age < 8 * DAY) return 30 * MINUTE;
   if (age < 30 * DAY) return HOUR;
   return 3 * HOUR;
 }
 
-/** A post younger than this is polled every run, and keeps being polled while Meta's limit is near. */
+/** A post younger than this counts as new: polled most often, and kept polled while Meta's limit is near. */
 export const YOUNG = 2 * DAY;
+/** How often a new post is polled while the webhooks work. */
+export const BACKUP_EVERY = 15 * MINUTE;
+/** At most this much is added to a post's wait, the same each time for a given post, so posts don't all fall on the same minute. */
+export const JITTER = 4 * MINUTE;
+
+/** A post's own share of JITTER, from its id: steady from run to run, different from post to post. */
+export function jitterFor(mediaId: string): number {
+  let h = 0;
+  for (let i = 0; i < mediaId.length; i++) h = (h * 31 + mediaId.charCodeAt(i)) >>> 0;
+  return (h % (JITTER / MINUTE + 1)) * MINUTE;
+}
+
+/** Comments found only by the poll over FALLBACK_WINDOW that send new posts back to every run... */
+export const FALLBACK_FOUND = 2;
+/** ...and the window, which is also how long polling stays fast after the last such comment. */
+export const FALLBACK_WINDOW = HOUR;
+
+/**
+ * Why Meta's webhooks look unhealthy for comments, or null while they look fine. Read from
+ * what OwnChats already records, so it costs one D1 query and no Meta call:
+ *  - OwnChats is refusing Meta's webhooks (the app secret doesn't match);
+ *  - the account's webhook subscription lacks the comments field (read daily);
+ *  - the poll found FALLBACK_FOUND comments or more over the last hour that no webhook brought
+ *    (one alone can be a webhook a few seconds behind the poll);
+ *  - an owner alert says comments or taps stopped arriving and hasn't closed yet.
+ * Each clears by itself once the webhooks work again: the last poll-only comment ages
+ * out of the window, and an alert closes 30 minutes after its problem goes.
+ */
+export async function webhookTrouble(ctx: Ctx): Promise<string | null> {
+  const s = ctx.settings;
+  const [refusedAt, refusedWhy] = (s.last_webhook_problem ?? "").split("|");
+  if (refusedWhy && Number(refusedAt) > Number(s.last_webhook_at ?? 0)) return "webhooks refused";
+  if (s.subscribed_fields !== undefined && !s.subscribed_fields.split(",").includes("comments")) return "comments field unsubscribed";
+  const alerts = alertStates(ctx);
+  if (alerts.comments?.open || alerts.taps?.open) return "alert open";
+  const now = ctx.now();
+  const row = await ctx.db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM comments
+       WHERE source = 'poll' AND received_at > ?1 AND commented_at > ?1 AND parent_id IS NULL AND (from_id IS NULL OR from_id <> ?2)`,
+    )
+    .bind(now - FALLBACK_WINDOW, s.ig_user_id ?? "")
+    .first<{ n: number }>();
+  return Number(row?.n ?? 0) >= FALLBACK_FOUND ? "comments found only by the poll" : null;
+}
 
 /** When each watched post was last polled, from settings. */
 function lastPolled(ctx: Ctx): Record<string, number> {
@@ -62,7 +109,7 @@ function lastPolled(ctx: Ctx): Record<string, number> {
 }
 
 /**
- * The backstop for missed webhooks: reads the newest comments on the posts that
+ * The backup for missed webhooks: reads the newest comments on the posts that
  * campaigns watch, those that are due by their age (pollEvery), most overdue first,
  * and feeds unseen ones into the comment pipeline. While Meta's rate limit is near
  * only new posts are read, and none during a pause (throttle.ts).
@@ -92,8 +139,14 @@ export async function pollComments(ctx: Ctx): Promise<void> {
 
   const now = ctx.now();
   const before = lastPolled(ctx);
+  const young = (postedAt: number | null) => postedAt === null || now - postedAt < YOUNG;
+  // Only worth a D1 query when a new post is watched: older ones keep their cadence either way.
+  const down = [...watched.values()].some(young) && (await webhookTrouble(ctx)) !== null;
   const due = [...watched]
-    .map(([id, postedAt]) => ({ id, young: postedAt === null || now - postedAt < YOUNG, at: (before[id] ?? 0) + pollEvery(postedAt, now) }))
+    .map(([id, postedAt]) => {
+      const every = pollEvery(postedAt, now, down);
+      return { id, young: young(postedAt), at: before[id] ? before[id] + every + (every ? jitterFor(id) : 0) : 0 };
+    })
     .filter((p) => p.at <= now && backgroundAllowed(ctx.load, now, p.young ? "high" : "low"))
     .sort((a, b) => a.at - b.at)
     .slice(0, POSTS_PER_RUN);

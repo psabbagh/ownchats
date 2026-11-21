@@ -473,8 +473,8 @@ describe("deciding which campaigns to keep on", () => {
 
   it("says what a campaign costs in Meta calls, by its post's age, and asks with it before turning off", async () => {
     const cases: Array<[string, number, string]> = [
-      ["18000000000000301", 1 * DAY, "about 60 Meta calls an hour"],
-      ["18000000000000302", 3 * DAY, "about 4 Meta calls an hour"],
+      ["18000000000000301", 1 * DAY, "about 4 Meta calls an hour"],
+      ["18000000000000302", 3 * DAY, "about 2 Meta calls an hour"],
       ["18000000000000303", 10 * DAY, "about 1 Meta call an hour"],
       ["18000000000000304", 40 * DAY, "1 Meta call every 3 hours"],
     ];

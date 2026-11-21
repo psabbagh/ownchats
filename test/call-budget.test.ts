@@ -50,6 +50,7 @@ describe("Meta calls an hour", () => {
   it("stay well inside Meta's app limit with 18 watched posts and one waiting campaign", { timeout: 120_000 }, async () => {
     const calls = await cronCallsPerHour(24);
     console.log("Cron Meta calls in one hour:", JSON.stringify(calls));
-    expect(calls.total).toBeLessThan(200);
+    // About 58 since new posts are polled every 15 minutes (2026-11-21), from about 177.
+    expect(calls.total).toBeLessThan(80);
   });
 });
