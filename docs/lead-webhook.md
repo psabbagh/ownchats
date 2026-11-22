@@ -73,7 +73,7 @@ The fields:
 - `campaign.email_tag`: the campaign's optional **Email tag** (campaign form, Email section), for picking which sequence or email to send. `null` when empty.
 - `campaign.link`: the campaign's first link as the DM sends it to this person. With click counting on (the default), it is their own `/go/` link on your OwnChats address, which leads to the real link, so a click from your email counts like one from the DM; with counting off, the link itself. Put it in the email as it is. Email security scanners that open links before the person does may count as their click. `null` only for a test lead with no campaign.
 - `campaign.link_title`: what that link leads to, in words, from the campaign's optional **What the first link leads to** field (campaign form, Link section), for example "Turn YouTube videos into Claude skills". `null` when empty. With `link`, it lets one email template deliver every campaign's guide by name, with nothing to configure on the receiving side.
-- `consent.wording`: the exact line the person answered (or the campaign's consent wording, if it has one), and `given_at` when they answered it. Keep both if your tool can: they are your proof of consent.
+- `consent.wording`: the exact line the person answered (or the campaign's consent wording, if it has one), and `given_at` when they answered it. When someone who already gave their email taps "Email it to me" on a later campaign, the lead carries the wording and time of that earlier consent, so `given_at` can be older than `lead.created_at`. Keep both if your tool can: they are your proof of consent.
 
 New fields may be added; existing ones won't change.
 

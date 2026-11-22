@@ -441,6 +441,17 @@ describe("the flows a new campaign starts from", () => {
     expect(await start("?flow=email")).toContain('name="link_label_0" type="text" value="Open"');
   });
 
+  it("saves the wording for someone who already gave their email, and goes back to OwnChats' own when emptied", async () => {
+    const cookie = await w.signIn();
+    await w.fetch("/dashboard/settings/defaults", form(cookie, { known_email_offer: "Want it by email too?", known_email_button: "Yes please", known_email_thanks: "" }));
+    const page = await (await w.fetch("/dashboard/settings", { headers: { cookie } })).text();
+    expect(page).toContain('name="known_email_button" type="text" value="Yes please"');
+    expect(page).toContain("Want it by email too?</textarea>");
+    expect(await env.DB.prepare("SELECT value FROM settings WHERE key = 'known_email_thanks'").first()).toBeNull();
+    await w.fetch("/dashboard/settings/defaults", form(cookie, { known_email_offer: "", known_email_button: "", known_email_thanks: "" }));
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM settings WHERE key LIKE 'known_email_%'").first()).toEqual({ n: 0 });
+  });
+
   it("offers the choice only on a new, untouched form", async () => {
     const cookie = await w.signIn();
     const bad = await w.fetch("/dashboard/campaigns/new", form(cookie, { name: "", keywords: "", media_id: "all" }));

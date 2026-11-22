@@ -1,9 +1,10 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
-import { DEFAULTS, OPEN_PAYLOAD_PREFIX } from "../src/campaigns";
+import { DEFAULTS, KNOWN_EMAIL_PAYLOAD_PREFIX, OPEN_PAYLOAD_PREFIX } from "../src/campaigns";
+import { saveSettings } from "../src/settings";
 import type { OutMessage } from "../src/meta/client";
 import { saysExactly } from "../src/match";
-import { HOUR, MINUTE } from "../src/time";
+import { DAY, HOUR, MINUTE } from "../src/time";
 import { FAN, OTHER_POST, OWNER, setupWorld } from "./helpers";
 
 type World = Awaited<ReturnType<typeof setupWorld>>;
@@ -165,6 +166,68 @@ describe("the optional email ask", () => {
     await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${second}`);
     await openNth(1);
     expect(toFan().filter((m) => m.kind === "text" && m.text.includes("email"))).toHaveLength(2);
+  });
+});
+
+describe("someone who already gave their email", () => {
+  /** The first campaign's guide, opened and answered with an email; then the second campaign's link, opened. */
+  async function emailThenSecondGuide() {
+    const first = await w.campaign({ emailMode: "optional", linkTitle: "First guide", links: [{ label: "Open the guide", url: "https://example.com/first" }] });
+    const second = await w.campaign({ emailMode: "optional", keywords: ["BOOKS"], mediaId: OTHER_POST, linkTitle: "Second guide", links: [{ label: "Open the guide", url: "https://example.com/second" }] });
+    await w.sendComment(w.comment("agents", FAN));
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${first}`);
+    await openNth(0);
+    await w.sendDm(FAN.id, "invented.fan@example.com");
+    w.clock.advance(2 * DAY);
+    await w.sendComment(w.comment("books", FAN, { media: OTHER_POST }));
+    await w.tap(FAN.id, `${OPEN_PAYLOAD_PREFIX}${second}`);
+    await openNth(1);
+    return { first, second };
+  }
+
+  it("is offered the guide by email with one tap, instead of being asked for it again", async () => {
+    await w.lead_webhook();
+    const { first, second } = await emailThenSecondGuide();
+    const last = toFan().at(-1)!;
+    expect(last).toEqual({
+      kind: "buttons",
+      text: DEFAULTS.knownEmailOffer,
+      buttons: [{ type: "postback", title: DEFAULTS.knownEmailButton, payload: `${KNOWN_EMAIL_PAYLOAD_PREFIX}${second}` }],
+    });
+    expect(toFan().filter((m) => m.kind === "text" && m.text === DEFAULTS.optionalPrompt)).toHaveLength(1);
+
+    await w.tap(FAN.id, `${KNOWN_EMAIL_PAYLOAD_PREFIX}${second}`);
+    expect(toFan().at(-1)).toEqual({ kind: "text", text: DEFAULTS.knownEmailThanks });
+    const leads = await env.DB.prepare("SELECT campaign_id, email, consent_text, consented_at FROM leads ORDER BY campaign_id").all<Record<string, unknown>>();
+    expect(leads.results.map((r) => [r.campaign_id, r.email])).toEqual([
+      [first, "invented.fan@example.com"],
+      [second, "invented.fan@example.com"],
+    ]);
+    // The consent they gave on the first campaign, kept as it was.
+    expect(leads.results[1]).toMatchObject({ consent_text: leads.results[0]!.consent_text, consented_at: leads.results[0]!.consented_at });
+    const sent = w.receiver.bodies().filter((b) => b.event === "lead.created");
+    expect(sent.map((b) => b.campaign.link_title)).toEqual(["First guide", "Second guide"]);
+    expect(sent[1]!.consent.given_at).toBe(sent[0]!.consent.given_at);
+
+    // A second tap does nothing.
+    const before = toFan().length;
+    await w.tap(FAN.id, `${KNOWN_EMAIL_PAYLOAD_PREFIX}${second}`);
+    expect(toFan()).toHaveLength(before);
+  });
+
+  it("gets nothing after the link when there is no lead webhook to send the email", async () => {
+    await emailThenSecondGuide();
+    expect(toFan().at(-1)).toMatchObject({ kind: "buttons", text: `${DEFAULTS.linkText}\nSecond guide` });
+    expect((await w.activity()).find((a) => a.reason === "email already known, no lead webhook to send it")).toBeTruthy();
+  });
+
+  it("gets the owner's own wording from Settings", async () => {
+    await w.lead_webhook();
+    await saveSettings(env.DB, env.ADMIN_PASSWORD, { known_email_offer: "Want it by email, {name}?", known_email_button: "Yes please", known_email_thanks: "Sent!" });
+    const { second } = await emailThenSecondGuide();
+    expect(toFan().at(-1)).toMatchObject({ text: "Want it by email, invented_fan?", buttons: [{ title: "Yes please" }] });
+    await w.tap(FAN.id, `${KNOWN_EMAIL_PAYLOAD_PREFIX}${second}`);
+    expect(toFan().at(-1)).toEqual({ kind: "text", text: "Sent!" });
   });
 });
 
