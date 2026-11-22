@@ -1,4 +1,4 @@
-import { checkAlerts, checkSubscription, heartbeat } from "./alerts";
+import { checkAlertsWhenDue, checkSubscription, heartbeat } from "./alerts";
 import type { Ctx } from "./context";
 import { oldestKeptDay, POST_DAYS, refreshAccountDays, refreshAccountStats, refreshMediaStats, refreshPostList } from "./insights";
 import { handleComment, pendingCommentIds, QUERIES_PER_COMMENT } from "./pipeline/comments";
@@ -25,7 +25,7 @@ const KEEP_COMMENTS = 30 * DAY;
  * replies and the messages after a tap that wait, poll for missed comments, read
  * Instagram's numbers that are due (posts and the account's days), send what the lead
  * webhook has waiting, and once a day, upkeep. It starts with the heartbeat and the
- * owner's alerts (alerts.ts). Sends go first; the reads are held
+ * owner's alerts (alerts.ts), checked every 5 minutes. Sends go first; the reads are held
  * back while Meta's rate limit is near (throttle.ts).
  */
 export async function runCron(ctx: Ctx): Promise<void> {
@@ -37,7 +37,7 @@ export async function runCron(ctx: Ctx): Promise<void> {
   let all = await listCampaigns(ctx.db);
   const active = () => all.filter((c) => c.active);
   try {
-    await checkAlerts(ctx, active());
+    await checkAlertsWhenDue(ctx, active());
   } catch (err) {
     // An alert must never cost a DM: the rest of the run goes on.
     console.error("alerts", err);

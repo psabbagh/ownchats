@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { alertRequest, receiverOf, type AlertPayload } from "../src/alertmessage";
-import { DAILY_CAP } from "../src/alerts";
+import { ALERTS_EVERY, DAILY_CAP } from "../src/alerts";
 import { MetaError } from "../src/meta/client";
 import { dismissUntakenPost } from "../src/nextpost";
 import { GAVE_UP_REASON } from "../src/pipeline/comments";
@@ -88,7 +88,7 @@ const TRIGGERS: Record<string, Trigger> = {
     async untilOpen() {
       // The first run makes the daily token check; the next one sees what it found.
       await w.cron();
-      await runs(1, MINUTE);
+      await runs(1, ALERTS_EVERY);
     },
     async fix() {
       w.meta.token = { valid: true, expiresAt: null, dataAccessExpiresAt: null, scopes: [] };
@@ -131,7 +131,7 @@ const TRIGGERS: Record<string, Trigger> = {
     },
     async untilOpen() {
       await w.cron(); // lists the post
-      await runs(1, MINUTE); // first seen
+      await runs(1, ALERTS_EVERY); // first seen
       await runs(1, 15 * MINUTE);
     },
     fix: async () => dismissUntakenPost(await w.ctx(), "18000000000000777"),
@@ -151,9 +151,9 @@ const TRIGGERS: Record<string, Trigger> = {
       for (const p of people(3, 100)) w.comment("hello", p);
     },
     async untilOpen() {
-      // The Cron checks alerts before it polls, so the run after the poll sees them.
+      // The Cron checks alerts before it polls, so the next check after the poll sees them.
       await w.cron();
-      await runs(1, MINUTE);
+      await runs(1, ALERTS_EVERY);
     },
     // More keep coming the same way.
     keep: async () => {
@@ -187,9 +187,9 @@ const TRIGGERS: Record<string, Trigger> = {
       w.meta.subscribed = ["comments", "messages"];
     },
     async untilOpen() {
-      // The first run makes the daily check; the next one sees what it found.
+      // The first run makes the daily check; the next check of the alerts sees what it found.
       await w.cron();
-      await runs(1, MINUTE);
+      await runs(1, ALERTS_EVERY);
     },
     async fix() {
       // The owner subscribes again from setup; the next daily check reads it.
@@ -206,7 +206,7 @@ const TRIGGERS: Record<string, Trigger> = {
     },
     async untilOpen() {
       await w.cron(); // the check fails
-      await runs(1, MINUTE); // first seen failing
+      await runs(1, ALERTS_EVERY); // first seen failing
       await runs(1, HOUR);
     },
     fix: async () => w.meta.clearFailures(),
@@ -244,6 +244,17 @@ describe("alerts", () => {
       expect(alerts()).toHaveLength(3);
     });
   }
+
+  it("are checked every 5 minutes, not every run", async () => {
+    await alertsOn();
+    await w.cron();
+    await failDms(5);
+    // The runs between two checks don't look.
+    await runs(3, MINUTE);
+    expect(alerts()).toEqual([]);
+    await runs(1, ALERTS_EVERY - 3 * MINUTE);
+    expect(statuses()).toEqual(["failures:open"]);
+  });
 
   it("say how many people wait, and that Meta's rate limit is why", async () => {
     await alertsOn();
@@ -298,7 +309,7 @@ describe("alerts", () => {
     await alertsOn();
     w.meta.subscribed = [];
     await w.cron();
-    await runs(1, MINUTE);
+    await runs(1, ALERTS_EVERY);
     expect(alerts()).toMatchObject([{ problem: "subscription", status: "open", url: `${BASE}/setup#step-5` }]);
     expect(alerts()[0]!.message).toContain("comments, messages, messaging_postbacks");
     // A check Meta refuses keeps the last answer: nothing is fixed or opened by it.
@@ -340,8 +351,8 @@ describe("alerts", () => {
     expect(alerts()).toEqual([]);
     // A third is.
     w.comment("three", people(1, 3)[0]!);
-    // The Cron checks alerts before it polls, so the run after the poll sees it.
-    await runs(2, MINUTE);
+    // The Cron checks alerts before it polls, so the check after the poll sees it.
+    await runs(2, ALERTS_EVERY);
     expect(alerts()).toMatchObject([{ problem: "comments", status: "open", people: 3, title: "Comments are not arriving from Meta", url: `${BASE}/setup` }]);
   });
 
@@ -368,7 +379,7 @@ describe("alerts", () => {
         expect(alerts()).toEqual([]);
       }
     }
-    await runs(1, MINUTE);
+    await runs(1, ALERTS_EVERY);
     expect(alerts()).toMatchObject([{ problem: "failures", status: "open", people: 5 }]);
   });
 
@@ -393,7 +404,7 @@ describe("alerts", () => {
     expect(alerts()[0]!.message).toContain(`That makes ${DAILY_CAP} alerts in 24 hours`);
 
     await failDms(5);
-    await runs(1, MINUTE);
+    await runs(1, ALERTS_EVERY);
     expect(alerts()).toHaveLength(1);
     const skipped = await env.DB.prepare("SELECT reason FROM activity WHERE kind = 'alert' AND outcome = 'skipped'").first<{ reason: string }>();
     expect(skipped?.reason).toContain("DMs failing");
