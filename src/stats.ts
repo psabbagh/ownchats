@@ -37,7 +37,7 @@ export async function campaignCounts(ctx: Ctx): Promise<Map<number, CampaignCoun
     ),
     ctx.db.prepare("SELECT campaign_id, COUNT(*) AS n FROM activity WHERE kind = 'tap' AND outcome = 'received' GROUP BY campaign_id"),
     ctx.db.prepare("SELECT campaign_id, COUNT(*) AS n FROM leads GROUP BY campaign_id"),
-    ctx.db.prepare("SELECT campaign_id, kind, COUNT(*) AS n FROM activity WHERE outcome = 'failed' AND campaign_id IS NOT NULL GROUP BY campaign_id, kind"),
+    ctx.db.prepare("SELECT campaign_id, kind, COUNT(*) AS n FROM activity WHERE outcome = 'failed' AND kind != 'like' AND campaign_id IS NOT NULL GROUP BY campaign_id, kind"),
     ctx.db.prepare(CLICKED),
   ]);
   const out = new Map<number, CampaignCounts>();
@@ -111,11 +111,11 @@ export async function campaignRecent(ctx: Ctx): Promise<Map<number, CampaignRece
 }
 
 /**
- * How many things failed since this time and need the owner, from the log. A public reply is left
- * out: it is only tried once its DM went out, so the person already has what they asked for.
+ * How many things failed since this time and need the owner, from the log. A public reply and a like
+ * are left out: they are only tried once the DM went out, so the person already has what they asked for.
  */
 export async function failuresSince(ctx: Ctx, since: number): Promise<number> {
-  const row = await ctx.db.prepare("SELECT COUNT(*) AS n FROM activity WHERE outcome = 'failed' AND kind != 'public_reply' AND at > ?").bind(since).first<{ n: number }>();
+  const row = await ctx.db.prepare("SELECT COUNT(*) AS n FROM activity WHERE outcome = 'failed' AND kind NOT IN ('public_reply', 'like') AND at > ?").bind(since).first<{ n: number }>();
   return row?.n ?? 0;
 }
 

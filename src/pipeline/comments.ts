@@ -1,9 +1,9 @@
 import { fill, firstMessage, listCampaigns, matchComment, pickPublicReply, plainFirstMessage, type Campaign, type ConversationState } from "../campaigns";
 import { trackLinks } from "../clicks";
 import { logStatement, type ActivityEntry, type Ctx } from "../context";
-import { explainError, explainReplyError, isTemplateRejection, MetaError, TRANSIENT_REASON, type IgComment } from "../meta/client";
+import { explainError, explainLikeError, explainReplyError, isLikePermissionError, isTemplateRejection, MetaError, TRANSIENT_REASON, type IgComment } from "../meta/client";
 import { nextTry, privateReplyPlan, retryLog } from "../retry";
-import { shortcutKeywords } from "../settings";
+import { deleteSettings, saveSettings, shortcutKeywords } from "../settings";
 import { HOUR, MINUTE, PRIVATE_REPLIES_PER_HOUR, PRIVATE_REPLY_WINDOW } from "../time";
 import { paused } from "../throttle";
 import { claimConversation, getConversation, releaseClaim } from "./conversations";
@@ -224,7 +224,8 @@ export async function handleComment(ctx: Ctx, id: string, campaigns?: Campaign[]
     const entry = row.reason === reason ? [] : [logStatement(ctx, { kind: "comment", outcome: "queued", reason, campaignId: cid, ...who })];
     return void (await settle("queued", reason, cid, entry));
   }
-  if (!ctx.budget.take(campaign.publicReplies.length ? 2 : 1)) return void (await settle("queued", "waiting for the next run", cid));
+  const like = likesComments(ctx);
+  if (!ctx.budget.take(1 + (campaign.publicReplies.length ? 1 : 0) + (like ? 1 : 0))) return void (await settle("queued", "waiting for the next run", cid));
 
   const person = { username: row.from_username };
   const first = firstMessage(campaign, "comment", person);
@@ -303,8 +304,9 @@ export async function handleComment(ctx: Ctx, id: string, campaigns?: Campaign[]
   ]);
   if (reply) campaign.replyCursor = reply.index;
 
-  // The public reply goes out only once the DM did, so "Sent!" is true.
+  // The like and the public reply go out only once the DM did, so "Sent!" is true.
   const extra: D1PreparedStatement[] = [];
+  if (like) extra.push(await likeComment(ctx, row.id, cid, who));
   if (reply) {
     const variant = fill(reply.text, person);
     let entry: ActivityEntry;
@@ -318,4 +320,34 @@ export async function handleComment(ctx: Ctx, id: string, campaigns?: Campaign[]
     extra.push(logStatement(ctx, entry));
   }
   await settle("done", null, cid, extra);
+}
+
+/** Whether the owner turned on liking the comments OwnChats answers (Settings). */
+export function likesComments(ctx: Ctx): boolean {
+  return ctx.settings.like_comments === "on";
+}
+
+/**
+ * Likes an answered comment, as the account, and says how it went for the log. A refusal
+ * never holds up anything else: the DM already went out. A refusal for lack of
+ * instagram_manage_engagement is kept as `like_problem`, so Settings can say how to fix
+ * it, and cleared by the next like that works.
+ */
+async function likeComment(ctx: Ctx, commentId: string, campaignId: number, who: { commentId: string; igUserId: string | null; username: string | null }): Promise<D1PreparedStatement> {
+  try {
+    await ctx.meta!.likeComment(commentId);
+    if (ctx.settings.like_problem) {
+      await deleteSettings(ctx.db, ["like_problem"]);
+      delete ctx.settings.like_problem;
+    }
+    return logStatement(ctx, { kind: "like", outcome: "sent", campaignId, ...who });
+  } catch (err) {
+    const { reason, detail } = explainLikeError(err);
+    if (isLikePermissionError(err) && !ctx.settings.like_problem) {
+      const problem = `${ctx.now()}|${detail}`.slice(0, 300);
+      await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { like_problem: problem });
+      ctx.settings.like_problem = problem;
+    }
+    return logStatement(ctx, { kind: "like", outcome: "failed", reason, campaignId, ...who, detail });
+  }
 }

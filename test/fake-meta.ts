@@ -23,6 +23,10 @@ export class FakeMeta implements MetaClient {
   /** When each person last messaged or tapped. */
   lastInbound = new Map<string, number>();
   privateReplied = new Set<string>();
+  /** Comments the account liked. */
+  liked = new Set<string>();
+  /** People whose accounts are private: Meta refuses to like their comments. */
+  privateAccounts = new Set<string>();
   sent: Sent[] = [];
   calls: string[] = [];
   /** A healthy account is subscribed to every webhook field. */
@@ -125,6 +129,13 @@ export class FakeMeta implements MetaClient {
     this.call("replyToComment");
     this.sent.push({ kind: "public_reply", to: commentId, message: text, at: this.now() });
     return { id: `reply_${commentId}` };
+  }
+  async likeComment(commentId: string) {
+    this.call("likeComment");
+    const comment = this.comments.get(commentId);
+    if (!comment) throw new MetaError("Invalid parameter: comment not found", 400, 100, 33);
+    if (comment.fromId && this.privateAccounts.has(comment.fromId)) throw new MetaError("Media and Comments from Private Accounts cannot be liked", 400, 100);
+    this.liked.add(commentId);
   }
   async sendPrivateReply(commentId: string, message: OutMessage) {
     this.call("sendPrivateReply");

@@ -242,7 +242,8 @@ describe("alerts", () => {
       expect(alerts()[2]!.title).toMatch(/^Fixed: /);
       await runs(3, 10 * MINUTE);
       expect(alerts()).toHaveLength(3);
-    });
+      // About 50 Cron runs: "taps" takes over a second here and passed 5 on a slow CI runner.
+    }, 30_000);
   }
 
   it("are checked every 5 minutes, not every run", async () => {

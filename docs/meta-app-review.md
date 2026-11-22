@@ -48,6 +48,7 @@ Request Advanced Access for these, and only these:
 | `instagram_manage_comments` | Receives `comments` webhooks, reads comments on armed posts, posts the public reply. | [Permissions reference](https://developers.facebook.com/docs/permissions/reference/instagram_manage_comments), [webhook fields](https://developers.facebook.com/documentation/instagram-platform/webhooks/fields) |
 | `instagram_manage_messages` | Sends the private reply to a comment and the DMs that follow, and receives `messages` and `messaging_postbacks` webhooks. | [Permissions reference](https://developers.facebook.com/docs/permissions/reference/instagram_manage_messages), [webhook fields](https://developers.facebook.com/documentation/instagram-platform/webhooks/fields) |
 | `instagram_manage_insights` | Only if you use views and reach on campaigns. | [Permissions reference](https://developers.facebook.com/docs/permissions/reference/instagram_manage_insights) |
+| `instagram_manage_engagement` | Only if you turn on liking answered comments in Settings. | [IG User likes reference](https://developers.facebook.com/docs/instagram-platform/instagram-graph-api/reference/ig-user/user-likes) |
 | `pages_show_list`, `pages_read_engagement` | Listed by Meta as dependencies of the Instagram permissions above. Request them only if the dashboard asks. | [Permissions reference](https://developers.facebook.com/docs/permissions/reference/instagram_manage_comments) |
 
 Leave out everything OwnChats doesn't call: `instagram_content_publish`, the ads permissions in Meta's default configuration, `business_management`. "Selecting unneeded permissions is a common reason for rejection during app review" ([Permissions reference](https://developers.facebook.com/docs/permissions/reference)). You can keep them in the login configuration; just don't request Advanced Access for them.
@@ -146,6 +147,12 @@ After someone comments a campaign's keyword on the owner's post, OwnChats sends 
 OwnChats shows the account owner how each campaign's post performed: views, reach, likes, comments, shares and saves, next to how many people the campaign answered. It uses instagram_manage_insights to read those lifetime numbers for the owner's own posts. They are shown only to the owner in their dashboard and API. Without this permission the owner cannot compare a post's reach with the replies it produced.
 ```
 
+**instagram_manage_engagement** (only if you request it)
+
+```text
+When the account owner turns it on, OwnChats likes each comment it answers on the owner's own posts, after it has sent the commenter the private reply they asked for, so the commenter sees their comment was received. It uses instagram_manage_engagement only to like those comments. It never likes anything else, and never likes a comment it did not answer. Without this permission everything else works; comments just get no like.
+```
+
 ## Screencast shot list
 
 Meta's rules ([screen recordings](https://developers.facebook.com/docs/app-review/submission-guide/screen-recordings)): one recording per permission is clearest, each showing the full login "from logged-out to logged-in", the permission being granted, then the feature in use. English interface or captions. No audio: "our reviewers will not listen to it." 1080p or better. Short captions on screen help.
@@ -182,6 +189,10 @@ Before recording: sign out of Facebook in the browser, have a second Instagram a
 **instagram_manage_insights** (only if requested)
 
 6. Open a campaign: the post's views, reach, likes, comments, shares and saves. Caption: "Post insights, read with instagram_manage_insights."
+
+**instagram_manage_engagement** (only if requested)
+
+7. Settings: turn on Like answered comments. Then comment the keyword from the second account: the comment shows a like from the owner's account, next to the public reply. Caption: "Like posted with instagram_manage_engagement."
 
 Turn the test campaign off after recording, unless reviewers are testing from the commenter's side.
 

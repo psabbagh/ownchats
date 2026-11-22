@@ -250,6 +250,10 @@ export class GraphMetaClient implements MetaClient {
     return this.post<{ id: string }>(`${commentId}/replies`, { message: text });
   }
 
+  async likeComment(commentId: string) {
+    await this.post(`${this.igUserId}/likes`, undefined, { comment_id: commentId });
+  }
+
   async sendPrivateReply(commentId: string, message: OutMessage) {
     const res = await this.post<{ message_id?: string; recipient_id?: string }>(`${this.igUserId}/messages`, {
       recipient: { comment_id: commentId },

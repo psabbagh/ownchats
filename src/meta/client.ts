@@ -22,6 +22,12 @@ export interface MetaClient {
   /** Public reply under a comment. */
   replyToComment(commentId: string, text: string): Promise<{ id: string }>;
   /**
+   * Likes a comment as the account (a heart under it). Needs instagram_manage_engagement in
+   * the login configuration, and Facebook Login, which OwnChats uses. Meta refuses comments
+   * by private accounts. Liking a comment already liked does nothing.
+   */
+  likeComment(commentId: string): Promise<void>;
+  /**
    * The one private reply Meta allows per comment, within 7 days of it. Meta
    * answers with the person's messaging id, which taps and DMs will come from.
    */
@@ -243,6 +249,30 @@ export function explainReplyError(err: unknown): { reason: string; detail: strin
   if (err.code === 100 && err.subcode === 33) return { ...explained, reason: "this comment can't be replied to, it may be hidden or deleted (the DM still went out)" };
   if (err.code === 20) return { ...explained, reason: "Instagram blocked this public reply, possibly as spam (the DM still went out)" };
   return explained;
+}
+
+/** Stored as the like problem when Meta refuses for lack of instagram_manage_engagement: Settings explains the fix. */
+export const LIKE_PERMISSION_REASON = "Meta refused the like: add instagram_manage_engagement to your Meta login configuration, then reconnect on /setup (the DM still went out)";
+
+/** Meta refused a like for lack of permission, which is the owner's to fix, not the person's. */
+export function isLikePermissionError(err: unknown): boolean {
+  if (!(err instanceof MetaError) || err.transient) return false;
+  const m = err.message.toLowerCase();
+  return err.code === 10 || err.code === 200 || (err.code === 100 && m.includes("permission"));
+}
+
+/**
+ * Why a like was refused. Like a public reply, a like is only tried once the DM went out,
+ * so it never stands between the person and what they asked for.
+ */
+export function explainLikeError(err: unknown): { reason: string; detail: string } {
+  const explained = explainError(err);
+  if (!(err instanceof MetaError)) return explained;
+  if (err.code === 190) return explained;
+  if (isLikePermissionError(err)) return { ...explained, reason: LIKE_PERMISSION_REASON };
+  if (err.message.toLowerCase().includes("private")) return { ...explained, reason: "this person's account is private, and Meta doesn't allow liking their comments (the DM still went out)" };
+  if (err.code === 100 && err.subcode === 33) return { ...explained, reason: "this comment can't be liked, it may be hidden or deleted (the DM still went out)" };
+  return { ...explained, reason: `${explained.reason} (the DM still went out)` };
 }
 
 // Codes from Meta's Messenger Platform error list and reports from other tools.

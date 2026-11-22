@@ -32,7 +32,7 @@ The `/setup` checklist in the app is the main path. Its wording was written befo
 ### Meta app
 
 - A new app gets Unified Login only, and a banner says so. "API setup with Instagram login" is gone for apps created since about 2026-10-08, so guides for other tools written for that path don't apply.
-- Meta creates a default configuration: a system-user access token expiring Never, with `instagram_basic`, `instagram_manage_comments`, `instagram_manage_messages`, `instagram_content_publish` and two ads permissions. Keep it as it is, add `instagram_manage_insights` for views on each campaign (see [Views on each campaign](#views-on-each-campaign)), and copy its Configuration ID.
+- Meta creates a default configuration: a system-user access token expiring Never, with `instagram_basic`, `instagram_manage_comments`, `instagram_manage_messages`, `instagram_content_publish` and two ads permissions. Keep it as it is, add `instagram_manage_insights` for views on each campaign (see [Views on each campaign](#views-on-each-campaign)) and `instagram_manage_engagement` if the person wants answered comments liked (see [Liking answered comments](#liking-answered-comments)), and copy its Configuration ID.
 - The redirect URL goes on the use case's **API setup with Unified login** page, in its Redirect URL field, not in the Facebook Login for Business settings.
 - Skip Meta's own "Generate access tokens" / "Add account" step on that page. It is for Instagram testers and shows role errors. OwnChats gets its token through Connect.
 - `business_management` was not needed, and neither was Business Verification.
@@ -196,6 +196,10 @@ npx wrangler d1 execute <database> --remote --command "SELECT media_id, views, r
 ```
 
 `problem` is `missing permission` when Meta refused for lack of the permission, otherwise Meta's error.
+
+## Liking answered comments
+
+Since 2026-11-22 OwnChats can like every comment a campaign answers, after its DM went out. It is off by default: the person turns it on under Settings, **Like answered comments**. It needs `instagram_manage_engagement` in the login configuration, added the same way as `instagram_manage_insights` above, then **Reconnect** on `/setup`. Until then each like is refused, the activity log shows it, and Settings says what to add. Comments by private accounts are never liked, since Meta refuses them. Nothing else changes when a like is refused. No database change.
 
 ## Updating a copy
 
