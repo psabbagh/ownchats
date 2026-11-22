@@ -60,7 +60,7 @@ Content-Type: application/json
 | `spellings` | no | Extra spellings, as a list. They don't have to be in the caption. |
 | `link` | yes | The link the DM delivers. |
 | `link_label` | no | Its button label. Default: the one in Settings, Defaults for new campaigns, or "Open". |
-| `link_title` | no | What the link leads to, sent to the lead webhook. |
+| `link_title` | no | What the link leads to. Shown on its own line under the link message when there is one link, and sent to the lead webhook. |
 | `email_tag` | no | Sent to the lead webhook. With one, the campaign asks for an email ("link plus optional email"); without one, it sends the link only. |
 | `email_mode` | no | `"none"`, `"optional"` or `"first"`, to choose explicitly. |
 | `opening_button` | no | The first DM's button label. Default "Send me the link"; empty string for no button. |

@@ -608,7 +608,7 @@ async function campaignForm(ctx: Ctx, current: Campaign | null, input?: Campaign
           )}
           <p class="hint">Up to three links. With button labels they show as buttons under the message; leave every label empty to put the links in the message instead.</p>
           <label for="link_title">What the first link leads to (optional)</label><input id="link_title" name="link_title" type="text" value="${v.linkTitle}" maxlength="200" placeholder="Turn YouTube videos into Claude skills">
-          <p class="hint">Its title, as written on it. Sent with each new email to your <a href="/dashboard/settings#webhook">lead webhook</a> as <code>campaign.link_title</code>, with the person's link as <code>campaign.link</code>, so an email can deliver it by name.</p>
+          <p class="hint">Its title, as written on it. Shown on its own line under the link message when there is one link, and sent with each new email to your <a href="/dashboard/settings#webhook">lead webhook</a> as <code>campaign.link_title</code>, with the person's link as <code>campaign.link</code>, so an email can deliver it by name.</p>
         </div>
         <div class="card">
           <h3>Email</h3>

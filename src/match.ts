@@ -20,6 +20,32 @@ export function matchesKeyword(text: string, keywords: string[]): boolean {
   return matchesNormalised(normalise(text), keywords);
 }
 
+/** A message's words alone: NFKC, lower case, apostrophes dropped ("I'm" = "Im"), anything else that isn't a letter or digit as a space. */
+function wordsOnly(text: string): string {
+  return normalise(text).replace(/['\u2019]/g, "").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+
+/** Emoji and symbols alone, for a phrase with no words in it (🙌): spaces, punctuation and variation selectors dropped. */
+function symbolsOnly(text: string): string {
+  return normalise(text).replace(/[\s\p{P}\uFE0E\uFE0F]+/gu, "");
+}
+
+/**
+ * Whether the whole message is one of these phrases, ignoring case, punctuation and
+ * emoji: "Send the guide!" and "send the guide 🙏" say "Send the guide", while
+ * "can you send the guide" does not. A phrase made only of emoji (🙌) must be the
+ * whole message, emoji and all.
+ */
+export function saysExactly(text: string, phrases: string[]): boolean {
+  const words = wordsOnly(text);
+  return phrases.some((phrase) => {
+    const want = wordsOnly(phrase);
+    if (want) return want === words;
+    const symbols = symbolsOnly(phrase);
+    return symbols !== "" && !words && symbols === symbolsOnly(text);
+  });
+}
+
 /** Compiled keyword patterns, kept between requests: each keyword is compiled once. */
 const PATTERNS = new Map<string, RegExp | null>();
 
