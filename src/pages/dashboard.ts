@@ -687,6 +687,7 @@ export const KIND_LABEL: Record<string, string> = {
   comment: "Comment",
   private_reply: "First DM",
   public_reply: "Public reply",
+  like: "Like",
   tap: "Button tap",
   message: "DM",
   email: "Email",
@@ -828,6 +829,7 @@ const SAVED_NOTE = {
   "api-token-off": "Revoked",
   "api-write-token-off": "Revoked",
   clicks: "Saved",
+  likes: "Saved",
   "time-zone": "Saved",
   contact: "Saved",
   defaults: "Saved",
@@ -987,6 +989,24 @@ function alertsFromForm(form: FormData): { alert_url: string; heartbeat_url: str
   return out;
 }
 
+/** The Settings card that turns on liking the comments OwnChats answers. */
+function likesCard(s: Settings, savedMark: Html): Html {
+  const on = s.like_comments === "on";
+  const problem = on && s.like_problem ? s.like_problem.slice(s.like_problem.indexOf("|") + 1) : "";
+  return html`<div class="card" id="likes">
+    <h3>Like answered comments</h3>
+    <p>${on
+      ? "On. Every comment a campaign answers also gets a like from your account, after its DM went out."
+      : "Off. Comments a campaign answers get the DM and the public reply, and no like."}</p>
+    ${problem
+      ? html`<p class="warn small">Meta refused the last like for a missing permission: add <code>instagram_manage_engagement</code> to your Meta login configuration (<a href="/setup#step-3">step 3 of setup</a>), then click Reconnect. Meta said: ${problem}</p>`
+      : ""}
+    <p class="hint">Needs <code>instagram_manage_engagement</code> in your Meta login configuration; if you add it, click Reconnect on <a href="/setup">setup</a>.
+      Meta doesn't allow liking comments by private accounts, so those get the DM and the reply only. A like Meta refuses never holds up anything else, and shows in the activity log.</p>
+    <form method="post" action="/dashboard/settings/likes" class="row"><button class="secondary" name="do" value="${on ? "off" : "on"}">${on ? "Stop liking comments" : "Like answered comments"}</button>${savedMark}</form>
+  </div>`;
+}
+
 export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string; apiWriteToken?: string; webhookError?: string; testId?: string | null; alertError?: string; alertTestId?: string | null; saved?: string | null } = {}): Promise<Response> {
   const s = ctx.settings;
   const exportUrl = s.export_key ? `${s.base_url}/export/leads.csv?key=${s.export_key}` : "";
@@ -1011,6 +1031,7 @@ export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string; apiWrit
           <p class="row"><button>Save</button>${savedNote(fresh.saved, "shortcuts")}</p>
         </form>
       </div>
+      ${likesCard(s, savedNote(fresh.saved, "likes"))}
       <div class="card" id="sheets">
         <h3>Google Sheets</h3>
         ${exportUrl
@@ -1176,6 +1197,11 @@ export async function settingsAction(ctx: Ctx, request: Request, what: string): 
     const sent = await sendTestAlert(ctx);
     if (!sent) return settingsPage(ctx, { alertError: "Save an alert URL first." });
     return redirect(`/dashboard/settings?alert_test=${encodeURIComponent(sent.id)}#alerts`);
+  }
+  if (what === "likes") {
+    if (action === "on") await saveSettings(ctx.db, pw, { like_comments: "on" });
+    else await deleteSettings(ctx.db, ["like_comments", "like_problem"]);
+    return saved("likes", "likes");
   }
   if (what === "clicks") {
     if (action === "off") await saveSettings(ctx.db, pw, { click_tracking: "off" });

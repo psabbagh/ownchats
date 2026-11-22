@@ -37,6 +37,8 @@ export type SettingKey =
   | "heartbeat_at"
   | "heartbeat_problem"
   | "click_tracking"
+  | "like_comments"
+  | "like_problem"
   | "default_optional_prompt"
   | "default_optional_thanks"
   | "default_thanks_button"

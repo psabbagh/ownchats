@@ -123,6 +123,8 @@ Database changes apply themselves on the next deploy.
 
 Set up before the 2026-11-11 update? Your campaigns keep their email wording, and their thank-you has no button. To use the shorter ask and the Privacy button under the thank-you, add your name and mailing address under Settings, then edit each campaign's email lines; a new campaign's form shows the new defaults to copy from. The email ask now follows the first open of the link on every campaign, with no change needed.
 
+Want OwnChats to like the comments it answers? Add `instagram_manage_engagement` to your Meta login configuration, click Reconnect on `/setup`, then turn on **Like answered comments** in Settings. The [guide](docs/guide-for-ai-agents.md#liking-answered-comments) says more.
+
 Set up before 2026-11-06? To see views on each campaign, add `instagram_manage_insights` to your Meta login configuration, then click Reconnect on `/setup`. The [guide](docs/guide-for-ai-agents.md#views-on-each-campaign) says where.
 
 ## Costs and privacy
