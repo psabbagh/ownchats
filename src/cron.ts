@@ -1,6 +1,6 @@
 import { checkAlertsWhenDue, checkSubscription, heartbeat } from "./alerts";
 import type { Ctx } from "./context";
-import { oldestKeptDay, POST_DAYS, refreshAccountDays, refreshAccountStats, refreshMediaStats, refreshPostList } from "./insights";
+import { oldestKeptDay, POST_DAYS, postTimes, refreshAccountDays, refreshAccountStats, refreshMediaStats, refreshPostList } from "./insights";
 import { handleComment, pendingCommentIds, QUERIES_PER_COMMENT } from "./pipeline/comments";
 import { listCampaigns } from "./campaigns";
 import { deliverDue, KEEP_DELIVERIES } from "./leadwebhook";
@@ -56,9 +56,12 @@ export async function runCron(ctx: Ctx): Promise<void> {
     }
   }
   await retryPendingMessages(ctx, MESSAGE_RETRIES_PER_RUN);
-  await pollComments(ctx, campaigns);
-  await refreshPostList(ctx);
-  await refreshMediaStats(ctx, campaigns);
+  // Posts' times are read once for the poll and the numbers below, and again only when the
+  // hourly post list may have changed them.
+  let times = await postTimes(ctx);
+  await pollComments(ctx, campaigns, times);
+  if (await refreshPostList(ctx)) times = await postTimes(ctx);
+  await refreshMediaStats(ctx, campaigns, times);
   await refreshAccountStats(ctx);
   await refreshAccountDays(ctx);
   await deliverDue(ctx);

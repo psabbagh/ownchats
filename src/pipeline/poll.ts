@@ -2,6 +2,7 @@ import { listCampaigns, onAllPosts, type Campaign } from "../campaigns";
 import type { Ctx } from "../context";
 import { explainError, type Media } from "../meta/client";
 import { alertStates } from "../alerts";
+import { postTimes, type PostTimes } from "../insights";
 import { saveSettings } from "../settings";
 import { backgroundAllowed, paused } from "../throttle";
 import { DAY, HOUR, MINUTE, PRIVATE_REPLY_WINDOW } from "../time";
@@ -114,7 +115,7 @@ function lastPolled(ctx: Ctx): Record<string, number> {
  * and feeds unseen ones into the comment pipeline. While Meta's rate limit is near
  * only new posts are read, and none during a pause (throttle.ts).
  */
-export async function pollComments(ctx: Ctx, active?: Campaign[]): Promise<void> {
+export async function pollComments(ctx: Ctx, active?: Campaign[], times?: PostTimes[]): Promise<void> {
   if (!ctx.meta) return;
   const campaigns = active ?? (await listCampaigns(ctx.db, true));
   if (!campaigns.length) return;
@@ -131,11 +132,7 @@ export async function pollComments(ctx: Ctx, active?: Campaign[]): Promise<void>
   if (!watched.size) return;
 
   // Ages from the account's post list, read hourly; the recent posts' own timestamps where it has none.
-  const { results } = await ctx.db
-    .prepare("SELECT media_id, posted_at FROM media_stats WHERE media_id IN (SELECT value FROM json_each(?))")
-    .bind(JSON.stringify([...watched.keys()]))
-    .all<{ media_id: string; posted_at: number | null }>();
-  for (const r of results) if (r.posted_at) watched.set(r.media_id, r.posted_at);
+  for (const r of times ?? (await postTimes(ctx))) if (r.posted_at && watched.has(r.media_id)) watched.set(r.media_id, r.posted_at);
 
   const now = ctx.now();
   const before = lastPolled(ctx);

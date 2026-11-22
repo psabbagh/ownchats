@@ -150,12 +150,12 @@ export function listedStatement(ctx: Ctx, m: Media, now: number): D1PreparedStat
     .bind(m.id, m.timestamp || null, m.caption || null, m.permalink || null, m.mediaType || null, m.thumbnailUrl ?? null, now);
 }
 
-/** Called by the Cron, hourly: stores the account's posts from the last POST_DAYS days. */
-export async function refreshPostList(ctx: Ctx): Promise<void> {
+/** Called by the Cron, hourly: stores the account's posts from the last POST_DAYS days. True when it read the list, so media_stats may have changed. */
+export async function refreshPostList(ctx: Ctx): Promise<boolean> {
   const now = ctx.now();
-  if (!ctx.meta || now - Number(ctx.settings.posts_listed_at ?? 0) < LIST_EVERY) return;
-  if (!backgroundAllowed(ctx.load, now, "low")) return;
-  if (ctx.budget.queriesLeft < 12 || !ctx.budget.take(MEDIA_PAGES)) return;
+  if (!ctx.meta || now - Number(ctx.settings.posts_listed_at ?? 0) < LIST_EVERY) return false;
+  if (!backgroundAllowed(ctx.load, now, "low")) return false;
+  if (ctx.budget.queriesLeft < 12 || !ctx.budget.take(MEDIA_PAGES)) return false;
   let problem = "";
   try {
     const media = await ctx.meta.listMediaSince(now - POST_DAYS * DAY, LIST_MAX);
@@ -164,6 +164,27 @@ export async function refreshPostList(ctx: Ctx): Promise<void> {
     problem = explainError(err).detail;
   }
   await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { posts_listed_at: String(now), posts_problem: problem });
+  return true;
+}
+
+/** What the Cron needs of each post in media_stats: when it went up and when its numbers were read. */
+export interface PostTimes {
+  media_id: string;
+  posted_at: number | null;
+  fetched_at: number;
+  media_type: string | null;
+  reel_fetched_at: number | null;
+}
+
+/**
+ * Every post's times, read once per Cron run and shared by the comment poll and
+ * refreshMediaStats. The table stays small (the daily upkeep keeps campaigns' posts and
+ * the last POST_DAYS days), and reading it whole costs fewer rows than looking up the
+ * watched posts one by one.
+ */
+export async function postTimes(ctx: Ctx): Promise<PostTimes[]> {
+  const { results } = await ctx.db.prepare("SELECT media_id, posted_at, fetched_at, media_type, reel_fetched_at FROM media_stats").all<PostTimes>();
+  return results;
 }
 
 /**
@@ -172,15 +193,13 @@ export async function refreshPostList(ctx: Ctx): Promise<void> {
  * watch time and skip rate only when those are due too (reelEvery). A failed read
  * keeps the last numbers. Skipped while Meta's rate limit is near (throttle.ts).
  */
-export async function refreshMediaStats(ctx: Ctx, active?: Campaign[]): Promise<void> {
+export async function refreshMediaStats(ctx: Ctx, active?: Campaign[], times?: PostTimes[]): Promise<void> {
   // A few queries, leaving room for the daily upkeep that runs after this.
   if (!ctx.meta || ctx.budget.queriesLeft < 10 || !backgroundAllowed(ctx.load, ctx.now(), "low")) return;
   const watched = new Set((active ?? (await listCampaigns(ctx.db, true))).flatMap((c) => (c.mediaId ? [c.mediaId] : [])));
-  const { results } = await ctx.db
-    .prepare("SELECT media_id, posted_at, fetched_at, media_type, reel_fetched_at FROM media_stats")
-    .all<{ media_id: string; posted_at: number | null; fetched_at: number; media_type: string | null; reel_fetched_at: number | null }>();
+  const results = times ?? (await postTimes(ctx));
   const now = ctx.now();
-  const known = new Map(results.map((r) => [r.media_id, r]));
+  const known = new Map<string, PostTimes>(results.map((r) => [r.media_id, r]));
   for (const id of watched) if (!known.has(id)) known.set(id, { media_id: id, posted_at: null, fetched_at: 0, media_type: null, reel_fetched_at: null });
   const due = [...known.values()]
     .filter((p) => watched.has(p.media_id) || (p.posted_at !== null && now - p.posted_at < POST_DAYS * DAY))
