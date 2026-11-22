@@ -86,7 +86,7 @@ describe("liking answered comments", () => {
       w.fetch("/dashboard/settings/likes", { method: "POST", headers: { cookie, origin: BASE, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ do: value }), redirect: "manual" });
     await post("on");
     expect((await settings()).like_comments).toBe("on");
-    expect(await (await w.fetch("/dashboard/settings", { headers: { cookie } })).text()).toContain("Stop liking comments");
+    expect(await (await w.fetch("/dashboard/settings", { headers: { cookie } })).text()).toMatch(/role="switch" aria-checked="true" aria-label="Like answered comments"/);
     await post("off");
     expect((await settings()).like_comments).toBeUndefined();
   });
