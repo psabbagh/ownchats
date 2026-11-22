@@ -1162,7 +1162,7 @@ export async function settingsAction(ctx: Ctx, request: Request, what: string): 
   }
   if (what === "alerts") {
     if (action === "off") {
-      await deleteSettings(ctx.db, ["alert_url", "alert_format", "alert_state", "heartbeat_url", "heartbeat_at", "heartbeat_problem"]);
+      await deleteSettings(ctx.db, ["alert_url", "alert_format", "alert_state", "alerts_at", "heartbeat_url", "heartbeat_at", "heartbeat_problem"]);
       return saved("alerts-off", "alerts");
     }
     const values = alertsFromForm(form);

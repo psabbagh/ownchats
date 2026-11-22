@@ -20,7 +20,7 @@ import { DAY, HOUR, MINUTE, SECOND } from "./time";
  *  - one message when it opens, one when it is fixed, and while it stays open at most
  *    one reminder every REMIND_EVERY;
  *  - at most DAILY_CAP messages in any 24 hours.
- * Checked by the Cron every minute, from what OwnChats already records: it costs D1
+ * Checked by the Cron every ALERTS_EVERY, from what OwnChats already records: it costs D1
  * queries and no Meta call.
  */
 export type AlertKey = "comments" | "poll" | "taps" | "subscription" | "webhook" | "token" | "waiting" | "gave_up" | "untaken" | "failures";
@@ -57,6 +57,14 @@ export const WAITING_FOR = 30 * MINUTE;
 export const BURST_PEOPLE = 5;
 /** ...whose DM failed for a reason OwnChats won't retry, within this window. */
 export const BURST_WINDOW = HOUR;
+
+/**
+ * How often the Cron checks for problems. Each check is about a dozen D1 queries, about
+ * 270 rows read at 2026-11-22's volume; every minute, that was about 390,000 rows a day
+ * against the account's 5 million. Every problem already needs minutes or hours of its own
+ * to show, so an alert arrives at most 5 minutes later.
+ */
+export const ALERTS_EVERY = 5 * MINUTE;
 
 /** How long each problem must last before it opens. */
 const OPEN_AFTER: Record<AlertKey, number> = {
@@ -364,7 +372,7 @@ async function send(ctx: Ctx, payload: AlertPayload, test = false): Promise<{ id
 }
 
 /**
- * The Cron's part, every minute: compares the problems present now with those
+ * The Cron's part, every ALERTS_EVERY: compares the problems present now with those
  * remembered, and sends what changed. Does nothing while no alert URL is set, and
  * forgets every problem then, so setting a URL later starts from what is true then.
  */
@@ -429,6 +437,21 @@ export async function checkAlerts(ctx: Ctx, active?: Campaign[]): Promise<void> 
     delete states[key];
   }
   if (JSON.stringify(states) !== JSON.stringify(before)) await saveAlertStates(ctx, states);
+}
+
+/**
+ * Runs checkAlerts when ALERTS_EVERY has passed since the last check, and remembers when
+ * (alerts_at). With no alert URL it runs every time: that only forgets what was open, with
+ * no query.
+ */
+export async function checkAlertsWhenDue(ctx: Ctx, active?: Campaign[]): Promise<void> {
+  if (!ctx.settings.alert_url) return checkAlerts(ctx, active);
+  const now = ctx.now();
+  // The Cron fires on the minute, give or take; half a minute of slack keeps a 5-minute rhythm from slipping to 6.
+  if (now - Number(ctx.settings.alerts_at ?? 0) < ALERTS_EVERY - 30 * SECOND) return;
+  ctx.settings.alerts_at = String(now);
+  await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { alerts_at: String(now) });
+  await checkAlerts(ctx, active);
 }
 
 async function saveAlertStates(ctx: Ctx, states: States): Promise<void> {

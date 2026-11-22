@@ -32,6 +32,7 @@ export type SettingKey =
   | "alert_url"
   | "alert_format"
   | "alert_state"
+  | "alerts_at"
   | "heartbeat_url"
   | "heartbeat_at"
   | "heartbeat_problem"
