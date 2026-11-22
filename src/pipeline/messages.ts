@@ -22,12 +22,12 @@ import {
 import { trackingBase, trackLinks } from "../clicks";
 import { log, logStatement, type Ctx } from "../context";
 import { deliverNow, queueLeadCreated } from "../leadwebhook";
-import { extractEmail } from "../match";
+import { extractEmail, saysExactly } from "../match";
 import { explainError, MetaError, sendWithFallback, type OutMessage } from "../meta/client";
 import { messagePlan, nextTry, retryLog } from "../retry";
 import { shortcutKeywords } from "../settings";
 import { paused } from "../throttle";
-import { DAY, MESSAGING_WINDOW, MINUTE } from "../time";
+import { DAY, HOUR, MESSAGING_WINDOW, MINUTE } from "../time";
 import { claimConversation, getConversation, openConversation, releaseClaim, type Conversation } from "./conversations";
 
 /** A DM or a button tap, as it arrives by webhook. */
@@ -67,24 +67,35 @@ export async function handleInbound(ctx: Ctx, ev: InboundEvent): Promise<void> {
   if (ev.postbackPayload?.startsWith(FOLLOW_PAYLOAD_PREFIX)) return handleTap(ctx, ev, FOLLOW_PAYLOAD_PREFIX);
 
   const text = ev.text ?? "";
+  // A shared post or Reel, a photo, a voice note or a sticker: no words, so never an
+  // answer to anything OwnChats asked, and never a keyword.
+  if (!text.trim()) return;
   const open = await openConversation(ctx.db, ev.senderId, ctx.now() - 7 * DAY);
   const campaign = open ? await getCampaign(ctx.db, open.campaign_id) : null;
   if (open && campaign && !tooLateToAnswer(open, text, ev.timestamp)) {
-    if (open.state !== "optional_email") {
+    const button = open.state === "opened" ? campaign.openingButton : FOLLOW_STATES.includes(open.state) ? campaign.followButton : null;
+    if (button !== null) {
+      // They wrote instead of tapping: that counts the same, for either button, when
+      // it answers it. Anything else is an ordinary DM to the owner.
+      if (answersButton(open, campaign, button, shortcutKeywords(ctx.settings), text, ev.timestamp)) {
+        await touch(ctx, open, ev.timestamp);
+        if (open.state === "opened") return pastOpening(ctx, open, campaign, "reply instead of tap");
+        return followStep(ctx, open, campaign, "reply instead of tap");
+      }
+      await log(ctx, { kind: "tap", outcome: "skipped", reason: "a DM that doesn't answer the button", campaignId: campaign.id, igUserId: open.ig_user_id, username: open.username });
+    } else if (open.state !== "optional_email") {
       await touch(ctx, open, ev.timestamp);
-      // They wrote instead of tapping: that counts just the same, for either button.
-      if (open.state === "opened") return pastOpening(ctx, open, campaign, "reply instead of tap");
-      if (FOLLOW_STATES.includes(open.state)) return followStep(ctx, open, campaign, "reply instead of tap");
       await learnProfile(ctx, open);
       return emailStep(ctx, open, campaign, text);
-    }
-    // Link plus optional email: an email is saved; anything else needs no answer,
-    // and may be a keyword for another campaign, handled below.
-    const email = extractEmail(text);
-    if (email) {
-      await touch(ctx, open, ev.timestamp);
-      await learnProfile(ctx, open);
-      return optionalEmail(ctx, open, campaign, email);
+    } else {
+      // Link plus optional email: an email is saved; anything else needs no answer,
+      // and may be a keyword for another campaign, handled below.
+      const email = extractEmail(text);
+      if (email) {
+        await touch(ctx, open, ev.timestamp);
+        await learnProfile(ctx, open);
+        return optionalEmail(ctx, open, campaign, email);
+      }
     }
   }
 
@@ -94,6 +105,21 @@ export async function handleInbound(ctx: Ctx, ev: InboundEvent): Promise<void> {
 }
 
 const FOLLOW_STATES: ConversationState[] = ["awaiting_follow", "follow_reasked"];
+/** How long after a button any written reply still counts as the tap. */
+const REPLY_AS_TAP_WINDOW = HOUR;
+
+/**
+ * Whether a message written instead of tapping answers the button: any text within
+ * an hour of it, or, at any time, a message that is only the button's words or the
+ * campaign's keyword ("Send me the link", "skills!"). Someone who commented and later
+ * writes to the owner about something else must not get the link.
+ */
+function answersButton(conversation: Conversation, campaign: Campaign, button: string, shortcuts: string[], text: string, at: number): boolean {
+  // The opening button went out with the first DM; a follow ask is the conversation's latest step.
+  const askedAt = conversation.state === "opened" ? (conversation.first_sent_at ?? conversation.updated_at) : conversation.updated_at;
+  if (at - askedAt <= REPLY_AS_TAP_WINDOW) return true;
+  return saysExactly(text, [fill(button, person(conversation)), ...campaign.keywords, ...shortcuts]);
+}
 const EMAIL_STATES: ConversationState[] = ["awaiting_email", "reasked"];
 /** How long after the email question a message with no email in it still counts as the answer. */
 const EMAIL_ANSWER_WINDOW = DAY;
@@ -226,15 +252,55 @@ async function emailStep(ctx: Ctx, conversation: Conversation, campaign: Campaig
   return advance(ctx, conversation, campaign, { message: linkMessage(campaign, p), state: "done" }, "link without an email");
 }
 
-/** Link plus optional email: save it, and thank them if the campaign has a thank-you. */
+/**
+ * Link plus optional email: save it, and thank them if the campaign has a thank-you.
+ * The email also answers every other campaign of theirs waiting on one (one ask
+ * covers several guides, see askAfterOpen), so each guide reaches their inbox; the
+ * thank-you goes once.
+ */
 async function optionalEmail(ctx: Ctx, conversation: Conversation, campaign: Campaign, email: string): Promise<void> {
-  const delivery = await saveLead(ctx, conversation, campaign, email);
+  const deliveries = [await saveLead(ctx, conversation, campaign, email)];
+  const { results: others } = await ctx.db
+    .prepare(
+      `SELECT c.* FROM conversations c JOIN campaigns k ON k.id = c.campaign_id
+       WHERE c.ig_user_id = ? AND c.id != ? AND c.state = 'optional_email' AND c.updated_at >= ? AND k.active = 1 ORDER BY c.id`,
+    )
+    .bind(conversation.ig_user_id, conversation.id, ctx.now() - 7 * DAY)
+    .all<Conversation>();
+  for (const other of others) {
+    const otherCampaign = await getCampaign(ctx.db, other.campaign_id);
+    if (!otherCampaign) continue;
+    other.name ??= conversation.name;
+    deliveries.push(await saveLead(ctx, other, otherCampaign, email));
+    await ctx.db.prepare("UPDATE conversations SET state = 'done', updated_at = ? WHERE id = ?").bind(ctx.now(), other.id).run();
+  }
   if (campaign.optionalThanks) {
     await send(ctx, conversation, campaign, optionalThanksMessage(campaign, person(conversation), privacyUrl(ctx.settings)), "done", "thank-you", "message");
   } else {
     await ctx.db.prepare("UPDATE conversations SET state = 'done', updated_at = ? WHERE id = ?").bind(ctx.now(), conversation.id).run();
   }
-  await deliverNow(ctx, delivery);
+  for (const delivery of deliveries) await deliverNow(ctx, delivery);
+}
+
+/**
+ * Whether the last thing OwnChats sent this person is an email ask from another
+ * campaign, sent within the last day and still unanswered: then a second ask would
+ * only repeat it. Their email, when it comes, answers both (optionalEmail).
+ */
+async function emailAskWaiting(ctx: Ctx, conversation: Conversation): Promise<boolean> {
+  const latest = await ctx.db
+    .prepare(
+      `SELECT c.state, c.updated_at, (SELECT MAX(COALESCE(last_inbound_at, 0)) FROM conversations WHERE ig_user_id = ?1) AS last_in
+       FROM conversations c WHERE c.ig_user_id = ?1 AND c.id != ?2 ORDER BY c.updated_at DESC, c.id DESC LIMIT 1`,
+    )
+    .bind(conversation.ig_user_id, conversation.id)
+    .first<{ state: ConversationState; updated_at: number; last_in: number }>();
+  return (
+    latest?.state === "optional_email" &&
+    latest.updated_at > conversation.updated_at && // after this campaign's link, so the ask was the last message
+    latest.updated_at > latest.last_in && // nothing from them since
+    ctx.now() - latest.updated_at < DAY
+  );
 }
 
 /**
@@ -252,6 +318,14 @@ export async function askAfterOpen(ctx: Ctx, conversationId: number): Promise<vo
   if (!conversation) return;
   const campaign = await getCampaign(ctx.db, conversation.campaign_id);
   if (!campaign || !campaign.active || campaign.emailMode !== "optional" || !campaign.optionalPrompt) return;
+  if (await emailAskWaiting(ctx, conversation)) {
+    // Waiting on the same email as the ask already in their thread.
+    await ctx.db.batch([
+      ctx.db.prepare("UPDATE conversations SET state = 'optional_email' WHERE id = ?").bind(conversation.id),
+      logStatement(ctx, { kind: "message", outcome: "skipped", reason: "email ask already waiting from another campaign", campaignId: campaign.id, igUserId: conversation.ig_user_id, username: conversation.username }),
+    ]);
+    return;
+  }
   await send(ctx, conversation, campaign, emailAsk(campaign, person(conversation)), "optional_email", "email ask after the first open", "message");
 }
 

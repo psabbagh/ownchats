@@ -312,9 +312,10 @@ export function validateCampaign(c: CampaignInput): string[] {
   if (c.links.some((l) => l.label) && !buttons) errors.push("Give every link a button label, or none of them (then the links go in the text).");
   if (buttons && !c.linkText) errors.push("Write the message that goes with the link buttons.");
   const linkLimit = buttons ? MAX_TEMPLATE_TEXT : MAX_TEXT - c.links.reduce((n, l) => n + Math.max(l.url.length, TRACKED_URL_ROOM) + 1, 0);
-  const withAsk = c.emailMode === "optional" ? `${c.linkText}\n\n${c.optionalPrompt}` : c.linkText;
-  if (longest(withAsk, c.emailMode === "first" ? c.emailThanks : "") > linkLimit) {
-    errors.push(`The message with the link must be ${linkLimit} characters or fewer${c.emailMode === "optional" ? ", including the email line" : ""}.`);
+  const withAsk = linkBody(c, c.linkText, c.emailMode === "optional" ? c.optionalPrompt : "");
+  if (longest(withAsk, c.emailMode === "first" ? linkBody(c, c.emailThanks) : "") > linkLimit) {
+    const parts = [titleLine(c) && "the guide's title", c.emailMode === "optional" && "the email line"].filter(Boolean).join(" and ");
+    errors.push(`The message with the link must be ${linkLimit} characters or fewer${parts ? `, including ${parts}` : ""}.`);
   }
 
   if (c.openingButton) {
@@ -526,9 +527,24 @@ function usesButtons(links: Link[]): boolean {
   return links.length > 0 && links.length <= MAX_LINKS && links.every((l) => l.label);
 }
 
+/**
+ * The guide's title, on its own line under the link message, so two guides sent to
+ * one person never look like one sent twice. Only with a single link: the title
+ * names the first link, and would mislabel the others.
+ */
+function titleLine(c: Pick<Campaign, "links" | "linkTitle">): string {
+  return c.links.length === 1 ? c.linkTitle.trim() : "";
+}
+
+/** The link message's text: the message, the guide's title on its own line, then anything after it (the email line). */
+function linkBody(c: Pick<Campaign, "links" | "linkTitle">, text: string, after = ""): string {
+  const head = [text, titleLine(c)].filter(Boolean).join("\n");
+  return [head, after].filter(Boolean).join("\n\n");
+}
+
 /** The link message: buttons when every link has a label, otherwise the links in the text. */
-export function linkMessage(c: Campaign, p: Person, text = c.linkText): OutMessage {
-  const body = fill(text, p);
+export function linkMessage(c: Campaign, p: Person, text = c.linkText, after = ""): OutMessage {
+  const body = linkBody(c, fill(text, p), fill(after, p));
   if (usesButtons(c.links)) {
     const buttons: Button[] = c.links.map((l) => ({ type: "web_url", title: fill(l.label, p), url: l.url }));
     return { kind: "buttons", text: body, buttons };
@@ -544,8 +560,7 @@ export function linkMessage(c: Campaign, p: Person, text = c.linkText): OutMessa
 function linkStep(c: Campaign, p: Person, askOnOpen: boolean): { message: OutMessage; state: ConversationState } {
   if (c.emailMode === "optional") {
     if (askOnOpen) return { message: linkMessage(c, p), state: "awaiting_open" };
-    const text = [c.linkText, c.optionalPrompt].filter(Boolean).join("\n\n");
-    return { message: linkMessage(c, p, text), state: "optional_email" };
+    return { message: linkMessage(c, p, c.linkText, c.optionalPrompt), state: "optional_email" };
   }
   return { message: linkMessage(c, p), state: "done" };
 }
