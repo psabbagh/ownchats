@@ -73,6 +73,8 @@ export interface NewLead {
   /** The link the DM sends this person: their own /go/ link when clicks are counted (see personalLink). */
   link: string | null;
   consentText: string;
+  /** When they agreed to consentText, if not when the lead was created: an email given on an earlier campaign. */
+  consentedAt?: number;
 }
 
 /** The campaign fields a new lead needs, the links included for personalLink. */
@@ -82,7 +84,7 @@ export function leadCreatedPayload(l: NewLead): Record<string, unknown> {
   return {
     lead: { id: l.id, email: l.email, name: l.name || null, created_at: iso(l.createdAt) },
     campaign: { id: l.campaign.id, name: l.campaign.name, email_tag: l.campaign.emailTag || null, link: l.link, link_title: l.campaign.linkTitle || null },
-    consent: { wording: l.consentText, given_at: iso(l.createdAt), channel: "instagram_dm" },
+    consent: { wording: l.consentText, given_at: iso(l.consentedAt ?? l.createdAt), channel: "instagram_dm" },
   };
 }
 

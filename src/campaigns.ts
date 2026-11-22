@@ -185,6 +185,10 @@ export const DEFAULTS = {
   followPrompt: "Almost there, {name}! Follow me first, then tap the button and I'll send it over.",
   followReask: "I can't see your follow yet. It can take a moment to show up. Follow me, then tap the button again.",
   followButton: "I'm following",
+  // For someone who already gave their email on an earlier campaign: offered in place of the email ask.
+  knownEmailOffer: "Want this one in your inbox too? I'll send it to the email you gave me before.",
+  knownEmailButton: "Email it to me",
+  knownEmailThanks: "Done. Check your inbox.",
 };
 
 /**
@@ -567,6 +571,33 @@ function linkStep(c: Campaign, p: Person, askOnOpen: boolean): { message: OutMes
 
 export const OPEN_PAYLOAD_PREFIX = "OWNCHATS_OPEN:";
 export const FOLLOW_PAYLOAD_PREFIX = "OWNCHATS_FOLLOW:";
+export const KNOWN_EMAIL_PAYLOAD_PREFIX = "OWNCHATS_EMAIL:";
+
+/**
+ * The wording for someone whose email OwnChats already has, from Settings, or
+ * OwnChats' own where a field is empty. One wording for every campaign: it is about
+ * the person, not the guide.
+ */
+export function knownEmailTexts(s: { known_email_offer?: string; known_email_button?: string; known_email_thanks?: string }): {
+  offer: string;
+  button: string;
+  thanks: string;
+} {
+  return {
+    offer: s.known_email_offer || DEFAULTS.knownEmailOffer,
+    button: s.known_email_button || DEFAULTS.knownEmailButton,
+    thanks: s.known_email_thanks || DEFAULTS.knownEmailThanks,
+  };
+}
+
+/** In place of the email ask, for someone who already gave their email: one tap sends this guide there. */
+export function knownEmailOffer(c: Campaign, p: Person, texts: { offer: string; button: string }): OutMessage {
+  return {
+    kind: "buttons",
+    text: fill(texts.offer, p),
+    buttons: [{ type: "postback", title: fill(texts.button, p), payload: `${KNOWN_EMAIL_PAYLOAD_PREFIX}${c.id}` }],
+  };
+}
 
 /** The optional email ask as a message of its own, sent once the person has opened the link. */
 export function emailAsk(c: Campaign, p: Person): OutMessage {

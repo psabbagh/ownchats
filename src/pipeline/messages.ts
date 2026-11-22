@@ -7,6 +7,9 @@ import {
   FOLLOW_PAYLOAD_PREFIX,
   followAsk,
   getCampaign,
+  KNOWN_EMAIL_PAYLOAD_PREFIX,
+  knownEmailOffer,
+  knownEmailTexts,
   linkAfterEmail,
   LINK_STATES,
   linkMessage,
@@ -21,7 +24,7 @@ import {
 } from "../campaigns";
 import { trackingBase, trackLinks } from "../clicks";
 import { log, logStatement, type Ctx } from "../context";
-import { deliverNow, queueLeadCreated } from "../leadwebhook";
+import { deliverNow, queueLeadCreated, webhookConfig } from "../leadwebhook";
 import { extractEmail, saysExactly } from "../match";
 import { explainError, MetaError, sendWithFallback, type OutMessage } from "../meta/client";
 import { messagePlan, nextTry, retryLog } from "../retry";
@@ -65,6 +68,7 @@ export async function handleInbound(ctx: Ctx, ev: InboundEvent): Promise<void> {
 
   if (ev.postbackPayload?.startsWith(OPEN_PAYLOAD_PREFIX)) return handleTap(ctx, ev, OPEN_PAYLOAD_PREFIX);
   if (ev.postbackPayload?.startsWith(FOLLOW_PAYLOAD_PREFIX)) return handleTap(ctx, ev, FOLLOW_PAYLOAD_PREFIX);
+  if (ev.postbackPayload?.startsWith(KNOWN_EMAIL_PAYLOAD_PREFIX)) return handleKnownEmailTap(ctx, ev);
 
   const text = ev.text ?? "";
   // A shared post or Reel, a photo, a voice note or a sticker: no words, so never an
@@ -209,10 +213,22 @@ async function checkFollow(ctx: Ctx, conversation: Conversation, campaign: Campa
   return status.follows;
 }
 
-/** Saves the email with its consent wording, and queues it for the lead webhook. Returns the delivery id, if any. */
-async function saveLead(ctx: Ctx, conversation: Conversation, campaign: Campaign, email: string): Promise<string | null> {
+/** An email the person gave before, with the wording they agreed to and when. */
+interface KnownEmail {
+  email: string;
+  consent_text: string;
+  consented_at: number;
+}
+
+/**
+ * Saves the email with its consent wording, and queues it for the lead webhook.
+ * Returns the delivery id, if any. `earlier`: the consent they gave on another
+ * campaign, kept as is when this guide goes to an email they gave before.
+ */
+async function saveLead(ctx: Ctx, conversation: Conversation, campaign: Campaign, email: string, earlier?: KnownEmail): Promise<string | null> {
   const who = { campaignId: campaign.id, igUserId: conversation.ig_user_id, username: conversation.username };
-  const consent = fill(consentFor(campaign), person(conversation));
+  const consent = earlier?.consent_text ?? fill(consentFor(campaign), person(conversation));
+  const consentedAt = earlier?.consented_at ?? ctx.now();
   const now = ctx.now();
   const [saved] = await ctx.db.batch<{ id: number }>([
     ctx.db
@@ -221,7 +237,7 @@ async function saveLead(ctx: Ctx, conversation: Conversation, campaign: Campaign
          ON CONFLICT (campaign_id, ig_user_id) DO UPDATE SET email = excluded.email, username = excluded.username,
            consent_text = excluded.consent_text, consented_at = excluded.consented_at RETURNING id`,
       )
-      .bind(campaign.id, conversation.ig_user_id, conversation.username, email, consent, now),
+      .bind(campaign.id, conversation.ig_user_id, conversation.username, email, consent, consentedAt),
     logStatement(ctx, { kind: "email", outcome: "saved", ...who }),
   ]);
   const leadId = saved?.results[0]?.id;
@@ -229,7 +245,7 @@ async function saveLead(ctx: Ctx, conversation: Conversation, campaign: Campaign
   // The name only when Meta shared one: an empty name is "Meta had none", never the username.
   return queueLeadCreated(
     ctx,
-    { id: leadId, email, name: conversation.name || null, createdAt: now, campaign, consentText: consent },
+    { id: leadId, email, name: conversation.name || null, createdAt: now, campaign, consentText: consent, consentedAt },
     { conversationId: conversation.id, igUserId: conversation.ig_user_id, username: conversation.username },
   );
 }
@@ -259,7 +275,18 @@ async function emailStep(ctx: Ctx, conversation: Conversation, campaign: Campaig
  * thank-you goes once.
  */
 async function optionalEmail(ctx: Ctx, conversation: Conversation, campaign: Campaign, email: string): Promise<void> {
-  const deliveries = [await saveLead(ctx, conversation, campaign, email)];
+  const deliveries = [await saveLead(ctx, conversation, campaign, email), ...(await answerOthersWaiting(ctx, conversation, email))];
+  if (campaign.optionalThanks) {
+    await send(ctx, conversation, campaign, optionalThanksMessage(campaign, person(conversation), privacyUrl(ctx.settings)), "done", "thank-you", "message");
+  } else {
+    await ctx.db.prepare("UPDATE conversations SET state = 'done', updated_at = ? WHERE id = ?").bind(ctx.now(), conversation.id).run();
+  }
+  for (const delivery of deliveries) await deliverNow(ctx, delivery);
+}
+
+/** Saves the email for the person's other campaigns waiting on one, and closes them. Returns their deliveries. */
+async function answerOthersWaiting(ctx: Ctx, conversation: Conversation, email: string, earlier?: KnownEmail): Promise<Array<string | null>> {
+  const deliveries: Array<string | null> = [];
   const { results: others } = await ctx.db
     .prepare(
       `SELECT c.* FROM conversations c JOIN campaigns k ON k.id = c.campaign_id
@@ -271,14 +298,49 @@ async function optionalEmail(ctx: Ctx, conversation: Conversation, campaign: Cam
     const otherCampaign = await getCampaign(ctx.db, other.campaign_id);
     if (!otherCampaign) continue;
     other.name ??= conversation.name;
-    deliveries.push(await saveLead(ctx, other, otherCampaign, email));
+    deliveries.push(await saveLead(ctx, other, otherCampaign, email, earlier));
     await ctx.db.prepare("UPDATE conversations SET state = 'done', updated_at = ? WHERE id = ?").bind(ctx.now(), other.id).run();
   }
-  if (campaign.optionalThanks) {
-    await send(ctx, conversation, campaign, optionalThanksMessage(campaign, person(conversation), privacyUrl(ctx.settings)), "done", "thank-you", "message");
-  } else {
-    await ctx.db.prepare("UPDATE conversations SET state = 'done', updated_at = ? WHERE id = ?").bind(ctx.now(), conversation.id).run();
+  return deliveries;
+}
+
+/** The email this person gave most recently, on any campaign, or null. */
+function knownEmail(ctx: Ctx, igUserId: string): Promise<KnownEmail | null> {
+  return ctx.db
+    .prepare("SELECT email, consent_text, consented_at FROM leads WHERE ig_user_id = ? ORDER BY consented_at DESC, id DESC LIMIT 1")
+    .bind(igUserId)
+    .first<KnownEmail>();
+}
+
+/**
+ * A tap on "Email it to me": this guide goes to the email they gave before, under
+ * the consent they gave then, and so does any other guide of theirs waiting on an
+ * email. A short reply confirms it, with nothing after.
+ */
+async function handleKnownEmailTap(ctx: Ctx, ev: InboundEvent): Promise<void> {
+  const campaignId = Number(ev.postbackPayload!.slice(KNOWN_EMAIL_PAYLOAD_PREFIX.length));
+  const campaign = Number.isInteger(campaignId) ? await getCampaign(ctx.db, campaignId) : null;
+  const conversation = campaign ? await getConversation(ctx.db, campaign.id, ev.senderId) : null;
+  if (!campaign || !conversation) {
+    await log(ctx, { kind: "tap", outcome: "skipped", reason: "no conversation for this button", igUserId: ev.senderId });
+    return;
   }
+  await touch(ctx, conversation, ev.timestamp);
+  const who = { campaignId: campaign.id, igUserId: ev.senderId, username: conversation.username };
+  if (conversation.state !== "optional_email") {
+    await log(ctx, { kind: "tap", outcome: "skipped", reason: "button already tapped", ...who });
+    return;
+  }
+  const known = await knownEmail(ctx, ev.senderId);
+  if (!known) {
+    // Deleted since the offer went out: nothing to send it to.
+    await log(ctx, { kind: "tap", outcome: "skipped", reason: "no email on file any more", ...who });
+    return;
+  }
+  await log(ctx, { kind: "tap", outcome: "received", reason: "email it to me", ...who });
+  const deliveries = [await saveLead(ctx, conversation, campaign, known.email, known), ...(await answerOthersWaiting(ctx, conversation, known.email, known))];
+  const thanks = fill(knownEmailTexts(ctx.settings).thanks, person(conversation));
+  await send(ctx, conversation, campaign, { kind: "text", text: thanks }, "done", "sent to the email they gave before", "message");
   for (const delivery of deliveries) await deliverNow(ctx, delivery);
 }
 
@@ -324,6 +386,18 @@ export async function askAfterOpen(ctx: Ctx, conversationId: number): Promise<vo
       ctx.db.prepare("UPDATE conversations SET state = 'optional_email' WHERE id = ?").bind(conversation.id),
       logStatement(ctx, { kind: "message", outcome: "skipped", reason: "email ask already waiting from another campaign", campaignId: campaign.id, igUserId: conversation.ig_user_id, username: conversation.username }),
     ]);
+    return;
+  }
+  if (await knownEmail(ctx, conversation.ig_user_id)) {
+    // They gave their email on an earlier campaign: asking for it again reads as a
+    // fault. One tap sends this guide there instead. Without the lead webhook no email
+    // would follow, so nothing is offered: they are already on the list.
+    if (!webhookConfig(ctx)) {
+      await log(ctx, { kind: "message", outcome: "skipped", reason: "email already known, no lead webhook to send it", campaignId: campaign.id, igUserId: conversation.ig_user_id, username: conversation.username });
+      return;
+    }
+    const offer = knownEmailOffer(campaign, person(conversation), knownEmailTexts(ctx.settings));
+    await send(ctx, conversation, campaign, offer, "optional_email", "email it to the known email, offered", "message");
     return;
   }
   await send(ctx, conversation, campaign, emailAsk(campaign, person(conversation)), "optional_email", "email ask after the first open", "message");

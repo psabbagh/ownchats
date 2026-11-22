@@ -1102,6 +1102,14 @@ export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string; apiWrit
           <textarea id="default_optional_thanks" name="default_optional_thanks" maxlength="${DEFAULT_LIMITS.optionalThanks}" placeholder="${DEFAULTS.optionalThanks}">${s.default_optional_thanks ?? ""}</textarea>
           <label for="default_thanks_button">Button under that reply</label>
           <input id="default_thanks_button" name="default_thanks_button" type="text" value="${s.default_thanks_button ?? ""}" maxlength="${DEFAULT_LIMITS.button}" placeholder="${DEFAULTS.optionalThanksButton}">
+          <h4>For someone who already gave you their email</h4>
+          <p class="hint">Sent in place of the email ask, by every campaign, as soon as you save. One tap sends the guide to the email they gave before, through the <a href="#webhook">lead webhook</a>; without it, nothing is offered.</p>
+          <label for="known_email_offer">Offer</label>
+          <textarea id="known_email_offer" name="known_email_offer" maxlength="${DEFAULT_LIMITS.optionalPrompt}" placeholder="${DEFAULTS.knownEmailOffer}">${s.known_email_offer ?? ""}</textarea>
+          <label for="known_email_button">Its button</label>
+          <input id="known_email_button" name="known_email_button" type="text" value="${s.known_email_button ?? ""}" maxlength="${DEFAULT_LIMITS.button}" placeholder="${DEFAULTS.knownEmailButton}">
+          <label for="known_email_thanks">Reply after the tap</label>
+          <textarea id="known_email_thanks" name="known_email_thanks" maxlength="${DEFAULT_LIMITS.optionalPrompt}" placeholder="${DEFAULTS.knownEmailThanks}">${s.known_email_thanks ?? ""}</textarea>
           <p class="row"><button>Save</button>${savedNote(fresh.saved, "defaults")}</p>
         </form>
       </div>`,
@@ -1232,6 +1240,9 @@ export async function settingsAction(ctx: Ctx, request: Request, what: string): 
       default_optional_prompt: String(form.get("default_optional_prompt") ?? "").trim().slice(0, DEFAULT_LIMITS.optionalPrompt),
       default_optional_thanks: String(form.get("default_optional_thanks") ?? "").trim().slice(0, DEFAULT_LIMITS.optionalThanks),
       default_thanks_button: String(form.get("default_thanks_button") ?? "").trim().slice(0, DEFAULT_LIMITS.button),
+      known_email_offer: String(form.get("known_email_offer") ?? "").trim().slice(0, DEFAULT_LIMITS.optionalPrompt),
+      known_email_button: String(form.get("known_email_button") ?? "").trim().slice(0, DEFAULT_LIMITS.button),
+      known_email_thanks: String(form.get("known_email_thanks") ?? "").trim().slice(0, DEFAULT_LIMITS.optionalPrompt),
     };
     const keys = Object.keys(values) as Array<keyof typeof values>;
     // An emptied field goes back to OwnChats' own wording.
