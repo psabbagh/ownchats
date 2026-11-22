@@ -989,21 +989,26 @@ function alertsFromForm(form: FormData): { alert_url: string; heartbeat_url: str
   return out;
 }
 
-/** The Settings card that turns on liking the comments OwnChats answers. */
+/** The Settings card that turns on liking the comments OwnChats answers, with the same switch as a campaign's. */
 function likesCard(s: Settings, savedMark: Html): Html {
   const on = s.like_comments === "on";
   const problem = on && s.like_problem ? s.like_problem.slice(s.like_problem.indexOf("|") + 1) : "";
   return html`<div class="card" id="likes">
-    <h3>Like answered comments</h3>
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <h3 style="margin:0">Like answered comments</h3>
+      <form class="switch-form row" method="post" action="/dashboard/settings/likes">
+        <input type="hidden" name="do" value="${on ? "off" : "on"}">${savedMark}
+        <button class="switch${on ? " on" : ""}" role="switch" aria-checked="${on ? "true" : "false"}" aria-label="Like answered comments" title="${on ? "On. Click to turn off." : "Off. Click to turn on."}">${on ? "on" : "off"}</button>
+      </form>
+    </div>
     <p>${on
-      ? "On. Every comment a campaign answers also gets a like from your account, after its DM went out."
-      : "Off. Comments a campaign answers get the DM and the public reply, and no like."}</p>
+      ? "Every comment a campaign answers also gets a like from your account, after its DM went out."
+      : "Comments a campaign answers get the DM and the public reply, and no like."}</p>
     ${problem
       ? html`<p class="warn small">Meta refused the last like for a missing permission: add <code>instagram_manage_engagement</code> to your Meta login configuration (<a href="/setup#step-3">step 3 of setup</a>), then click Reconnect. Meta said: ${problem}</p>`
       : ""}
     <p class="hint">Needs <code>instagram_manage_engagement</code> in your Meta login configuration; if you add it, click Reconnect on <a href="/setup">setup</a>.
       Meta doesn't allow liking comments by private accounts, so those get the DM and the reply only. A like Meta refuses never holds up anything else, and shows in the activity log.</p>
-    <form method="post" action="/dashboard/settings/likes" class="row"><button class="secondary" name="do" value="${on ? "off" : "on"}">${on ? "Stop liking comments" : "Like answered comments"}</button>${savedMark}</form>
   </div>`;
 }
 
