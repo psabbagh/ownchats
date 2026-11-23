@@ -4,7 +4,7 @@ import { cleanup } from "../src/cron";
 import { MetaError } from "../src/meta/client";
 import { accountDayWindow, GraphMetaClient } from "../src/meta/graph";
 import { BASE, FAN, OTHER_POST, OWNER, REEL, setupWorld } from "./helpers";
-import { DAY, HOUR, MINUTE } from "../src/time";
+import { DAY, HOUR, MINUTE, SECOND } from "../src/time";
 import { env } from "cloudflare:workers";
 
 type World = Awaited<ReturnType<typeof setupWorld>>;
@@ -335,15 +335,43 @@ describe("every recent post and the account", () => {
     });
   });
 
-  it("serves the follower count, read hourly", async () => {
+  it("serves the follower count, read every 5 minutes", async () => {
+    const statsReads = () => w.meta.calls.filter((c) => c === "getAccountStats").length;
     await w.cron();
     await w.cron();
-    expect(w.meta.calls.filter((c) => c === "getAccountStats").length).toBe(1);
-    expect(await api("/api/account")).toMatchObject({ instagram_username: OWNER.username, followers: 1200, follows: 150, media_count: 40, problem: null });
+    expect(statsReads()).toBe(1);
+    const first = await api("/api/account");
+    expect(first).toMatchObject({ instagram_username: OWNER.username, followers: 1200, follows: 150, media_count: 40, problem: null });
     w.meta.accountStats = { followers: 1234, follows: 150, mediaCount: 41 };
-    w.clock.advance(HOUR);
+    w.clock.advance(4 * MINUTE);
     await w.cron();
-    expect(await api("/api/account")).toMatchObject({ followers: 1234, media_count: 41 });
+    expect(statsReads()).toBe(1);
+    // The Cron fires on the minute, give or take: a run a few seconds early still reads.
+    w.clock.advance(MINUTE - 5 * SECOND);
+    await w.cron();
+    expect(statsReads()).toBe(2);
+    const second = await api("/api/account");
+    expect(second).toMatchObject({ followers: 1234, media_count: 41 });
+    expect(second.updated_at).not.toBe(first.updated_at);
+  });
+
+  it("reads the account counts every 5 minutes, 12 times an hour", async () => {
+    for (let i = 0; i < 60; i++) {
+      w.clock.advance(MINUTE);
+      await w.cron();
+    }
+    expect(w.meta.calls.filter((c) => c === "getAccountStats").length).toBe(12);
+  });
+
+  it("keeps the last counts and says why when a read fails, and tries again 5 minutes later", async () => {
+    await w.cron();
+    w.meta.failNext("getAccountStats", NO_PERMISSION);
+    w.clock.advance(5 * MINUTE);
+    await w.cron();
+    expect(await api("/api/account")).toMatchObject({ followers: 1200, problem: expect.any(String) });
+    w.clock.advance(5 * MINUTE);
+    await w.cron();
+    expect(await api("/api/account")).toMatchObject({ followers: 1200, problem: null });
   });
 
   it("serve reposts for every post type, with the post's other numbers", async () => {

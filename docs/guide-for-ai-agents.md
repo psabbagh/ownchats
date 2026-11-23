@@ -181,7 +181,7 @@ Copies deployed before 2026-11-05 deleted the comment rows instead. The next pol
 
 ## Views on each campaign
 
-Since 2026-11-06 each campaign shows its post's views, reach, likes, comments, shares and saves, and what share of the views led to a DM. The Cron also lists every post from the last 90 days and the follower count each hour, and reads up to two posts' numbers a minute into the `media_stats` table: a campaign's post every 15 minutes, other posts by age (often while new, daily after a month). `GET /api/posts` and `GET /api/account` serve them to the person's other tools.
+Since 2026-11-06 each campaign shows its post's views, reach, likes, comments, shares and saves, and what share of the views led to a DM. The Cron also lists every post from the last 90 days each hour, reads the follower count every 5 minutes, and reads up to two posts' numbers a minute into the `media_stats` table: a campaign's post every 15 minutes, other posts by age (often while new, daily after a month). `GET /api/posts` and `GET /api/account` serve them to the person's other tools.
 
 Since 2026-11-13 each Reel also has its average watch time (`avg_watch_time_ms`, milliseconds) and skip rate (`skip_rate_percent`, the share of views skipped within the first 3 seconds, 0 to 100) in `GET /api/posts` and in each campaign's `post` in `GET /api/campaigns`. Other post types have null there. They need the same permission, and an update brings the two new columns with migration 0010, which Cloudflare applies on deploy.
 

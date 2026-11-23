@@ -4,14 +4,16 @@ import { explainError, MetaError, REEL_METRICS, type AccountDay, type Media, typ
 import { MEDIA_PAGES } from "./meta/graph";
 import { saveSettings } from "./settings";
 import { backgroundAllowed } from "./throttle";
-import { DAY, HOUR, MINUTE } from "./time";
+import { DAY, HOUR, MINUTE, SECOND } from "./time";
 
 /** How often a post's numbers are read in its first 2 days. */
 export const STATS_EVERY = 15 * MINUTE;
 /** Posts younger than this are kept and read; older ones only while a campaign watches them. */
 export const POST_DAYS = 90;
-/** The account's post list and its follower count are read this often. */
+/** The account's post list is read this often. */
 export const LIST_EVERY = HOUR;
+/** The account's follower, following and post counts are read this often: one call, for tools that show the follower count as it moves. */
+export const ACCOUNT_STATS_EVERY = 5 * MINUTE;
 /** Meta reads of post numbers per Cron run, at most. */
 const READS_PER_RUN = 2;
 /** Posts listed per run, at most: three pages of 50. */
@@ -286,10 +288,11 @@ async function readOne(ctx: Ctx, mediaId: string, reelType: string | null, now: 
   }
 }
 
-/** Called by the Cron, hourly: the account's follower, following and post counts. */
+/** Called by the Cron, every ACCOUNT_STATS_EVERY: the account's follower, following and post counts. A read that can wait, held back near Meta's limit. */
 export async function refreshAccountStats(ctx: Ctx): Promise<void> {
   const now = ctx.now();
-  if (!ctx.meta || now - Number(ctx.settings.account_stats_at ?? 0) < LIST_EVERY) return;
+  // The Cron fires on the minute, give or take; half a minute of slack keeps a 5-minute rhythm from slipping to 6.
+  if (!ctx.meta || now - Number(ctx.settings.account_stats_at ?? 0) < ACCOUNT_STATS_EVERY - 30 * SECOND) return;
   if (!backgroundAllowed(ctx.load, now, "low")) return;
   if (ctx.budget.queriesLeft < 4 || !ctx.budget.take()) return;
   try {
