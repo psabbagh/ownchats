@@ -200,7 +200,7 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
         "GET /api/leads?campaign_id=&since=ISO-8601&limit=": "emails collected, newest first",
         "GET /api/activity?campaign_id=&outcome=sent|skipped|failed&limit=": "what happened and why, newest first, with Meta's error code in detail",
         "GET /api/posts?since=ISO-8601&limit=": "the account's posts from the last 90 days with Instagram's numbers, newest first; Reels also carry avg_watch_time_ms and skip_rate_percent (views skipped within 3 seconds, 0 to 100)",
-        "GET /api/account": "follower, following and post counts",
+        "GET /api/account": "follower, following and post counts, read from Meta every 5 minutes (less often while Meta's rate limit is near); updated_at is the last read, problem says why it failed",
         "GET /api/account/days?since=YYYY-MM-DD&limit=": "the account's reach (split by followers, non-followers and unknown) and its follows and unfollows for each of Meta's days, which run midnight to midnight Pacific time, newest first; a day can change for 48 hours after it ends",
         "GET /api/stats": "totals and connection health",
         "POST /api/campaigns": "write token: create a campaign that waits for the next post, from its caption (dry_run: true saves nothing)",
