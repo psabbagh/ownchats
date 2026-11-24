@@ -81,7 +81,7 @@ import { peopleCounts, refusedPeople, refusedSends, type RefusedPeople, type Ref
 import { BUSY_PERCENT, currentUsage, paused } from "../throttle";
 import { attachUntakenPost, dismissUntakenPost, untakenPosts, type UntakenPost } from "../nextpost";
 import { deleteSettings, saveSettings, shortcutKeywords, type Settings } from "../settings";
-import { CHART_DAYS, campaignCounts, campaignRecent, deletePerson, failuresSince, findPersonByUsername, listActivity, storedAboutPeople, type ActivityRow, type CampaignRecent } from "../stats";
+import { CHART_DAYS, campaignRecent, campaignTotals, deletePerson, failuresSince, findPersonByUsername, listActivity, storedAboutPeople, type ActivityRow, type CampaignRecent } from "../stats";
 import { copyField, fmtCount, fmtDate, fmtTime, html, page, plural, raw, redirect, type Html } from "./html";
 import { DAY, HOUR, isTimeZone, MINUTE, timeZoneOf } from "../time";
 
@@ -426,12 +426,13 @@ export async function dashboardHome(ctx: Ctx, switched: string | null = null, sh
   // Sorted here only: listCampaigns keeps id order, which DM keyword matching relies on.
   const campaigns = campaignOrder(all, postedAt);
   const on = campaigns.filter((c) => c.active);
-  const counts = await campaignCounts(ctx);
+  const totals = await campaignTotals(ctx);
+  const counts = totals.counts;
   const recent = await campaignRecent(ctx);
   const missed = await missedComments(ctx, on);
   const refused = await refusedSends(ctx, campaigns.map((c) => c.id));
   const health = await refusalHealth(ctx, campaigns.map((c) => c.id), refused);
-  const people = await peopleCounts(ctx, campaigns.map((c) => c.id), refused);
+  const people = await peopleCounts(ctx, campaigns.map((c) => c.id), refused, totals.people);
   const noPermission = on.some((c) => c.mediaId && stats.get(c.mediaId)?.problem === MISSING_PERMISSION);
   const s = ctx.settings;
   const tz = timeZoneOf(s);

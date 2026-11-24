@@ -8,7 +8,7 @@ import { campaignFromRequest, checkCaption, waitingWithVideoId, type NewCampaign
 import { attachmentOf, campaignWarnings } from "./readiness";
 import { listAccountDays, listPosts, readMediaStats, type MediaStats } from "./insights";
 import { shortcutKeywords } from "./settings";
-import { campaignCounts, listActivity } from "./stats";
+import { campaignCounts, campaignTotals, listActivity } from "./stats";
 import { iso } from "./time";
 
 function json(data: unknown, status = 200): Response {
@@ -210,9 +210,10 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
     });
   }
   if (path === "/api/campaigns") {
-    const counts = await campaignCounts(ctx);
+    const totals = await campaignTotals(ctx);
+    const counts = totals.counts;
     const campaigns = await listCampaigns(ctx.db);
-    const people = await peopleCounts(ctx, campaigns.map((c) => c.id));
+    const people = await peopleCounts(ctx, campaigns.map((c) => c.id), undefined, totals.people);
     const stats = await readMediaStats(ctx, campaigns.flatMap((c) => (c.mediaId ? [c.mediaId] : [])));
     return json({
       campaigns: campaigns.map((c) => ({ ...campaignJson(c, !!webhookConfig(ctx)), counts: counts.has(c.id) || people.has(c.id) ? { ...counts.get(c.id), ...people.get(c.id) } : null, post: postJson(c.mediaId ? stats.get(c.mediaId) : undefined) })),
