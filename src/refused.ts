@@ -5,6 +5,7 @@ import { plainText, TRANSIENT_REASON } from "./meta/client";
 import { claimMissedByHand } from "./missed";
 import { GAVE_UP_REASON, handleComment } from "./pipeline/comments";
 import { sendPendingNow } from "./pipeline/messages";
+import type { PeopleBase } from "./stats";
 import { MESSAGING_WINDOW, PRIVATE_REPLY_WINDOW } from "./time";
 
 /**
@@ -320,11 +321,8 @@ export async function refusedPeople(ctx: Ctx, campaignIds: number[], refused: Ma
   return out;
 }
 
-/** The people funnel of each campaign, with who Meta refused (refusedPeople) and who waits on the owner. */
-export async function peopleCounts(ctx: Ctx, campaignIds: number[], refused?: Map<number, RefusedSend[]>): Promise<Map<number, PeopleCounts>> {
-  const out = new Map<number, PeopleCounts>();
-  if (!campaignIds.length) return out;
-  refused ??= await refusedSends(ctx, campaignIds);
+/** The people counts of these campaigns only, for a page about one campaign. */
+async function peopleBase(ctx: Ctx, campaignIds: number[]): Promise<Map<number, PeopleBase>> {
   const ids = JSON.stringify(campaignIds);
   const [conv, taps] = await ctx.db.batch<Record<string, number>>([
     ctx.db
@@ -340,17 +338,38 @@ export async function peopleCounts(ctx: Ctx, campaignIds: number[], refused?: Ma
       )
       .bind(ids),
   ]);
+  const out = new Map<number, PeopleBase>();
+  const get = (id: number) => out.get(id) ?? out.set(id, { people: 0, answeredAutomatically: 0, answeredByHand: 0, tapped: 0 }).get(id)!;
+  for (const r of conv!.results) Object.assign(get(r.campaign_id!), { people: r.people ?? 0, answeredAutomatically: r.auto ?? 0, answeredByHand: r.by_hand ?? 0 });
+  for (const r of taps!.results) get(r.campaign_id!).tapped = r.n ?? 0;
+  return out;
+}
+
+/**
+ * The people funnel of each campaign, with who Meta refused (refusedPeople) and who waits on the owner.
+ * Pass `base` from campaignTotals when the page has it already, so the same rows aren't read twice.
+ */
+export async function peopleCounts(
+  ctx: Ctx,
+  campaignIds: number[],
+  refused?: Map<number, RefusedSend[]>,
+  base?: Map<number, PeopleBase>,
+): Promise<Map<number, PeopleCounts>> {
+  const out = new Map<number, PeopleCounts>();
+  if (!campaignIds.length) return out;
+  refused ??= await refusedSends(ctx, campaignIds);
+  base ??= await peopleBase(ctx, campaignIds);
   const refusedBy = await refusedPeople(ctx, campaignIds, refused);
   for (const id of campaignIds) {
-    const c = conv!.results.find((r) => r.campaign_id === id);
+    const c = base.get(id);
     const list = refused.get(id) ?? [];
     // A first DM still waiting has no conversation yet; everyone else does.
     const waitingFirstDms = list.filter((r) => r.type === "comment").length;
     out.set(id, {
       asked: (c?.people ?? 0) + waitingFirstDms,
-      answeredAutomatically: c?.auto ?? 0,
-      answeredByHand: c?.by_hand ?? 0,
-      tapped: taps!.results.find((r) => r.campaign_id === id)?.n ?? 0,
+      answeredAutomatically: c?.answeredAutomatically ?? 0,
+      answeredByHand: c?.answeredByHand ?? 0,
+      tapped: c?.tapped ?? 0,
       waitingOnYou: list.length,
       refused: refusedBy.get(id) ?? noRefusals(),
     });

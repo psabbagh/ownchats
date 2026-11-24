@@ -27,20 +27,47 @@ export interface CampaignCounts {
 const CLICKED = `SELECT campaign_id, COUNT(DISTINCT conversation_id) AS n FROM tracked_links
   WHERE first_clicked_at IS NOT NULL AND conversation_id IS NOT NULL GROUP BY campaign_id`;
 
+/** What peopleCounts needs from the same tables, so the dashboard and the API read them once. */
+export interface PeopleBase {
+  people: number;
+  answeredAutomatically: number;
+  answeredByHand: number;
+  tapped: number;
+}
+
+export interface CampaignTotals {
+  counts: Map<number, CampaignCounts>;
+  people: Map<number, PeopleBase>;
+}
+
 /** The funnel per campaign: people matched, first DMs sent, taps, emails, links, clicks. */
 export async function campaignCounts(ctx: Ctx): Promise<Map<number, CampaignCounts>> {
-  const [conv, taps, leads, failed, clicks] = await ctx.db.batch<Record<string, number> & { kind?: string }>([
+  return (await campaignTotals(ctx)).counts;
+}
+
+/**
+ * The funnel per campaign, and the people counts that come from the same rows. Each query reads one
+ * index entry per row it counts (migration 0017), so a page that needs both reads each table once.
+ */
+export async function campaignTotals(ctx: Ctx): Promise<CampaignTotals> {
+  const [conv, taps, leads, failed, clicks] = await ctx.db.batch<Record<string, number>>([
+    // The states spelled out: D1 counts each lookup into an IN (...) list as a row read, which doubled this query's reads.
     ctx.db.prepare(
-      `SELECT campaign_id, COUNT(*) AS people, COUNT(first_sent_at) AS dms, SUM(state IN ('done', 'optional_email', 'awaiting_open') AND answered_by_hand_at IS NULL) AS links,
-         COUNT(answered_by_hand_at) AS by_hand
+      `SELECT campaign_id, COUNT(*) AS people, COUNT(first_sent_at) AS dms, SUM((state = 'done' OR state = 'optional_email' OR state = 'awaiting_open') AND answered_by_hand_at IS NULL) AS links,
+         COUNT(answered_by_hand_at) AS by_hand, SUM(first_sent_at IS NOT NULL AND answered_by_hand_at IS NULL) AS auto
        FROM conversations GROUP BY campaign_id`,
     ),
-    ctx.db.prepare("SELECT campaign_id, COUNT(*) AS n FROM activity WHERE kind = 'tap' AND outcome = 'received' GROUP BY campaign_id"),
+    ctx.db.prepare("SELECT campaign_id, COUNT(*) AS n, COUNT(DISTINCT ig_user_id) AS people FROM activity WHERE kind = 'tap' AND outcome = 'received' GROUP BY campaign_id"),
     ctx.db.prepare("SELECT campaign_id, COUNT(*) AS n FROM leads GROUP BY campaign_id"),
-    ctx.db.prepare("SELECT campaign_id, kind, COUNT(*) AS n FROM activity WHERE outcome = 'failed' AND kind != 'like' AND campaign_id IS NOT NULL GROUP BY campaign_id, kind"),
+    // Grouped by campaign only, in activity_outcome's order: grouping by kind too made SQLite sort, which D1 counts as a second read of every row.
+    ctx.db.prepare(
+      `SELECT campaign_id, COUNT(*) AS n, SUM(kind = 'private_reply' OR kind = 'message') AS dms, SUM(kind = 'public_reply') AS public_replies, SUM(kind = 'lead_webhook') AS webhooks
+       FROM activity WHERE outcome = 'failed' AND kind != 'like' AND campaign_id IS NOT NULL GROUP BY campaign_id`,
+    ),
     ctx.db.prepare(CLICKED),
   ]);
   const out = new Map<number, CampaignCounts>();
+  const people = new Map<number, PeopleBase>();
   const get = (id: number) => {
     let c = out.get(id);
     if (!c) {
@@ -49,18 +76,19 @@ export async function campaignCounts(ctx: Ctx): Promise<Map<number, CampaignCoun
     }
     return c;
   };
-  for (const r of conv!.results) Object.assign(get(r.campaign_id!), { people: r.people, dmsSent: r.dms, linksSent: r.links ?? 0, answeredByHand: r.by_hand ?? 0 });
-  for (const r of taps!.results) get(r.campaign_id!).taps = r.n!;
-  for (const r of leads!.results) get(r.campaign_id!).emails = r.n!;
-  for (const r of failed!.results) {
-    const c = get(r.campaign_id!);
-    c.failed += r.n!;
-    if (r.kind === "private_reply" || r.kind === "message") c.failedDms += r.n!;
-    else if (r.kind === "public_reply") c.refusedPublicReplies += r.n!;
-    else if (r.kind === "lead_webhook") c.failedLeadWebhooks += r.n!;
+  const base = (id: number) => people.get(id) ?? people.set(id, { people: 0, answeredAutomatically: 0, answeredByHand: 0, tapped: 0 }).get(id)!;
+  for (const r of conv!.results) {
+    Object.assign(get(r.campaign_id!), { people: r.people, dmsSent: r.dms, linksSent: r.links ?? 0, answeredByHand: r.by_hand ?? 0 });
+    Object.assign(base(r.campaign_id!), { people: r.people ?? 0, answeredAutomatically: r.auto ?? 0, answeredByHand: r.by_hand ?? 0 });
   }
+  for (const r of taps!.results) {
+    get(r.campaign_id!).taps = r.n!;
+    base(r.campaign_id!).tapped = r.people ?? 0;
+  }
+  for (const r of leads!.results) get(r.campaign_id!).emails = r.n!;
+  for (const r of failed!.results) Object.assign(get(r.campaign_id!), { failed: r.n ?? 0, failedDms: r.dms ?? 0, refusedPublicReplies: r.public_replies ?? 0, failedLeadWebhooks: r.webhooks ?? 0 });
   for (const r of clicks!.results) get(r.campaign_id!).clicks = r.n!;
-  return out;
+  return { counts: out, people };
 }
 
 /** What a campaign has done lately, for deciding whether to keep it on. */
