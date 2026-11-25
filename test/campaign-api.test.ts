@@ -236,4 +236,67 @@ describe("POST /api/campaigns", () => {
       expect(await (await check({ caption: CAPTION, keywords: ["SEO"] })).json()).toMatchObject({ posts_already_up: [{ id: "18000000000000031" }] });
     });
   });
+
+  describe("rename", () => {
+    const rename = (id: number | string, body: unknown, headers: Record<string, string> = write) =>
+      w.fetch(`/api/campaigns/${id}`, { method: "POST", headers, body: JSON.stringify(body) });
+    const row = async (id: number) => (await env.DB.prepare("SELECT * FROM campaigns WHERE id = ?").bind(id).first()) as Record<string, unknown>;
+    const armed = () =>
+      w.campaign({ name: "Old hook (SF-30)", videoId: "SF-30", linkTitle: "Old hook", keywords: ["SALES", "🙌"], emailMode: "optional", emailTag: "guideRequested", mediaId: null, mediaLabel: null, nextPostAfter: w.clock.now() });
+
+    it("changes the name and the link title, and nothing else", async () => {
+      const id = await armed();
+      const before = await row(id);
+      w.clock.advance(60_000);
+      const res = await rename(id, { name: "Turn Claude into a sales machine", link_title: "Turn Claude into a sales machine" });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { campaign: Record<string, unknown> }).campaign).toMatchObject({ id, name: "Turn Claude into a sales machine", link_title: "Turn Claude into a sales machine", video_id: "SF-30", attachment: "next_post" });
+      const after = await row(id);
+      expect(after).toEqual({ ...before, name: "Turn Claude into a sales machine", link_title: "Turn Claude into a sales machine", updated_at: w.clock.now() });
+      expect((await w.activity()).at(-1)).toMatchObject({ kind: "api", outcome: "saved", reason: expect.stringContaining('to "Turn Claude into a sales machine"') });
+    });
+
+    it("changes only the field sent, and an empty link title clears it", async () => {
+      const id = await armed();
+      expect((await rename(id, { link_title: "New hook" })).status).toBe(200);
+      expect(await row(id)).toMatchObject({ name: "Old hook (SF-30)", link_title: "New hook" });
+      expect((await rename(id, { name: "  New hook (SF-30) " })).status).toBe(200);
+      expect(await row(id)).toMatchObject({ name: "New hook (SF-30)", link_title: "New hook" });
+      expect((await rename(id, { link_title: "" })).status).toBe(200);
+      expect(await row(id)).toMatchObject({ name: "New hook (SF-30)", link_title: "" });
+    });
+
+    it("refuses an unknown id with 404", async () => {
+      const res = await rename(9999, { name: "Anything" });
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: "No campaign with that id." });
+    });
+
+    it("validates as the create does, and changes nothing when it refuses", async () => {
+      const id = await armed();
+      const before = await row(id);
+      for (const body of [{}, { name: "" }, { name: 42 }, { link_title: ["x"] }, { link_title: "x".repeat(201) }, { name: "Fine", active: false }]) {
+        const res = await rename(id, body);
+        expect(res.status, JSON.stringify(body)).toBe(422);
+        expect(((await res.json()) as { errors: string[] }).errors.length).toBeGreaterThan(0);
+      }
+      expect(((await (await rename(id, { link_title: "x".repeat(201) })).json()) as { error: string }).error).toContain("Keep the link's title under 200 characters.");
+      expect(((await (await rename(id, { name: "Fine", active: false })).json()) as { error: string }).error).toContain("Only `name` and `link_title`");
+      expect((await rename(id, { link_title: "x".repeat(200) })).status).toBe(200);
+      expect(await row(id)).toEqual({ ...before, link_title: "x".repeat(200), updated_at: expect.any(Number) });
+      expect((await w.fetch(`/api/campaigns/${id}`, { method: "POST", headers: write, body: "not json" })).status).toBe(400);
+    });
+
+    it("needs the write token", async () => {
+      const id = await armed();
+      expect((await rename(id, { name: "New" }, { ...auth.headers, "content-type": "application/json" })).status).toBe(401);
+      expect((await rename(id, { name: "New" }, { "content-type": "application/json" })).status).toBe(401);
+      expect(await row(id)).toMatchObject({ name: "Old hook (SF-30)" });
+    });
+
+    it("is listed in GET /api", async () => {
+      const { endpoints } = (await (await w.fetch("/api", auth)).json()) as { endpoints: Record<string, string> };
+      expect(endpoints["POST /api/campaigns/<id>"]).toContain("name and link_title");
+    });
+  });
 });

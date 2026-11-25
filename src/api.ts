@@ -1,6 +1,6 @@
 import { peopleCounts } from "./refused";
 import { apiAuthorized } from "./auth";
-import { getCampaign, listCampaigns, onAllPosts, saveCampaign, type Campaign } from "./campaigns";
+import { getCampaign, listCampaigns, onAllPosts, renameCampaign, saveCampaign, validateCampaign, type Campaign } from "./campaigns";
 import { log, type Ctx } from "./context";
 import { listLeads } from "./export";
 import { checkTestLead, getDelivery, sendTestLead, webhookConfig } from "./leadwebhook";
@@ -132,9 +132,46 @@ async function testLead(ctx: Ctx, body: Record<string, unknown>): Promise<Respon
   });
 }
 
+const RENAMABLE = ["name", "link_title"];
+
+/**
+ * POST /api/campaigns/<id>: a new name and link title for an existing campaign, so the
+ * tool that names a video after its hook can follow a later change of hook. Nothing else
+ * on the campaign changes; the rest stays a dashboard edit.
+ */
+async function renameFromApi(ctx: Ctx, id: number, body: Record<string, unknown>): Promise<Response> {
+  const c = await getCampaign(ctx.db, id);
+  if (!c) return json({ error: "No campaign with that id." }, 404);
+  const errors: string[] = [];
+  const other = Object.keys(body).filter((k) => !RENAMABLE.includes(k));
+  if (other.length) errors.push(`Only \`name\` and \`link_title\` can be changed here; edit the rest in the dashboard (${other.map((k) => `\`${k}\``).join(", ")}).`);
+  if (body.name === undefined && body.link_title === undefined) errors.push("Send `name`, `link_title` or both.");
+  if (body.name !== undefined && typeof body.name !== "string") errors.push("`name` must be a string.");
+  if (body.link_title !== undefined && typeof body.link_title !== "string") errors.push("`link_title` must be a string (empty for no title).");
+  if (errors.length) return json({ error: errors.join(" "), errors }, 422);
+  const next = {
+    ...c,
+    name: typeof body.name === "string" ? body.name.trim() : c.name,
+    linkTitle: typeof body.link_title === "string" ? body.link_title.trim() : c.linkTitle,
+  };
+  // The same checks as the form and the create, but only the ones this change causes: a
+  // campaign the dashboard saved with a problem of its own can still be renamed.
+  const before = new Set(validateCampaign(c));
+  const caused = validateCampaign(next).filter((e) => !before.has(e));
+  if (caused.length) return json({ error: caused.join(" "), errors: caused }, 422);
+  await renameCampaign(ctx.db, id, next, ctx.now());
+  const changes = [
+    next.name !== c.name && `name "${c.name}" to "${next.name}"`,
+    next.linkTitle !== c.linkTitle && `link title "${c.linkTitle}" to "${next.linkTitle}"`,
+  ].filter(Boolean);
+  await log(ctx, { kind: "api", outcome: "saved", reason: changes.length ? `Campaign renamed through the API: ${changes.join(", ")}` : "Campaign rename through the API changed nothing", campaignId: id });
+  return json({ campaign: campaignJson((await getCampaign(ctx.db, id))!, !!webhookConfig(ctx)) });
+}
+
 async function handleWrite(ctx: Ctx, request: Request, path: string): Promise<Response> {
-  if (path !== "/api/campaigns" && path !== "/api/campaigns/check" && path !== "/api/test-lead") {
-    return json({ error: "Only POST /api/campaigns, POST /api/campaigns/check and POST /api/test-lead take a POST. GET /api lists the rest." }, 405);
+  const renameId = /^\/api\/campaigns\/(\d+)$/.exec(path)?.[1];
+  if (path !== "/api/campaigns" && path !== "/api/campaigns/check" && path !== "/api/test-lead" && !renameId) {
+    return json({ error: "Only POST /api/campaigns, POST /api/campaigns/<id>, POST /api/campaigns/check and POST /api/test-lead take a POST. GET /api lists the rest." }, 405);
   }
   const write = await apiAuthorized(ctx, request, "write");
   if (!write && !(path === "/api/campaigns/check" && (await apiAuthorized(ctx, request, "read")))) {
@@ -144,6 +181,7 @@ async function handleWrite(ctx: Ctx, request: Request, path: string): Promise<Re
   if (typeof body === "string") return json({ error: body }, 400);
 
   if (path === "/api/test-lead") return testLead(ctx, body);
+  if (renameId) return renameFromApi(ctx, Number(renameId), body);
 
   if (path === "/api/campaigns/check") {
     const caption = typeof body.caption === "string" ? body.caption : "";
@@ -204,6 +242,7 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
         "GET /api/account/days?since=YYYY-MM-DD&limit=": "the account's reach (split by followers, non-followers and unknown) and its follows and unfollows for each of Meta's days, which run midnight to midnight Pacific time, newest first; a day can change for 48 hours after it ends",
         "GET /api/stats": "totals and connection health",
         "POST /api/campaigns": "write token: create a campaign that waits for the next post, from its caption (dry_run: true saves nothing)",
+        "POST /api/campaigns/<id>": "write token: change an existing campaign's name and link_title (what the first link leads to), and nothing else; send either or both as strings",
         "POST /api/campaigns/check": "either token: whether a caption would attach a campaign with these keywords (or campaign_id), and what else it would touch",
         "POST /api/test-lead": "write token: send a lead marked as a test to the lead webhook, as Settings does (email, optional name and campaign_id), and see what the receiver answered",
       },
