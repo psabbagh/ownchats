@@ -69,7 +69,7 @@ export interface NewLead {
   /** The Instagram name when Meta shared one. Never the username or "there". */
   name: string | null;
   createdAt: number;
-  campaign: Pick<Campaign, "id" | "name" | "emailTag" | "linkTitle">;
+  campaign: Pick<Campaign, "id" | "name" | "emailTag" | "linkTitle" | "links">;
   /** The link the DM sends this person: their own /go/ link when clicks are counted (see personalLink). */
   link: string | null;
   consentText: string;
@@ -83,7 +83,7 @@ export type LeadCampaign = Pick<Campaign, "id" | "name" | "emailTag" | "linkTitl
 export function leadCreatedPayload(l: NewLead): Record<string, unknown> {
   return {
     lead: { id: l.id, email: l.email, name: l.name || null, created_at: iso(l.createdAt) },
-    campaign: { id: l.campaign.id, name: l.campaign.name, email_tag: l.campaign.emailTag || null, link: l.link, link_title: l.campaign.linkTitle || null },
+    campaign: { id: l.campaign.id, name: l.campaign.name, email_tag: l.campaign.emailTag || null, link: l.link, link_title: l.campaign.linkTitle || null, destination: l.campaign.links[0]?.url || null },
     consent: { wording: l.consentText, given_at: iso(l.consentedAt ?? l.createdAt), channel: "instagram_dm" },
   };
 }

@@ -76,7 +76,7 @@ describe("lead webhook", () => {
       sent_at: new Date(w.clock.now()).toISOString(),
       test: false,
       lead: { id: lead!.id, email: "fan@example.com", name: "Sam", created_at: at },
-      campaign: { id, name: "SETUP", email_tag: "setupGuide", link: dmLink, link_title: "Turn YouTube videos into Claude skills" },
+      campaign: { id, name: "SETUP", email_tag: "setupGuide", link: dmLink, link_title: "Turn YouTube videos into Claude skills", destination: "https://example.com/library" },
       consent: { wording: lead!.consent_text, given_at: at, channel: "instagram_dm" },
     });
     // The consent wording is the line the person answered.
@@ -119,13 +119,22 @@ describe("lead webhook", () => {
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM activity WHERE kind = 'click' AND ig_user_id = ?").bind(FAN.id).first()).toEqual({ n: 1 });
   });
 
+  it("sends the campaign's first link as configured in destination, while link is the person's /go/ link", async () => {
+    await w.lead_webhook();
+    const id = await w.campaign({ emailMode: "optional" });
+    await giveEmail(w, id);
+    const { link, destination } = w.receiver.bodies()[0]!.campaign;
+    expect(link).toMatch(/\/go\//);
+    expect(destination).toBe("https://example.com/library");
+  });
+
   it("sends the link itself when click counting is off", async () => {
     await w.lead_webhook();
     const cookie = await w.signIn();
     await w.fetch("/dashboard/settings/clicks", form(cookie, { do: "off" }));
     const id = await w.campaign({ emailMode: "optional", linkTitle: "The library" });
     await giveEmail(w, id);
-    expect(w.receiver.bodies()[0]!.campaign).toMatchObject({ link: "https://example.com/library", link_title: "The library" });
+    expect(w.receiver.bodies()[0]!.campaign).toMatchObject({ link: "https://example.com/library", link_title: "The library", destination: "https://example.com/library" });
   });
 
   it("sends nothing, and queues nothing, until a webhook is set up", async () => {
@@ -386,7 +395,7 @@ describe("Send a test lead", () => {
     await w.lead_webhook();
     expect(await (await w.fetch("/dashboard/settings/test-lead", form(cookie, { email: "not an email" }))).text()).toContain("Enter one email address");
     expect((await w.fetch("/dashboard/settings/test-lead", form(cookie, { email: "owner@example.org", name: "Sam" }))).status).toBe(303);
-    expect(w.receiver.bodies()[0]).toMatchObject({ test: true, lead: { name: "Sam" }, campaign: { id: 0, name: "Test", email_tag: null, link: null, link_title: null } });
+    expect(w.receiver.bodies()[0]).toMatchObject({ test: true, lead: { name: "Sam" }, campaign: { id: 0, name: "Test", email_tag: null, link: null, link_title: null, destination: null } });
   });
 });
 
