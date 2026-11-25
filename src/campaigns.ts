@@ -416,6 +416,14 @@ export async function saveCampaign(db: D1Database, c: CampaignInput, id: number 
   return id;
 }
 
+/**
+ * A new name and link title, through the API. Only these two columns (and `updated_at`),
+ * like the switch, so it can't undo an edit saved in the dashboard meanwhile.
+ */
+export async function renameCampaign(db: D1Database, id: number, c: Pick<CampaignInput, "name" | "linkTitle">, now: number): Promise<void> {
+  await db.prepare("UPDATE campaigns SET name = ?1, link_title = ?2, updated_at = ?3 WHERE id = ?4").bind(c.name, c.linkTitle, now, id).run();
+}
+
 /** The on/off switch. Only this column, so it can't undo an edit saved in another tab. */
 export async function setCampaignActive(db: D1Database, id: number, active: boolean, now: number): Promise<void> {
   // The switch time moves only when the state does, so a second click or an old tab keeps the first time.

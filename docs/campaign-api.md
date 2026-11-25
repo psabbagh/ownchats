@@ -2,7 +2,7 @@
 
 A tool or agent can set up the campaign for the next post without the dashboard. Give it the caption the post will carry, and OwnChats reads the keyword from that caption, so the keyword in the caption and the campaign's keyword can't differ.
 
-It needs the **API write token**: dashboard, Settings, API write token, Create write token. It is shown once and starts with `ocw_`. It creates campaigns, checks captions and sends test leads to the lead webhook ([lead-webhook.md](lead-webhook.md#send-a-test-lead-through-the-api)), and nothing else. It can't read leads, and the read token (`oc_`) can't create anything. Keep it in your password manager and give it only to the tool that sets up campaigns.
+It needs the **API write token**: dashboard, Settings, API write token, Create write token. It is shown once and starts with `ocw_`. It creates campaigns, renames them, checks captions and sends test leads to the lead webhook ([lead-webhook.md](lead-webhook.md#send-a-test-lead-through-the-api)), and nothing else. It can't read leads, and the read token (`oc_`) can't create anything. Keep it in your password manager and give it only to the tool that sets up campaigns.
 
 ## Check a caption
 
@@ -80,3 +80,33 @@ Refusals, each with `error` in plain words:
 - `401`: no write token, or the read token.
 
 Every campaign created this way is in the activity log as "API", "Campaign created through the API".
+
+## Rename a campaign
+
+`POST /api/campaigns/<id>` changes an existing campaign's name and its link title (the dashboard's "What the first link leads to"), for example when a video's hook changes after its campaign was armed. It needs the write token, and changes nothing else on the campaign.
+
+```http
+POST /api/campaigns/23
+Authorization: Bearer <write token>
+Content-Type: application/json
+
+{
+  "name": "Turn Claude into a sales machine",
+  "link_title": "Turn Claude into a sales machine"
+}
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `name` | one of the two | The campaign's new name. It can't be empty. |
+| `link_title` | one of the two | What the link leads to. Under 200 characters; an empty string removes the title. |
+
+A field left out keeps its value. Both are trimmed. Any other field is refused, so a caller can't believe it changed something it didn't.
+
+The answer is `200` with the campaign as `GET /api/campaigns` shows it (`counts` and `post` left out). Refusals, each with `error` in plain words:
+
+- `404`: no campaign with that id.
+- `422`: neither field sent, a field that isn't a string, an empty name, a title too long or one that would make the message with the link too long, or a field other than these two (`errors` lists each one).
+- `401`: no write token, or the read token.
+
+Each rename is in the activity log as "API", with the old and new values.
