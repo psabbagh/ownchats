@@ -700,6 +700,7 @@ export const KIND_LABEL: Record<string, string> = {
   token: "Token",
   alert: "Alert",
   by_hand: "By hand",
+  ignored: "Ignored",
 };
 
 export function activityTable(rows: ActivityRow[], names: Map<number, string>, tz: string): Html {

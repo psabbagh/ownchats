@@ -275,6 +275,51 @@ describe("answering a missed comment", () => {
     expect(await env.DB.prepare("SELECT COUNT(answered_by_hand_at) AS n FROM conversations WHERE campaign_id = ?").bind(id).first()).toEqual({ n: 1 });
   });
 
+  it("ignores a comment under To check: it leaves the list, nothing is sent, and nobody is counted", async () => {
+    const id = await w.campaign();
+    const near = w.comment("could you send me the agnets list", FAN);
+    await w.sendComment(near);
+    await w.sendComment(w.comment("Did the agents list hold up for you after a week of using it?", FAN2));
+    const cookie = await w.signIn();
+    const before = await (await w.fetch(`/dashboard/campaigns/${id}`, { headers: { cookie } })).text();
+    expect(before).toContain("To check (2)");
+    expect(before).toContain("Ignore</button>");
+
+    const res = await post(cookie, `/dashboard/campaigns/${id}/ignore`, { comment_id: near.id });
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe(`/dashboard/campaigns/${id}?ignored=1#to-check`);
+    expect(w.meta.sent).toHaveLength(0);
+    expect(await status(near.id)).toMatchObject({ status: "skipped", reason: "ignored on To check" });
+
+    const after = await (await w.fetch(res.headers.get("location")!, { headers: { cookie } })).text();
+    expect(after).toContain("Ignored. Nothing was sent.");
+    expect(after).toContain("To check (1)");
+    const missed = await missedComments(await w.ctx(), await listCampaigns(env.DB, true));
+    expect(missed.get(id)?.map((m) => m.id)).not.toContain(near.id);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM conversations").first()).toEqual({ n: 0 });
+    const log = await env.DB.prepare("SELECT kind, outcome, campaign_id FROM activity WHERE comment_id = ? AND kind = 'ignored'").bind(near.id).first();
+    expect(log).toEqual({ kind: "ignored", outcome: "saved", campaign_id: id });
+
+    // Once ignored, Answer and marking by hand do nothing, ignoring again says it's gone, and the person can still comment the keyword.
+    expect((await post(cookie, `/dashboard/campaigns/${id}/answer`, { comment_id: near.id })).headers.get("location")).toContain("problem=gone");
+    expect((await post(cookie, `/dashboard/campaigns/${id}/by-hand`, { type: "missed", id: near.id })).headers.get("location")).toContain("sent=none");
+    expect((await post(cookie, `/dashboard/campaigns/${id}/ignore`, { comment_id: near.id })).headers.get("location")).toContain("problem=gone");
+    await w.sendComment(w.comment("AGENTS", FAN));
+    expect(privateReplies()).toHaveLength(1);
+  });
+
+  it("ignores only comments the campaign itself lists", async () => {
+    const reel = await w.campaign();
+    const other = await w.campaign({ name: "Gear", keywords: ["GEAR"], mediaId: OTHER_POST });
+    const near = w.comment("could you send me the agnets list", FAN);
+    await w.sendComment(near);
+    const cookie = await w.signIn();
+    expect((await post(cookie, `/dashboard/campaigns/${other}/ignore`, { comment_id: near.id })).headers.get("location")).toContain("problem=gone");
+    expect(await status(near.id)).toMatchObject({ status: "skipped", reason: "no matching campaign" });
+    const missed = await missedComments(await w.ctx(), await listCampaigns(env.DB, true));
+    expect(missed.get(reel)?.map((m) => m.id)).toEqual([near.id]);
+  });
+
   it("gives a reply to paste when the owner replies by hand to a skipped comment, even with the campaign off", async () => {
     const id = await w.campaign();
     const long = w.comment("Did the agents list hold up for you after a week of using it?", FAN);

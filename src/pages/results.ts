@@ -3,7 +3,7 @@ import { trackingBase } from "../clicks";
 import type { Ctx } from "../context";
 import type { Media } from "../meta/client";
 import { MISSING_PERMISSION, readMediaStats, type MediaStats } from "../insights";
-import { ANSWER_PROBLEM, answerMissed, answerOutcome, missedComments, timeLeft, type AnswerProblem, type MissedComment } from "../missed";
+import { ANSWER_PROBLEM, answerMissed, answerOutcome, ignoreMissed, missedComments, timeLeft, type AnswerProblem, type MissedComment } from "../missed";
 import { recentMedia } from "../pipeline/poll";
 import { handReply, markAnsweredByHand, peopleCounts, refusedSends, sendRefused, type PeopleCounts, type RefusedSend } from "../refused";
 import { shortcutKeywords } from "../settings";
@@ -40,6 +40,7 @@ const PROGRESS: Record<string, string> = {
 const REASON: Record<string, string> = {
   "no matching campaign": "no keyword matched",
   "person deleted": "deleted on request",
+  "ignored on To check": "ignored on To check",
 };
 
 const reason = (r: string | null) => (r ? REASON[r] ?? r : "");
@@ -151,7 +152,8 @@ function missedSection(campaign: Campaign, missed: MissedComment[], tz: string):
   const action = `${base}/answer`;
   return html`<h2>To check (${missed.length})</h2>
     <p class="muted small">Skipped comments this campaign can still answer. Answering sends its usual DM and public reply, once, to that one person.
-      If another tool already answered a comment, Meta refuses and nothing is sent. Answered them yourself in Instagram? Mark them answered by hand: nothing is sent.</p>
+      If another tool already answered a comment, Meta refuses and nothing is sent. Copy reply gives you the campaign's message, with a tracked link for that person, to paste in Instagram yourself.
+      Answered them yourself in Instagram? Mark them answered by hand. Not worth answering? Ignore it: it leaves the list and counts nowhere. These three send nothing.</p>
     ${campaign.active ? "" : html`<p class="warn small">The campaign is off. Switch it on to answer these from OwnChats.</p>`}
     ${missed.slice(0, MISSED_SHOWN).map((m) => {
       const who = m.fromUsername ? `@${m.fromUsername}` : "this person";
@@ -171,9 +173,11 @@ function missedSection(campaign: Campaign, missed: MissedComment[], tz: string):
                 : ""}`
             : ""}
           <form method="post" action="${base}/by-hand" data-ask="${`Get a reply to paste to ${who} in Instagram, with your tracked link, and mark them answered by hand? Nothing is sent.`}" onsubmit="return confirm(this.dataset.ask)">
-            <input type="hidden" name="type" value="missed"><input type="hidden" name="id" value="${m.id}"><input type="hidden" name="reply" value="1"><button class="secondary">Reply by hand</button></form>
+            <input type="hidden" name="type" value="missed"><input type="hidden" name="id" value="${m.id}"><input type="hidden" name="reply" value="1"><button class="secondary">Copy reply</button></form>
           <form method="post" action="${base}/by-hand" data-ask="${`Mark ${who} as answered by hand? Nothing is sent.`}" onsubmit="return confirm(this.dataset.ask)">
             <input type="hidden" name="type" value="missed"><input type="hidden" name="id" value="${m.id}"><button class="secondary">Already answered by hand</button></form>
+          <form method="post" action="${base}/ignore" data-ask="${`Ignore this comment from ${who}? Nothing is sent, it leaves To check, and nobody is counted.`}" onsubmit="return confirm(this.dataset.ask)">
+            <input type="hidden" name="comment_id" value="${m.id}"><button class="secondary">Ignore</button></form>
         </div>
       </div>`;
     })}
@@ -192,7 +196,8 @@ function refusedSection(campaign: Campaign, refused: RefusedSend[], tz: string):
   const base = `/dashboard/campaigns/${campaign.id}`;
   return html`<h2>Waiting on a refused send (${refused.length})</h2>
     <p class="muted small">Instagram refused these for a passing reason, usually its rate limit, and nothing reached the person yet.
-      OwnChats tries again on its own while it can; Send tries now, once. Answered them yourself in Instagram? Mark them answered by hand: nothing is sent.</p>
+      OwnChats tries again on its own while it can; Send tries now, once. Copy reply gives you the message, with a tracked link for that person, to paste in Instagram yourself.
+      Answered them yourself in Instagram? Mark them answered by hand. Neither sends anything.</p>
     ${campaign.active ? "" : html`<p class="warn small">The campaign is off. First DMs wait until it is on; messages after a tap can still be sent.</p>`}
     ${refused.slice(0, MISSED_SHOWN).map((r) => {
       const who = r.username ? `@${r.username}` : "this person";
@@ -215,7 +220,7 @@ function refusedSection(campaign: Campaign, refused: RefusedSend[], tz: string):
                 <input type="hidden" name="type" value="${r.type}"><input type="hidden" name="id" value="${r.id}"><button>Send</button></form>`
             : ""}
           <form method="post" action="${base}/by-hand" data-ask="${`Get a reply to paste to ${who} in Instagram, with your tracked link, and mark them answered by hand? Nothing is sent.`}" onsubmit="return confirm(this.dataset.ask)">
-            <input type="hidden" name="type" value="${r.type}"><input type="hidden" name="id" value="${r.id}"><input type="hidden" name="reply" value="1"><button class="secondary">Reply by hand</button></form>
+            <input type="hidden" name="type" value="${r.type}"><input type="hidden" name="id" value="${r.id}"><input type="hidden" name="reply" value="1"><button class="secondary">Copy reply</button></form>
           <form method="post" action="${base}/by-hand" data-ask="${`Mark ${who} as answered by hand? Nothing is sent.`}" onsubmit="return confirm(this.dataset.ask)">
             <input type="hidden" name="type" value="${r.type}"><input type="hidden" name="id" value="${r.id}"><button class="secondary">Already answered by hand</button></form>
         </div>
@@ -231,7 +236,14 @@ export async function answeredByHandForm(ctx: Ctx, request: Request, id: number)
   return redirect(`/dashboard/campaigns/${id}?sent=byhand${form.get("reply") ? `&reply=${conversationId}` : ""}#to-check`);
 }
 
-/** The reply to paste after "Reply by hand", with the person's own tracked link. */
+/** The "Ignore" button under To check: sends nothing, counts nobody. */
+export async function ignoreMissedForm(ctx: Ctx, request: Request, id: number): Promise<Response> {
+  const form = await request.formData();
+  const ok = await ignoreMissed(ctx, id, String(form.get("comment_id") ?? "").trim());
+  return redirect(`/dashboard/campaigns/${id}?${ok ? "ignored=1" : "problem=gone"}#to-check`);
+}
+
+/** The reply to paste after "Copy reply", with the person's own tracked link. */
 async function replyNotice(ctx: Ctx, campaignId: number, url: URL): Promise<Html> {
   const id = Number(url.searchParams.get("reply"));
   const reply = Number.isSafeInteger(id) && id > 0 ? await handReply(ctx, campaignId, id) : null;
@@ -248,6 +260,7 @@ function sendNotice(url: URL): Html {
   if (sent === "1") return html`<div class="card"><p class="ok">Sent.</p></div>`;
   if (sent === "0") return html`<div class="card notice"><p>Instagram refused it again; the activity log has Meta's reason. OwnChats keeps trying while it can.</p></div>`;
   if (sent === "byhand" && !url.searchParams.get("reply")) return html`<div class="card"><p class="ok">Marked as answered by hand. Nothing was sent.</p></div>`;
+  if (url.searchParams.get("ignored")) return html`<div class="card"><p class="ok">Ignored. Nothing was sent.</p></div>`;
   if (sent === "none") return html`<div class="card notice"><p>Nothing was waiting there any more: it went out, or Meta's window for it closed.</p></div>`;
   return html``;
 }
