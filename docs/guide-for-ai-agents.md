@@ -80,7 +80,7 @@ The `/setup` checklist in the app is the main path. Its wording was written befo
 
 ## Alerts
 
-Settings, Alerts takes one alert URL and an optional heartbeat URL. For a phone push with no account, the person installs the ntfy app and subscribes to a topic with a long random name they choose; the alert URL is `https://ntfy.sh/<that name>`. Treat the topic name like a password: anyone who knows it can read the alerts (they carry counts, never names). Have them press **Send a test alert** and confirm it arrived. For the heartbeat, they create a check at a service such as healthchecks.io with a 10-minute period and paste its ping URL. Alert attempts are in Activity as "Alert".
+Settings, Alerts takes one alert URL and an optional heartbeat URL. For a phone push with no account, the person installs the ntfy app and subscribes to a topic with a long random name they choose; the alert URL is `https://ntfy.sh/<that name>`. Treat the topic name like a password: anyone who knows it can read the alerts (they carry counts, never names). Have them press **Send a test alert** and confirm it arrived. For the heartbeat, they create a check at a service such as healthchecks.io with a 10-minute period and paste its ping URL. OwnChats pings it only after a run has answered the comments waiting, and pings its `/fail` address when a run fails, so the check alerts when comments stop being answered, not only when the Worker stops. Alert attempts are in Activity as "Alert".
 
 ## The lead webhook
 
