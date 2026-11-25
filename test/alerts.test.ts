@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { alertRequest, receiverOf, type AlertPayload } from "../src/alertmessage";
-import { ALERTS_EVERY, DAILY_CAP, failUrl, resetHeartbeatFail } from "../src/alerts";
+import { ALERTS_EVERY, DAILY_CAP, failUrl, POLL_DOWN_FOR, resetHeartbeatFail } from "../src/alerts";
 import type { Ctx } from "../src/context";
 import { runCron } from "../src/cron";
 import { MetaError } from "../src/meta/client";
@@ -210,7 +210,7 @@ const TRIGGERS: Record<string, Trigger> = {
     async untilOpen() {
       await w.cron(); // the check fails
       await runs(1, ALERTS_EVERY); // first seen failing
-      await runs(1, HOUR);
+      await runs(1, POLL_DOWN_FOR);
     },
     fix: async () => w.meta.clearFailures(),
   },
@@ -282,6 +282,29 @@ describe("alerts", () => {
     // Eight quiet hours, the Cron running every 5 minutes.
     await runs(96, 5 * MINUTE);
     expect(alerts()).toEqual([]);
+  });
+
+  it("say the check for missed comments is failing about 30 minutes after it starts failing, not before", async () => {
+    await alertsOn();
+    await w.campaign();
+    await postedAt(REEL, w.clock.now() - DAY);
+    await w.cron(); // the check runs, and the alerts see nothing
+    for (let i = 0; i < 300; i++) w.meta.failNext("listComments", PERMANENT());
+    // The Cron every minute: note when the check first fails, and when the alert opens.
+    const problem = async () => (await env.DB.prepare("SELECT value FROM settings WHERE key = 'last_poll_problem'").first<{ value: string }>())?.value ?? "";
+    let failedAt = 0;
+    const end = w.clock.now() + 3 * HOUR;
+    while (alerts().length === 0 && w.clock.now() < end) {
+      await runs(1, MINUTE);
+      if (!failedAt && (await problem())) failedAt = w.clock.now();
+    }
+    expect(failedAt).toBeGreaterThan(0);
+    // The alerts check every 5 minutes, before the run's own check for missed comments.
+    const after = (w.clock.now() - failedAt) / MINUTE;
+    expect(after).toBeGreaterThanOrEqual(POLL_DOWN_FOR / MINUTE);
+    expect(after).toBeLessThanOrEqual(POLL_DOWN_FOR / MINUTE + ALERTS_EVERY / MINUTE);
+    expect(alerts()).toMatchObject([{ problem: "poll", status: "open", title: "The check for missed comments is failing" }]);
+    expect(alerts()[0]!.message).toContain("failing for over 30 minutes");
   });
 
   it("say when the check for missed comments is held back by Instagram's rate limit", async () => {

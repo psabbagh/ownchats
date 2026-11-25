@@ -43,7 +43,7 @@ export const YOUNG_POST = 2 * DAY;
 /** The check counts as not running once its last run is this old; while a young post is watched it runs at least every 19 minutes (15, plus up to 4 of jitter). */
 export const POLL_STALE = 30 * MINUTE;
 /** How long the check must have failed or not run before it opens. */
-export const POLL_DOWN_FOR = HOUR;
+export const POLL_DOWN_FOR = 30 * MINUTE;
 /** First DMs with an opening button sent over this window... */
 export const TAPS_WINDOW = 3 * HOUR;
 /** ...at least this many, and not one tap or typed reply since: Meta has likely stopped sending them. About half of people tap, so 10 in a row with none happens by chance about once in a thousand. */
@@ -260,7 +260,7 @@ export async function currentProblems(ctx: Ctx, active?: Campaign[]): Promise<Pr
         title: pollWhy ? "The check for missed comments is failing" : "The check for missed comments isn't running",
         message: `${
           pollWhy
-            ? `The check for missed comments has been failing for over an hour, while ${young.name} watches a Reel under ${YOUNG_POST / DAY} days old (latest: ${pollWhy}).`
+            ? `The check for missed comments has been failing for over ${POLL_DOWN_FOR / MINUTE} minutes, while ${young.name} watches a Reel under ${YOUNG_POST / DAY} days old (latest: ${pollWhy}).`
             : `The check for missed comments hasn't run ${lastRun ? `since ${clockTime(ctx, lastRun)}` : "yet"}${limit ? ", held back by Instagram's rate limit" : ""}.`
         } Comments Meta's webhooks bring are still answered, but one Meta drops would go unanswered until it runs again.`,
         people: 0,
