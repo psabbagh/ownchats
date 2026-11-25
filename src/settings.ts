@@ -35,6 +35,7 @@ export type SettingKey =
   | "alerts_at"
   | "heartbeat_url"
   | "heartbeat_at"
+  | "heartbeat_fail_at"
   | "heartbeat_problem"
   | "click_tracking"
   | "like_comments"

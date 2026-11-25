@@ -1,7 +1,9 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { alertRequest, receiverOf, type AlertPayload } from "../src/alertmessage";
-import { ALERTS_EVERY, DAILY_CAP } from "../src/alerts";
+import { ALERTS_EVERY, DAILY_CAP, failUrl, resetHeartbeatFail } from "../src/alerts";
+import type { Ctx } from "../src/context";
+import { runCron } from "../src/cron";
 import { MetaError } from "../src/meta/client";
 import { dismissUntakenPost } from "../src/nextpost";
 import { GAVE_UP_REASON } from "../src/pipeline/comments";
@@ -19,6 +21,7 @@ const LIMIT = () => new MetaError("Application request limit reached", 403, 4);
 const PERMANENT = () => new MetaError("The user is not available", 400, 10, 2534022);
 
 beforeEach(async () => {
+  resetHeartbeatFail();
   w = await setupWorld();
   // Subscribed to every webhook field, as setup leaves it; the daily check reads this.
   w.meta.subscribed = ["comments", "messages", "messaging_postbacks"];
@@ -487,6 +490,88 @@ describe("heartbeat", () => {
     await env.DB.prepare("DELETE FROM settings WHERE key = 'access_token'").run();
     await runs(10, MINUTE);
     expect(pings()).toHaveLength(3);
+  });
+
+  const fails = () => w.receiver.received.filter((r) => r.url === `${HEARTBEAT}/fail`);
+
+  /** D1 as on 2026-11-24 from 6:05 PM: the settings load, then the reads that matter are refused. */
+  function refusing(ctx: Ctx, refused: (sql: string) => boolean): Ctx {
+    const no = () => Promise.reject(new Error("D1_ERROR: Your account has exceeded D1's free tier daily row read limit."));
+    const blocked = new WeakSet<object>();
+    const db = new Proxy(ctx.db, {
+      get(target, prop) {
+        if (prop === "prepare") {
+          return (sql: string) => {
+            const real = target.prepare(sql);
+            if (!refused(sql)) return real;
+            const stmt: Record<string, unknown> = { bind: () => stmt, first: no, all: no, run: no, raw: no };
+            blocked.add(stmt);
+            return stmt;
+          };
+        }
+        if (prop === "batch") return (statements: D1PreparedStatement[]) => (statements.some((st) => blocked.has(st)) ? no() : target.batch(statements));
+        const v = Reflect.get(target, prop, target) as unknown;
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    });
+    return { ...ctx, db };
+  }
+
+  it("sends no success ping while comments can't be answered, and /fail at most every 10 minutes", async () => {
+    await save({ heartbeat_url: HEARTBEAT });
+    await w.campaign();
+    // The campaigns and the settings still read; the comments don't, as some small reads got through that evening.
+    for (let i = 0; i < 31; i++) {
+      await expect(runCron(refusing(await w.ctx(), (sql) => /\bcomments\b/.test(sql)))).rejects.toThrow("D1_ERROR");
+      w.clock.advance(MINUTE);
+    }
+    expect(pings()).toHaveLength(0);
+    // At 0, 10, 20 and 30 minutes: four in 31 runs, not one a minute.
+    expect(fails()).toHaveLength(4);
+    expect(fails()[0]!.headers["user-agent"]).toBe("OwnChats-Heartbeat/1");
+    expect(fails()[0]!.body).toContain("OwnChats' Cron failed before answering the comments waiting: Error: D1_ERROR");
+
+    // D1 answers again: the next run is a success ping, at once.
+    await w.cron();
+    expect(pings()).toHaveLength(1);
+    expect(fails()).toHaveLength(4);
+  });
+
+  it("throttles /fail across isolates by the saved time", async () => {
+    await save({ heartbeat_url: HEARTBEAT });
+    const campaignsRefused = (sql: string) => sql.includes("FROM campaigns");
+    await expect(runCron(refusing(await w.ctx(), campaignsRefused))).rejects.toThrow("D1_ERROR");
+    expect(fails()).toHaveLength(1);
+    // A fresh isolate remembers nothing: the time saved in D1 holds the next /fail back.
+    resetHeartbeatFail();
+    w.clock.advance(5 * MINUTE);
+    await expect(runCron(refusing(await w.ctx(), campaignsRefused))).rejects.toThrow("D1_ERROR");
+    expect(fails()).toHaveLength(1);
+    w.clock.advance(5 * MINUTE);
+    await expect(runCron(refusing(await w.ctx(), campaignsRefused))).rejects.toThrow("D1_ERROR");
+    expect(fails()).toHaveLength(2);
+    expect(pings()).toHaveLength(0);
+  });
+
+  it("sends /fail when D1 refuses everything after the settings load, writes included", async () => {
+    await save({ heartbeat_url: HEARTBEAT });
+    await expect(runCron(refusing(await w.ctx(), () => true))).rejects.toThrow("D1_ERROR");
+    expect(fails()).toHaveLength(1);
+    expect(pings()).toHaveLength(0);
+  });
+
+  it("still pings when only Instagram's numbers fail, after the comments were answered", async () => {
+    await save({ heartbeat_url: HEARTBEAT });
+    await w.campaign();
+    await expect(runCron(refusing(await w.ctx(), (sql) => sql.includes("account_days")))).rejects.toThrow("D1_ERROR");
+    expect(pings()).toHaveLength(1);
+    expect(fails()).toHaveLength(0);
+  });
+
+  it("adds /fail to both forms of a healthchecks.io URL", () => {
+    expect(failUrl("https://hc-ping.com/0a1b2c3d-0000-4000-8000-000000000000")).toBe("https://hc-ping.com/0a1b2c3d-0000-4000-8000-000000000000/fail");
+    expect(failUrl("https://hc-ping.com/invented-ping-key/ownchats/")).toBe("https://hc-ping.com/invented-ping-key/ownchats/fail");
+    expect(failUrl("https://hc.example.com/ping/abc?rid=1")).toBe("https://hc.example.com/ping/abc/fail?rid=1");
   });
 
   it("notes a failed ping for Settings and tries again 10 minutes later", async () => {

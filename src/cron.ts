@@ -1,8 +1,8 @@
-import { checkAlertsWhenDue, checkSubscription, heartbeat } from "./alerts";
+import { checkAlertsWhenDue, checkSubscription, heartbeat, heartbeatFailed } from "./alerts";
 import type { Ctx } from "./context";
-import { oldestKeptDay, POST_DAYS, postTimes, refreshAccountDays, refreshAccountStats, refreshMediaStats, refreshPostList } from "./insights";
+import { oldestKeptDay, POST_DAYS, postTimes, type PostTimes, refreshAccountDays, refreshAccountStats, refreshMediaStats, refreshPostList } from "./insights";
 import { handleComment, pendingCommentIds, QUERIES_PER_COMMENT } from "./pipeline/comments";
-import { listCampaigns } from "./campaigns";
+import { listCampaigns, type Campaign } from "./campaigns";
 import { deliverDue, KEEP_DELIVERIES } from "./leadwebhook";
 import { attachNextPosts } from "./nextpost";
 import { retryPendingMessages } from "./pipeline/messages";
@@ -24,13 +24,34 @@ const KEEP_COMMENTS = 30 * DAY;
  * Runs every minute: attach campaigns waiting for the next post, retry the private
  * replies and the messages after a tap that wait, poll for missed comments, read
  * Instagram's numbers that are due (posts and the account's days), send what the lead
- * webhook has waiting, and once a day, upkeep. It starts with the heartbeat and the
- * owner's alerts (alerts.ts), checked every 5 minutes. Sends go first; the reads are held
- * back while Meta's rate limit is near (throttle.ts).
+ * webhook has waiting, and once a day, upkeep. It starts with the owner's alerts
+ * (alerts.ts), checked every 5 minutes. Sends go first; the reads are held back while
+ * Meta's rate limit is near (throttle.ts).
+ *
+ * The heartbeat goes out once the comments are answered and the poll has run, so it
+ * says the work got done, not that the Cron started: on 2026-11-24, with D1 refusing
+ * most reads, the Cron pinged every minute while no comment was answered. A run that
+ * throws before that pings the heartbeat's /fail instead (throttled), and still throws.
  */
 export async function runCron(ctx: Ctx): Promise<void> {
-  // First, and even while Instagram is disconnected: the heartbeat says the Cron runs, and alerts say what needs the owner.
+  let rest: (() => Promise<void>) | null;
+  try {
+    rest = await answerComments(ctx);
+  } catch (err) {
+    await heartbeatFailed(ctx, err);
+    throw err;
+  }
   await heartbeat(ctx);
+  if (rest) await rest();
+}
+
+/**
+ * The part of a run the heartbeat vouches for: alerts, campaigns waiting for a post, the
+ * comments and messages waiting, and the poll for missed comments. Returns the rest of
+ * the run (Instagram's numbers, the lead webhook, upkeep), whose failure doesn't mean
+ * comments go unanswered.
+ */
+async function answerComments(ctx: Ctx): Promise<(() => Promise<void>) | null> {
   // Campaigns are read once and shared by the steps below, read again only when a post was
   // attached; the run itself changes nothing else on them (a public reply's variant is
   // kept in memory too). Each read costs a row per campaign, every minute.
@@ -42,8 +63,9 @@ export async function runCron(ctx: Ctx): Promise<void> {
     // An alert must never cost a DM: the rest of the run goes on.
     console.error("alerts", err);
   }
-  // Leads already saved still go to the webhook while Instagram is disconnected.
-  if (!ctx.meta) return deliverDue(ctx);
+  // Leads already saved still go to the webhook while Instagram is disconnected. The heartbeat
+  // still goes out then: the token alert, not a missing heartbeat, tells the owner.
+  if (!ctx.meta) return () => deliverDue(ctx);
   // First, so the comments it hands back are answered in this same run.
   if (await attachNextPosts(ctx, all)) all = await listCampaigns(ctx.db);
   const campaigns = active();
@@ -58,8 +80,13 @@ export async function runCron(ctx: Ctx): Promise<void> {
   await retryPendingMessages(ctx, MESSAGE_RETRIES_PER_RUN);
   // Posts' times are read once for the poll and the numbers below, and again only when the
   // hourly post list may have changed them.
-  let times = await postTimes(ctx);
+  const times = await postTimes(ctx);
   await pollComments(ctx, campaigns, times);
+  return () => readAndUpkeep(ctx, campaigns, times);
+}
+
+async function readAndUpkeep(ctx: Ctx, campaigns: Campaign[], postTimesNow: PostTimes[]): Promise<void> {
+  let times = postTimesNow;
   if (await refreshPostList(ctx)) times = await postTimes(ctx);
   await refreshMediaStats(ctx, campaigns, times);
   await refreshAccountStats(ctx);

@@ -501,12 +501,35 @@ export async function sendTestAlert(ctx: Ctx): Promise<{ id: string; attempt: At
 /** How often the heartbeat URL is pinged. */
 export const HEARTBEAT_EVERY = 10 * MINUTE;
 const HEARTBEAT_TIMEOUT = 10 * SECOND;
+/** A run that failed pings the heartbeat's /fail at most this often: a broken Cron runs every minute. */
+export const HEARTBEAT_FAIL_EVERY = HEARTBEAT_EVERY;
+/** The last /fail ping from this isolate, for when D1 can't save it either (it usually can't, when D1 is what failed). */
+let failPingedAt = 0;
+
+/** A GET (or a POST with a short body for /fail) to the heartbeat service; returns why it failed, or "". */
+async function ping(ctx: Ctx, url: string, body?: string): Promise<string> {
+  try {
+    const init: RequestInit = body === undefined ? { method: "GET" } : { method: "POST", body, headers: { "content-type": "text/plain" } };
+    const res = await ctx.fetch(url, {
+      ...init,
+      headers: { ...(init.headers as Record<string, string> | undefined), "user-agent": "OwnChats-Heartbeat/1" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(HEARTBEAT_TIMEOUT),
+    });
+    await res.body?.cancel();
+    return res.ok ? "" : `HTTP ${res.status}`;
+  } catch (err) {
+    const name = err instanceof Error ? err.name : "";
+    return name === "TimeoutError" || name === "AbortError" ? `timed out after ${HEARTBEAT_TIMEOUT / SECOND} seconds` : `could not connect (${err instanceof Error ? err.message : String(err)})`.slice(0, 200);
+  }
+}
 
 /**
  * Pings the heartbeat URL (a healthchecks.io-style check) every HEARTBEAT_EVERY, with a
- * GET. That service alerts when the pings stop, which covers what no alert from
- * inside can: the Worker or its Cron not running at all. A failed ping is noted for
- * Settings and not retried before the next one is due.
+ * GET. That service alerts when the pings stop. The Cron calls this only once a run has
+ * answered the comments waiting and checked for missed ones (cron.ts), so the pings stop
+ * when OwnChats stops answering, not only when the Worker stops running. A failed ping is
+ * noted for Settings and not retried before the next one is due.
  */
 export async function heartbeat(ctx: Ctx): Promise<void> {
   const url = ctx.settings.heartbeat_url;
@@ -514,18 +537,54 @@ export async function heartbeat(ctx: Ctx): Promise<void> {
   // The Cron fires on the minute, give or take; half a minute of slack keeps a 10-minute rhythm from slipping to 11.
   if (!url || now - Number(ctx.settings.heartbeat_at ?? 0) < HEARTBEAT_EVERY - 30 * SECOND) return;
   if (!ctx.budget.take()) return;
-  let problem = "";
-  try {
-    const res = await ctx.fetch(url, { method: "GET", headers: { "user-agent": "OwnChats-Heartbeat/1" }, redirect: "follow", signal: AbortSignal.timeout(HEARTBEAT_TIMEOUT) });
-    if (!res.ok) problem = `HTTP ${res.status}`;
-    await res.body?.cancel();
-  } catch (err) {
-    const name = err instanceof Error ? err.name : "";
-    problem = name === "TimeoutError" || name === "AbortError" ? `timed out after ${HEARTBEAT_TIMEOUT / SECOND} seconds` : `could not connect (${err instanceof Error ? err.message : String(err)})`.slice(0, 200);
-  }
+  const problem = await ping(ctx, url);
   const values = { heartbeat_at: String(now), heartbeat_problem: problem ? `${now}|${problem}` : "" };
   Object.assign(ctx.settings, values);
   await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, values);
+}
+
+/**
+ * The heartbeat URL with /fail added: healthchecks.io marks the check down at once on it,
+ * instead of after the period and grace time. Works for both of its URL forms
+ * (hc-ping.com/<uuid> and hc-ping.com/<ping key>/<slug>), and for a self-hosted copy.
+ */
+export function failUrl(url: string): string {
+  const u = new URL(url);
+  u.pathname = `${u.pathname.replace(/\/+$/, "")}/fail`;
+  return u.toString();
+}
+
+/**
+ * Tells the heartbeat service that a run failed before it answered the comments waiting:
+ * a POST to the URL's /fail with the error, at most every HEARTBEAT_FAIL_EVERY. Never
+ * throws, and works when D1 doesn't: when it was last sent is kept in this isolate too.
+ * A run that can't load the settings at all (index.ts) can't read the URL either, so
+ * the pings simply stop, and the service alerts after its period and grace time.
+ */
+export async function heartbeatFailed(ctx: Ctx, err: unknown): Promise<void> {
+  const url = ctx.settings.heartbeat_url;
+  const now = ctx.now();
+  const last = Math.max(failPingedAt, Number(ctx.settings.heartbeat_fail_at ?? 0));
+  if (!url || now - last < HEARTBEAT_FAIL_EVERY - 30 * SECOND) return;
+  failPingedAt = now;
+  let target: string;
+  try {
+    target = failUrl(url);
+  } catch {
+    return;
+  }
+  const what = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  await ping(ctx, target, `OwnChats' Cron failed before answering the comments waiting: ${what}`.slice(0, 500));
+  try {
+    await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { heartbeat_fail_at: String(now) });
+  } catch {
+    // D1 is likely what failed; this isolate remembers it.
+  }
+}
+
+/** For tests: forgets this isolate's last /fail ping. */
+export function resetHeartbeatFail(): void {
+  failPingedAt = 0;
 }
 
 /**

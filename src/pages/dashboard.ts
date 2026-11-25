@@ -958,7 +958,7 @@ function alertsCard(ctx: Ctx, notes: { error?: string; test?: DeliveryRow | null
         <option value="json"${s.alert_format === "json" ? " selected" : ""}>JSON (your own tools)</option>
       </select>
       <label for="heartbeat_url">Heartbeat URL (optional)</label><input id="heartbeat_url" name="heartbeat_url" type="url" value="${s.heartbeat_url ?? ""}" placeholder="https://hc-ping.com/...">
-      <p class="hint">OwnChats visits this address every ${HEARTBEAT_EVERY / MINUTE} minutes. A service such as healthchecks.io alerts you when the visits stop, which covers the one problem OwnChats can't report itself: not running at all. Set the check's period to ${HEARTBEAT_EVERY / MINUTE} minutes.
+      <p class="hint">OwnChats visits this address every ${HEARTBEAT_EVERY / MINUTE} minutes, once a check has answered the comments waiting, and visits it with /fail added when a check fails. A service such as healthchecks.io alerts you when the visits stop, which covers what OwnChats can't report itself: not running, or not able to answer. Set the check's period to ${HEARTBEAT_EVERY / MINUTE} minutes.
         ${s.heartbeat_url ? (beatProblem ? html`<span class="warn">The last visit failed (${fmtTime(Number(beatAt), tz)}): ${beatProblem}.</span>` : s.heartbeat_at ? html`Last visit: ${fmtTime(Number(s.heartbeat_at), tz)}.` : "") : ""}</p>
       <p class="row"><button name="do" value="save">Save</button>${s.alert_url || s.heartbeat_url ? html`<button class="danger" name="do" value="off">Turn off</button>` : ""}${savedNote(notes.saved, "alerts", "alerts-off")}</p>
     </form>
@@ -1198,7 +1198,7 @@ export async function settingsAction(ctx: Ctx, request: Request, what: string): 
   }
   if (what === "alerts") {
     if (action === "off") {
-      await deleteSettings(ctx.db, ["alert_url", "alert_format", "alert_state", "alerts_at", "heartbeat_url", "heartbeat_at", "heartbeat_problem"]);
+      await deleteSettings(ctx.db, ["alert_url", "alert_format", "alert_state", "alerts_at", "heartbeat_url", "heartbeat_at", "heartbeat_problem", "heartbeat_fail_at"]);
       return saved("alerts-off", "alerts");
     }
     const values = alertsFromForm(form);
