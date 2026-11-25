@@ -1,5 +1,5 @@
 import { answersShortcuts, getCampaign, onAllPosts, ownKeywords, type Campaign } from "./campaigns";
-import type { Ctx } from "./context";
+import { logStatement, type Ctx } from "./context";
 import { CommentText, KeywordSet, matchesKeyword, parseKeywords } from "./match";
 import { handleComment } from "./pipeline/comments";
 import { shortcutKeywords } from "./settings";
@@ -13,6 +13,8 @@ import { DAY, HOUR, PRIVATE_REPLY_WINDOW } from "./time";
  */
 const ANSWERABLE = ["no matching campaign", "written before the campaign started"];
 const NO_MATCH = ANSWERABLE[0]!;
+/** The skip reason of a comment the owner chose to leave unanswered: it leaves To check and counts nowhere. */
+export const IGNORED = "ignored on To check";
 /** The list and its count look at this many recent skipped comments at most. */
 const SCAN_LIMIT = 500;
 /** Too close to the end of Meta's window to be worth a click. */
@@ -251,6 +253,32 @@ export async function claimMissedByHand(
     )
     .bind(campaign.id, ctx.now(), row.id, JSON.stringify(ANSWERABLE))
     .first<{ id: string; from_id: string; from_username: string | null }>();
+}
+
+/**
+ * "Ignore" under To check: the comment stays skipped, under a reason that no list or count looks for,
+ * so it leaves To check for good. Nothing is sent and nobody is counted as asked or answered.
+ * Returns false when the comment isn't one this campaign lists (gone, answered, or not its own).
+ */
+export async function ignoreMissed(ctx: Ctx, campaignId: number, commentId: string): Promise<boolean> {
+  const campaign = await getCampaign(ctx.db, campaignId);
+  if (!campaign) return false;
+  const row = await ctx.db
+    .prepare(
+      `SELECT id, text, from_id, from_username, commented_at, reason, campaign_id, media_id FROM comments
+       WHERE id = ? AND status = 'skipped' AND answered_by_hand_at IS NULL AND reason IN (${ANSWERABLE.map(() => "?").join(", ")})`,
+    )
+    .bind(commentId, ...ANSWERABLE)
+    .first<Candidate>();
+  if (!row) return false;
+  if (row.reason === NO_MATCH ? !onItsPosts(row, campaign) : row.campaign_id !== campaign.id) return false;
+  const [updated] = await ctx.db.batch([
+    ctx.db
+      .prepare(`UPDATE comments SET reason = ?1 WHERE id = ?2 AND status = 'skipped' AND reason IN (SELECT value FROM json_each(?3))`)
+      .bind(IGNORED, row.id, JSON.stringify(ANSWERABLE)),
+    logStatement(ctx, { kind: "ignored", outcome: "saved", reason: IGNORED, campaignId: campaign.id, commentId: row.id, igUserId: row.from_id, username: row.from_username }),
+  ]);
+  return (updated?.meta.changes ?? 0) > 0;
 }
 
 /** The outcome of an answer, read back from the comment, in the dashboard's words. */

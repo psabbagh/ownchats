@@ -484,7 +484,7 @@ describe("sends refused before automatic retries, and answered by hand", () => {
     expect(page).toContain("Waiting on a refused send (1)");
     expect(page).toContain("Refused before OwnChats retried on its own: answer by hand.");
     expect(page).toContain("Already answered by hand</button>");
-    expect(page).toContain("Reply by hand</button>");
+    expect(page).toContain("Copy reply</button>");
     expect(page).not.toContain(">Send</button>");
     // Send is refused for it all the same.
     expect((await form(cookie, `/dashboard/campaigns/${id}/send`, { type: "comment", id: c.id })).headers.get("location")).toBe(`/dashboard/campaigns/${id}?sent=none#to-check`);

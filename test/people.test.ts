@@ -113,7 +113,7 @@ describe("people, not attempts", () => {
   });
 });
 
-describe("Reply by hand", () => {
+describe("Copy reply", () => {
   it("marks the person and gives a reply with their own tracked link, whose click counts", async () => {
     const id = await w.campaign();
     for (let i = 0; i < 20; i++) w.meta.failNext("sendPrivateReply", OUTAGE());
