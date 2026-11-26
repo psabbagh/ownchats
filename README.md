@@ -127,6 +127,29 @@ Want OwnChats to like the comments it answers? Add `instagram_manage_engagement`
 
 Set up before 2026-11-06? To see views on each campaign, add `instagram_manage_insights` to your Meta login configuration, then click Reconnect on `/setup`. The [guide](docs/guide-for-ai-agents.md#views-on-each-campaign) says where.
 
+## Signing in
+
+By default you sign in with `ADMIN_PASSWORD`. You can put the dashboard behind a Google sign-in (or any login Cloudflare offers) with Cloudflare Access instead, free for up to 50 users. OwnChats then has no password page: Cloudflare asks who you are, and OwnChats checks the token Cloudflare signed on every page (`Cf-Access-Jwt-Assertion`: signed with one of your team's keys, RS256, for your app, from your team, not expired). A page without a valid token answers 403, so the dashboard stays closed even if Access is switched off or a path is left out of it.
+
+Some addresses must keep answering without anyone signing in. Each checks its own signature, key or token, so leaving them open changes nothing:
+
+| Path | Who calls it |
+|---|---|
+| `/webhook` | Meta: comments and DMs, signed with your app secret |
+| `/go` | People tapping a link in a DM (each link has a long random code) |
+| `/privacy`, `/terms`, `/data-deletion` | Meta's app review, and anyone reading them |
+| `/export` | Google Sheets (needs the export key in the address) |
+| `/api` | Your tools and agents (need a bearer token) |
+| `/health` | Uptime checks |
+
+To set it up, in Cloudflare Zero Trust, Access, Applications:
+
+1. **First**, a Self-hosted app for the open paths, with a Bypass policy for everyone. Add one destination per path above on every address your OwnChats answers on: your custom domain if it has one, and its `workers.dev` address while `workers_dev` is on. A path covers everything below it.
+2. **Then** a Self-hosted app on those addresses with a policy that allows only your own email. The redirect a page now answers with names your team (`https://<team>.cloudflareaccess.com`) and, after `kid=`, the app's audience tag.
+3. Set `ACCESS_TEAM` to the team address and `ACCESS_AUD` to the audience tag under `vars` in `wrangler.jsonc`, and deploy. Sign out then goes through Access (`/cdn-cgi/access/logout`).
+
+Keep `ADMIN_PASSWORD` even though nobody types it any more: it encrypts the Meta token stored in the database. With either setting empty, the password sign-in works as before; tests and `npm run dev` leave both empty.
+
 ## Costs and privacy
 
 OwnChats fits Cloudflare's free plan: one small Worker, one database, a check every minute. Your leads, comments and messages stay in your own Cloudflare database. Nothing is sent anywhere except to Meta, to reply and send DMs, to your lead webhook if you set one up, and to your alert and heartbeat URLs if you set them (alerts never name anyone). The activity log keeps 90 days; leads stay until you delete them.

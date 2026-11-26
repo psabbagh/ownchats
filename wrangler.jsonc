@@ -8,6 +8,10 @@
   "observability": { "enabled": true },
   // Every minute: retry queued comments and check watched posts for missed ones.
   "triggers": { "crons": ["* * * * *"] },
+  // Optional Cloudflare Access sign-in (README, "Signing in with Cloudflare Access"). Leave both
+  // empty for the password sign-in. Set ACCESS_TEAM to https://<team>.cloudflareaccess.com and
+  // ACCESS_AUD to the Access app's audience tag only once the open paths app is in place.
+  "vars": { "ACCESS_TEAM": "", "ACCESS_AUD": "" },
   "d1_databases": [
     {
       "binding": "DB",

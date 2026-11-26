@@ -1,5 +1,6 @@
+import { ACCESS_LOGOUT, accessIsOn, notThroughAccess, throughAccess } from "./access";
 import { handleApi } from "./api";
-import { handleLogin, handleLogout, isAdmin, loginPage, noPasswordPage, sameOrigin } from "./auth";
+import { handleLogin, handleLogout, isAdmin, loginPage, noPasswordPage, sameOrigin, SIGN_OUT_COOKIE } from "./auth";
 import { followLink } from "./clicks";
 import { askAfterOpen } from "./pipeline/messages";
 import { buildCtx, type AppOptions, type Ctx } from "./context";
@@ -105,6 +106,14 @@ export function createApp(options: AppOptions): ExportedHandler<Env> {
 
       // Admin.
       if (!env.ADMIN_PASSWORD) return noPasswordPage();
+      // Behind Cloudflare Access: its signed token is the sign-in, and there is no password page.
+      if (accessIsOn(env)) {
+        if (path === "/logout" && request.method === "POST") return redirect(ACCESS_LOGOUT, { "set-cookie": SIGN_OUT_COOKIE });
+        if (!(await throughAccess(env, request, Date.now()))) return notThroughAccess();
+        if (path === "/login") return redirect("/dashboard");
+        if (path === "/") return redirect(ctx.settings.ig_user_id ? "/dashboard" : "/setup");
+        return (await adminRoutes(ctx, request, url)) ?? new Response("Not found", { status: 404 });
+      }
       if (path === "/login") return request.method === "POST" ? handleLogin(ctx, request) : loginPage("", url.searchParams.get("next") ?? "/dashboard");
       if (path === "/logout" && request.method === "POST") return handleLogout();
       if (path === "/") return redirect(ctx.settings.ig_user_id ? "/dashboard" : "/setup");

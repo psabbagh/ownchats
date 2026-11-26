@@ -22,4 +22,5 @@ Secrets live in 1Password and are loaded with `op run --env-file=<refs-file>`. A
 - No attribution signatures, generated-by notes, co-author trailers or tool credits in commits, docs, code comments or anything published.
 - Neutral, work-descriptive branch names, without assistant, provider or model names.
 - No em dashes in prose a reader sees: README, docs, setup screens, DM and reply texts.
+- A new path that answers without the admin session must also go into the open paths list in README, "Signing in", and into the Bypass app of every copy behind Cloudflare Access, Pierre's included, on every address it answers on. Otherwise Access sends its callers to the sign-in page.
 - Before merging a pull request or pushing a change that moves `main`, run `~/.claude/bin/premerge-check <pr-number | ref>` from this repo and proceed only on PASS. Details are in `~/.claude/ci-paused.md`.
