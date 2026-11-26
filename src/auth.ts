@@ -91,8 +91,11 @@ export async function handleLogin(ctx: Ctx, request: Request): Promise<Response>
   });
 }
 
+/** Clears the password session cookie. */
+export const SIGN_OUT_COOKIE = `${COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`;
+
 export function handleLogout(): Response {
-  return redirect("/login", { "set-cookie": `${COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0` });
+  return redirect("/login", { "set-cookie": SIGN_OUT_COOKIE });
 }
 
 /**

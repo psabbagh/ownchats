@@ -6,7 +6,7 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --var ACCESS_TEAM: --var ACCESS_AUD:",
     "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
     "check": "tsc --noEmit && tsc --noEmit -p test",
     "test": "vitest run",
@@ -16,6 +16,12 @@
     "bindings": {
       "ADMIN_PASSWORD": {
         "description": "Choose a long password for your OwnChats dashboard. Save it in your password manager: you need it to sign in."
+      },
+      "ACCESS_TEAM": {
+        "description": "Leave empty. Only for signing in with Cloudflare Access instead of the password (README, Signing in)."
+      },
+      "ACCESS_AUD": {
+        "description": "Leave empty. Only for signing in with Cloudflare Access instead of the password (README, Signing in)."
       },
       "DB": {
         "description": "The database for campaigns, leads and the activity log."
