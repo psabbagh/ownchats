@@ -117,6 +117,14 @@ describe("behind Cloudflare Access", () => {
     expect(res.headers.get("location")).toBe("/cdn-cgi/access/logout");
   });
 
+  it("lets the browser follow Sign out through Access's address, and keeps no copy of a page", async () => {
+    const w = await setupWorld();
+    const res = await open(w.app, "/dashboard", { headers: { "cf-access-jwt-assertion": await token(team, {}) } });
+    const formAction = (res.headers.get("content-security-policy") ?? "").split(";").find((d) => d.trim().startsWith("form-action"));
+    expect(formAction).toContain("https://*.cloudflareaccess.com");
+    expect(res.headers.get("cache-control")).toBe("no-store");
+  });
+
   it("keeps what answers without signing in as it was", async () => {
     const w = await setupWorld();
     expect(await (await open(w.app, `/webhook?hub.mode=subscribe&hub.verify_token=${VERIFY_TOKEN}&hub.challenge=42`)).text()).toBe("42");

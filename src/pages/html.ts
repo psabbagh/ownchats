@@ -96,7 +96,11 @@ export function page(title: string, body: Html, opts: { nav?: boolean; head?: Ht
       // Not "no-referrer": with it, browsers send "Origin: null" on form posts, and the
       // same-origin check would refuse every form. "same-origin" still sends nothing to other sites.
       "referrer-policy": "same-origin",
-      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src https: data:; form-action 'self' https://www.facebook.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'",
+      // Never kept by the browser, so Back after signing out shows no leads.
+      "cache-control": "no-store",
+      // Sign out behind Cloudflare Access posts to /logout, which redirects through the team's
+      // cloudflareaccess.com address; form-action covers redirects, so that host is allowed too.
+      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src https: data:; form-action 'self' https://www.facebook.com https://*.cloudflareaccess.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'",
     },
   });
 }
