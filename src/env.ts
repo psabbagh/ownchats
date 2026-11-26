@@ -14,6 +14,12 @@ export interface Env {
    */
   ACCESS_TEAM?: string;
   ACCESS_AUD?: string;
+  /**
+   * Optional: the address for everything public (DM links, Meta's webhook, the privacy page), for a
+   * copy whose dashboard has an address of its own. Set, it is the remembered address whatever address
+   * a page is opened on. Empty or missing: OwnChats remembers the address its pages are opened on.
+   */
+  PUBLIC_URL?: string;
   /** Override for the Graph API host, for tests or a proxy. Defaults to https://graph.facebook.com */
   META_GRAPH_BASE?: string;
 }

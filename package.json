@@ -6,7 +6,7 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --var ACCESS_TEAM: --var ACCESS_AUD:",
+    "dev": "wrangler dev --var ACCESS_TEAM: --var ACCESS_AUD: --var PUBLIC_URL:",
     "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
     "check": "tsc --noEmit && tsc --noEmit -p test",
     "test": "vitest run",
@@ -22,6 +22,9 @@
       },
       "ACCESS_AUD": {
         "description": "Leave empty. Only for signing in with Cloudflare Access instead of the password (README, Signing in)."
+      },
+      "PUBLIC_URL": {
+        "description": "Leave empty. Only for a dashboard on an address of its own (README, Signing in)."
       },
       "DB": {
         "description": "The database for campaigns, leads and the activity log."

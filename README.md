@@ -148,6 +148,8 @@ To set it up, in Cloudflare Zero Trust, Access, Applications:
 2. **Then** a Self-hosted app on those addresses with a policy that allows only your own email. The redirect a page now answers with names your team (`https://<team>.cloudflareaccess.com`) and, after `kid=`, the app's audience tag.
 3. Set `ACCESS_TEAM` to the team address and `ACCESS_AUD` to the audience tag under `vars` in `wrangler.jsonc`, and deploy. Sign out then goes through Access (`/cdn-cgi/access/logout`).
 
+Want the dashboard on an address of its own, say `chats.example.com`, while DM links and Meta keep using the one they know? Add it as a custom domain, add it to both Access apps (with the open paths too), and set `PUBLIC_URL` under `vars` to the public address. Otherwise OwnChats takes the address its pages are opened on as its own, and new DM links would follow the dashboard.
+
 Keep `ADMIN_PASSWORD` even though nobody types it any more: it encrypts the Meta token stored in the database. With either setting empty, the password sign-in works as before; tests and `npm run dev` leave both empty.
 
 ## Costs and privacy

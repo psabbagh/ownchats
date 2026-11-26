@@ -10,7 +10,7 @@ export default defineConfig(async () => {
         wrangler: { configPath: "./wrangler.jsonc" },
         miniflare: {
           // Invented test values only. Access is off here, so the password sign-in is what the tests use.
-          bindings: { TEST_MIGRATIONS: migrations, ADMIN_PASSWORD: "test-admin-password-123", ACCESS_TEAM: "", ACCESS_AUD: "" },
+          bindings: { TEST_MIGRATIONS: migrations, ADMIN_PASSWORD: "test-admin-password-123", ACCESS_TEAM: "", ACCESS_AUD: "", PUBLIC_URL: "" },
         },
       }),
     ],

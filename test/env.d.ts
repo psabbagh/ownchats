@@ -4,6 +4,7 @@ declare namespace Cloudflare {
     ADMIN_PASSWORD: string;
     ACCESS_TEAM: string;
     ACCESS_AUD: string;
+    PUBLIC_URL: string;
     TEST_MIGRATIONS: import("cloudflare:test").D1Migration[];
   }
 }
