@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { baseUrlAfterVisit } from "../src/pages/setup";
 import { saveSettings } from "../src/settings";
@@ -39,6 +40,19 @@ describe("the address OwnChats remembers", () => {
     const res = await world.fetch("/setup", { headers: { cookie } });
 
     expect(res.status).toBe(200);
+    expect(await env.DB.prepare("SELECT value FROM settings WHERE key = 'base_url'").first("value")).toBe(CUSTOM);
+  });
+
+  it("stays on PUBLIC_URL when the dashboard is opened on an address of its own", async () => {
+    const world = await setupWorld();
+    await saveSettings(env.DB, env.ADMIN_PASSWORD, { base_url: CUSTOM });
+    const cookie = await world.signIn();
+    const execution = createExecutionContext();
+    const pinned = { ...env, PUBLIC_URL: `${CUSTOM}/` };
+    const res = await world.app.fetch!(new Request("https://dashboard.example.com/setup", { headers: { cookie } }) as Request<unknown, IncomingRequestCfProperties>, pinned, execution);
+    await waitOnExecutionContext(execution);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain(`${CUSTOM}/webhook`);
     expect(await env.DB.prepare("SELECT value FROM settings WHERE key = 'base_url'").first("value")).toBe(CUSTOM);
   });
 });

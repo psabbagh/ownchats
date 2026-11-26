@@ -34,7 +34,9 @@ export function baseUrlAfterVisit(current: string | undefined, visited: string):
 
 /** Remembers the deployment's own address, for the values Meta needs and for the Cron. */
 export async function rememberBaseUrl(ctx: Ctx, url: URL): Promise<void> {
-  const base = baseUrlAfterVisit(ctx.settings.base_url, url.origin);
+  // PUBLIC_URL pins it, so a dashboard opened on its own address never moves DM links or Meta's values there.
+  const pinned = (ctx.env.PUBLIC_URL ?? "").trim().replace(/\/+$/, "");
+  const base = pinned || baseUrlAfterVisit(ctx.settings.base_url, url.origin);
   const updates: Record<string, string> = {};
   if (ctx.settings.base_url !== base) updates.base_url = base;
   if (!ctx.settings.verify_token) updates.verify_token = randomToken(18);
