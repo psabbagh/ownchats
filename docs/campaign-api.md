@@ -2,7 +2,7 @@
 
 A tool or agent can set up the campaign for the next post without the dashboard. Give it the caption the post will carry, and OwnChats reads the keyword from that caption, so the keyword in the caption and the campaign's keyword can't differ.
 
-It needs the **API write token**: dashboard, Settings, API write token, Create write token. It is shown once and starts with `ocw_`. It creates campaigns, renames them, checks captions and sends test leads to the lead webhook ([lead-webhook.md](lead-webhook.md#send-a-test-lead-through-the-api)), and nothing else. It can't read leads, and the read token (`oc_`) can't create anything. Keep it in your password manager and give it only to the tool that sets up campaigns.
+It needs the **API write token**: dashboard, Settings, API write token, Create write token. It is shown once and starts with `ocw_`. It creates campaigns, renames them and changes their keywords, checks captions and sends test leads to the lead webhook ([lead-webhook.md](lead-webhook.md#send-a-test-lead-through-the-api)), and nothing else. It can't read leads, and the read token (`oc_`) can't create anything. Keep it in your password manager and give it only to the tool that sets up campaigns.
 
 ## Check a caption
 
@@ -81,9 +81,9 @@ Refusals, each with `error` in plain words:
 
 Every campaign created this way is in the activity log as "API", "Campaign created through the API".
 
-## Rename a campaign
+## Change a campaign's name, link title or keywords
 
-`POST /api/campaigns/<id>` changes an existing campaign's name and its link title (the dashboard's "What the first link leads to"), for example when a video's hook changes after its campaign was armed. It needs the write token, and changes nothing else on the campaign.
+`POST /api/campaigns/<id>` changes an existing campaign's name, its link title (the dashboard's "What the first link leads to") and its keywords, for example when a video's hook changes after its campaign was armed, or to add the spellings people type for its keyword. It needs the write token, and changes nothing else on the campaign.
 
 ```http
 POST /api/campaigns/23
@@ -96,17 +96,30 @@ Content-Type: application/json
 }
 ```
 
+To add spellings, send only those:
+
+```http
+POST /api/campaigns/25
+Authorization: Bearer <write token>
+Content-Type: application/json
+
+{ "add_keywords": ["SET UP", "SETUPP", "SET-UP"] }
+```
+
 | Field | Required | Meaning |
 |---|---|---|
-| `name` | one of the two | The campaign's new name. It can't be empty. |
-| `link_title` | one of the two | What the link leads to. Under 200 characters; an empty string removes the title. |
+| `name` | one of these | The campaign's new name. It can't be empty. |
+| `link_title` | one of these | What the link leads to. Under 200 characters; an empty string removes the title. |
+| `keywords` | one of these | The whole keyword list, replacing the one it has, as a list of strings. |
+| `add_keywords` | one of these | Spellings to add to the list it has, as a list of strings. Ones it has already are skipped. |
 
-A field left out keeps its value. Both are trimmed. Any other field is refused, so a caller can't believe it changed something it didn't.
+A field left out keeps its value. Send `keywords` or `add_keywords`, not both. Names and titles are trimmed. Keywords are cleaned as the dashboard's keyword field cleans them: trimmed, runs of spaces made one, empty ones dropped, and a repeat dropped whatever its case (`setup` repeats `SETUP`), so the first spelling sent stays. Each keyword matches comments the way the dashboard's do: case doesn't matter, and a space or dash matches any run of spaces and dashes, so `SET UP` already answers "set-up"; extra spellings are still worth adding where people type them. Any other field is refused, so a caller can't believe it changed something it didn't.
 
 The answer is `200` with the campaign as `GET /api/campaigns` shows it (`counts` and `post` left out). Refusals, each with `error` in plain words:
 
 - `404`: no campaign with that id.
-- `422`: neither field sent, a field that isn't a string, an empty name, a title too long or one that would make the message with the link too long, or a field other than these two (`errors` lists each one).
+- `422`: no field sent, a field that isn't a string (or a list of strings for keywords), an empty name, a title too long or one that would make the message with the link too long, an empty keyword list, a keyword holding a comma or a line break (send each spelling as its own item), both `keywords` and `add_keywords`, keywords on a campaign that answers any comment, or a field other than these (`errors` lists each one).
+- `409`: a keyword this call adds is already answered by another active keyword campaign on the same post (the same one post, both waiting for the next post, or both on all posts), either way round: `SET UP` clashes with `SET-UP` and with `SET UP NOW`. `error` names the campaign. The dashboard saves such overlaps and lets the older campaign win; the API refuses them, so an agent can't take another campaign's comments. Your shortcut keywords from Settings are shared by every campaign and never clash, and keywords the campaign already has are never checked.
 - `401`: no write token, or the read token.
 
-Each rename is in the activity log as "API", with the old and new values.
+Each change is in the activity log as "API", with the old and new values.

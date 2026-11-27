@@ -1,6 +1,7 @@
 import { peopleCounts } from "./refused";
 import { apiAuthorized } from "./auth";
-import { getCampaign, listCampaigns, onAllPosts, renameCampaign, saveCampaign, validateCampaign, type Campaign } from "./campaigns";
+import { getCampaign, listCampaigns, onAllPosts, ownKeywords, saveCampaign, updateCampaignFromApi, validateCampaign, type Campaign } from "./campaigns";
+import { matchesKeyword, parseKeywords } from "./match";
 import { log, type Ctx } from "./context";
 import { listLeads } from "./export";
 import { checkTestLead, getDelivery, sendTestLead, webhookConfig } from "./leadwebhook";
@@ -132,45 +133,97 @@ async function testLead(ctx: Ctx, body: Record<string, unknown>): Promise<Respon
   });
 }
 
-const RENAMABLE = ["name", "link_title"];
+const EDITABLE = ["name", "link_title", "keywords", "add_keywords"];
+
+/** Whether two campaigns listen on the same post: the same one post, both waiting for the next post, or both on every post. */
+function samePost(a: Campaign, b: Campaign): boolean {
+  if (a.nextPostAfter !== null || b.nextPostAfter !== null) return a.nextPostAfter !== null && b.nextPostAfter !== null;
+  return a.mediaId === b.mediaId;
+}
 
 /**
- * POST /api/campaigns/<id>: a new name and link title for an existing campaign, so the
- * tool that names a video after its hook can follow a later change of hook. Nothing else
- * on the campaign changes; the rest stays a dashboard edit.
+ * The added keywords another active keyword campaign on the same post already answers,
+ * either way round ("SET UP" in "SET UP NOW", or the reverse), so a comment would go to
+ * the other campaign or be fought over. The shortcuts from Settings are shared on purpose
+ * and never count.
  */
-async function renameFromApi(ctx: Ctx, id: number, body: Record<string, unknown>): Promise<Response> {
+function keywordClashes(c: Campaign, added: string[], campaigns: Campaign[], shortcuts: string[]): string[] {
+  const out: string[] = [];
+  const mine = ownKeywords({ keywords: added }, shortcuts);
+  for (const other of campaigns) {
+    if (other.id === c.id || !other.active || other.anyComment || !samePost(c, other)) continue;
+    const theirs = ownKeywords(other, shortcuts);
+    for (const k of mine) {
+      const hit = theirs.find((t) => matchesKeyword(k, [t]) || matchesKeyword(t, [k]));
+      if (hit) out.push(`"${k}" is already answered by campaign ${other.id} (${other.name}) on the same post, as "${hit}".`);
+    }
+  }
+  return out;
+}
+
+/** A keyword list as the API sends it, cleaned the way the dashboard's keyword field is: trimmed, spaces joined, empties and repeats (in any case) dropped. */
+function keywordList(value: unknown, field: string, errors: string[]): string[] | null {
+  if (value === undefined) return null;
+  if (!Array.isArray(value) || value.some((k) => typeof k !== "string")) {
+    errors.push(`\`${field}\` must be a list of strings.`);
+    return null;
+  }
+  const commas = value.filter((k) => /[,\n]/.test(k));
+  if (commas.length) errors.push(`A keyword can't hold a comma or a line break, which separate keywords in the dashboard (${commas.map((k) => JSON.stringify(k)).join(", ")}). Send each spelling as its own item.`);
+  return parseKeywords(value.join(","));
+}
+
+/**
+ * POST /api/campaigns/<id>: a new name, link title or keywords for an existing campaign,
+ * so the tool that names a video after its hook can follow a later change of hook, and an
+ * agent can add the spellings a campaign should also answer. Nothing else on the campaign
+ * changes; the rest stays a dashboard edit.
+ */
+async function editFromApi(ctx: Ctx, id: number, body: Record<string, unknown>): Promise<Response> {
   const c = await getCampaign(ctx.db, id);
   if (!c) return json({ error: "No campaign with that id." }, 404);
   const errors: string[] = [];
-  const other = Object.keys(body).filter((k) => !RENAMABLE.includes(k));
-  if (other.length) errors.push(`Only \`name\` and \`link_title\` can be changed here; edit the rest in the dashboard (${other.map((k) => `\`${k}\``).join(", ")}).`);
-  if (body.name === undefined && body.link_title === undefined) errors.push("Send `name`, `link_title` or both.");
+  const other = Object.keys(body).filter((k) => !EDITABLE.includes(k));
+  if (other.length) errors.push(`Only \`name\`, \`link_title\`, \`keywords\` and \`add_keywords\` can be changed here; edit the rest in the dashboard (${other.map((k) => `\`${k}\``).join(", ")}).`);
+  if (EDITABLE.every((k) => body[k] === undefined)) errors.push("Send `name`, `link_title`, `keywords` or `add_keywords`.");
   if (body.name !== undefined && typeof body.name !== "string") errors.push("`name` must be a string.");
   if (body.link_title !== undefined && typeof body.link_title !== "string") errors.push("`link_title` must be a string (empty for no title).");
+  if (body.keywords !== undefined && body.add_keywords !== undefined) errors.push("Send `keywords` (the whole list) or `add_keywords` (spellings to add), not both.");
+  const set = keywordList(body.keywords, "keywords", errors);
+  const add = keywordList(body.add_keywords, "add_keywords", errors);
+  if ((set || add) && c.anyComment) errors.push("This campaign answers any comment, so it has no keywords to change. Edit it in the dashboard.");
+  if (add && !add.length) errors.push("`add_keywords` holds no keyword.");
   if (errors.length) return json({ error: errors.join(" "), errors }, 422);
+  const keywords = set ?? (add ? parseKeywords([...c.keywords, ...add].join(",")) : c.keywords);
   const next = {
     ...c,
     name: typeof body.name === "string" ? body.name.trim() : c.name,
     linkTitle: typeof body.link_title === "string" ? body.link_title.trim() : c.linkTitle,
+    keywords,
   };
   // The same checks as the form and the create, but only the ones this change causes: a
-  // campaign the dashboard saved with a problem of its own can still be renamed.
+  // campaign the dashboard saved with a problem of its own can still be changed.
   const before = new Set(validateCampaign(c));
   const caused = validateCampaign(next).filter((e) => !before.has(e));
+  // Only keywords this call adds can clash: what the campaign already answers stays as it is.
+  const had = new Set(c.keywords);
+  const added = keywords.filter((k) => !had.has(k));
   if (caused.length) return json({ error: caused.join(" "), errors: caused }, 422);
-  await renameCampaign(ctx.db, id, next, ctx.now());
+  const clashes = added.length ? keywordClashes(c, added, await listCampaigns(ctx.db, true), shortcutKeywords(ctx.settings)) : [];
+  if (clashes.length) return json({ error: clashes.join(" "), errors: clashes }, 409);
+  await updateCampaignFromApi(ctx.db, id, next, ctx.now());
   const changes = [
     next.name !== c.name && `name "${c.name}" to "${next.name}"`,
     next.linkTitle !== c.linkTitle && `link title "${c.linkTitle}" to "${next.linkTitle}"`,
+    JSON.stringify(next.keywords) !== JSON.stringify(c.keywords) && `keywords "${c.keywords.join(", ")}" to "${next.keywords.join(", ")}"`,
   ].filter(Boolean);
-  await log(ctx, { kind: "api", outcome: "saved", reason: changes.length ? `Campaign renamed through the API: ${changes.join(", ")}` : "Campaign rename through the API changed nothing", campaignId: id });
+  await log(ctx, { kind: "api", outcome: "saved", reason: changes.length ? `Campaign changed through the API: ${changes.join(", ")}` : "Campaign change through the API changed nothing", campaignId: id });
   return json({ campaign: campaignJson((await getCampaign(ctx.db, id))!, !!webhookConfig(ctx)) });
 }
 
 async function handleWrite(ctx: Ctx, request: Request, path: string): Promise<Response> {
-  const renameId = /^\/api\/campaigns\/(\d+)$/.exec(path)?.[1];
-  if (path !== "/api/campaigns" && path !== "/api/campaigns/check" && path !== "/api/test-lead" && !renameId) {
+  const editId = /^\/api\/campaigns\/(\d+)$/.exec(path)?.[1];
+  if (path !== "/api/campaigns" && path !== "/api/campaigns/check" && path !== "/api/test-lead" && !editId) {
     return json({ error: "Only POST /api/campaigns, POST /api/campaigns/<id>, POST /api/campaigns/check and POST /api/test-lead take a POST. GET /api lists the rest." }, 405);
   }
   const write = await apiAuthorized(ctx, request, "write");
@@ -181,7 +234,7 @@ async function handleWrite(ctx: Ctx, request: Request, path: string): Promise<Re
   if (typeof body === "string") return json({ error: body }, 400);
 
   if (path === "/api/test-lead") return testLead(ctx, body);
-  if (renameId) return renameFromApi(ctx, Number(renameId), body);
+  if (editId) return editFromApi(ctx, Number(editId), body);
 
   if (path === "/api/campaigns/check") {
     const caption = typeof body.caption === "string" ? body.caption : "";
@@ -242,7 +295,7 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
         "GET /api/account/days?since=YYYY-MM-DD&limit=": "the account's reach (split by followers, non-followers and unknown) and its follows and unfollows for each of Meta's days, which run midnight to midnight Pacific time, newest first; a day can change for 48 hours after it ends",
         "GET /api/stats": "totals and connection health",
         "POST /api/campaigns": "write token: create a campaign that waits for the next post, from its caption (dry_run: true saves nothing)",
-        "POST /api/campaigns/<id>": "write token: change an existing campaign's name and link_title (what the first link leads to), and nothing else; send either or both as strings",
+        "POST /api/campaigns/<id>": "write token: change an existing campaign's name, link_title (what the first link leads to) or keywords, and nothing else; send name and link_title as strings, keywords as the whole list, or add_keywords to add spellings to it",
         "POST /api/campaigns/check": "either token: whether a caption would attach a campaign with these keywords (or campaign_id), and what else it would touch",
         "POST /api/test-lead": "write token: send a lead marked as a test to the lead webhook, as Settings does (email, optional name and campaign_id), and see what the receiver answered",
       },
