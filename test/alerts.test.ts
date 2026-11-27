@@ -19,6 +19,8 @@ const NTFY = "https://ntfy.sh/ownchats-test-topic-not-real";
 const HEARTBEAT = "https://hc-ping.example.com/00000000-0000-4000-8000-000000000000";
 const LIMIT = () => new MetaError("Application request limit reached", 403, 4);
 const PERMANENT = () => new MetaError("The user is not available", 400, 10, 2534022);
+/** Meta's answer to every call while it blocks the whole app, as seen on 2026-11-27. */
+const BLOCKED = () => new MetaError("API access blocked.", 400, 200, 5258005, "OAuthException", "AInventedTrace00000000");
 
 beforeEach(async () => {
   resetHeartbeatFail();
@@ -305,6 +307,22 @@ describe("alerts", () => {
     expect(after).toBeLessThanOrEqual(POLL_DOWN_FOR / MINUTE + ALERTS_EVERY / MINUTE);
     expect(alerts()).toMatchObject([{ problem: "poll", status: "open", title: "The check for missed comments is failing" }]);
     expect(alerts()[0]!.message).toContain("failing for over 30 minutes");
+  });
+
+  it("say once that Meta is blocking the app, with the fix, instead of the failing check, and when it's lifted", async () => {
+    await alertsOn();
+    await w.campaign();
+    await postedAt(REEL, w.clock.now() - DAY);
+    await w.cron();
+    w.meta.failAll = BLOCKED();
+    // Two hours of the Cron every minute: one alert, and not the failing check for missed comments too.
+    await runs(120, MINUTE);
+    expect(statuses()).toEqual(["blocked:open"]);
+    expect(alerts()[0]).toMatchObject({ title: "Meta is blocking your app", url: `${BASE}/dashboard` });
+    expect(alerts()[0]!.message).toContain("Confirm Account");
+    w.meta.failAll = null;
+    await runs(60, MINUTE);
+    expect(statuses()).toEqual(["blocked:open", "blocked:fixed"]);
   });
 
   it("say when the check for missed comments is held back by Instagram's rate limit", async () => {

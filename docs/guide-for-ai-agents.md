@@ -82,6 +82,8 @@ The `/setup` checklist in the app is the main path. Its wording was written befo
 
 Settings, Alerts takes one alert URL and an optional heartbeat URL. For a phone push with no account, the person installs the ntfy app and subscribes to a topic with a long random name they choose; the alert URL is `https://ntfy.sh/<that name>`. Treat the topic name like a password: anyone who knows it can read the alerts (they carry counts, never names). Have them press **Send a test alert** and confirm it arrived. For the heartbeat, they create a check at a service such as healthchecks.io with a 10-minute period and paste its ping URL. OwnChats pings it only after a run has answered the comments waiting, and pings its `/fail` address when a run fails, so the check alerts when comments stop being answered, not only when the Worker stops. Alert attempts are in Activity as "Alert".
 
+"Meta is blocking your app" means every Graph API call fails with "API access blocked." (code 200, subcode 5258005), the app's own token included, so nothing is answered. It is not a permission or a token problem, and reconnecting won't help. Have the person open developers.facebook.com/apps signed in as the app's owner: if it says "Account confirmation needed", they complete those steps themselves (it is their account's security). OwnChats resumes on its own once Meta lifts it.
+
 ## The lead webhook
 
 It sends each new email to the person's email tool, signed. The format is in [lead-webhook.md](lead-webhook.md). To set it up with the person:

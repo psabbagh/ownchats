@@ -2,7 +2,7 @@ import type { AlertPayload } from "./alertmessage";
 import { listCampaigns, type Campaign } from "./campaigns";
 import { log, type Ctx } from "./context";
 import { deliverNow, queueStatement, type Attempt } from "./leadwebhook";
-import { TRANSIENT_REASON } from "./meta/client";
+import { APP_BLOCKED_REASON, TRANSIENT_REASON } from "./meta/client";
 import { WEBHOOK_FIELDS } from "./meta/graph";
 import { untakenPosts } from "./nextpost";
 import { refusedSends } from "./refused";
@@ -23,7 +23,7 @@ import { DAY, HOUR, MINUTE, SECOND } from "./time";
  * Checked by the Cron every ALERTS_EVERY, from what OwnChats already records: it costs D1
  * queries and no Meta call.
  */
-export type AlertKey = "comments" | "poll" | "taps" | "subscription" | "webhook" | "token" | "waiting" | "gave_up" | "untaken" | "failures";
+export type AlertKey = "blocked" | "comments" | "poll" | "taps" | "subscription" | "webhook" | "token" | "waiting" | "gave_up" | "untaken" | "failures";
 
 export const REMIND_EVERY = 12 * HOUR;
 /** A problem must be gone this long before "fixed" goes out. */
@@ -68,6 +68,8 @@ export const ALERTS_EVERY = 5 * MINUTE;
 
 /** How long each problem must last before it opens. */
 const OPEN_AFTER: Record<AlertKey, number> = {
+  // Never a passing refusal: only the owner can lift it, and nothing is answered meanwhile.
+  blocked: 0,
   // Built from windows of their own (MISSED_WINDOW, WAITING_FOR, BURST_WINDOW).
   comments: 0,
   poll: POLL_DOWN_FOR,
@@ -88,6 +90,7 @@ const OPEN_AFTER: Record<AlertKey, number> = {
 
 /** The problem's name in a "fixed" message. */
 const FIXED: Record<AlertKey, string> = {
+  blocked: "Meta accepts calls from your app again",
   comments: "comments are arriving from Meta again",
   poll: "the check for missed comments is running again",
   taps: "taps and replies are arriving from Meta again",
@@ -154,6 +157,19 @@ export async function currentProblems(ctx: Ctx, active?: Campaign[]): Promise<Pr
       message: `Since ${clockTime(ctx, Number(refusedAt))}, what Meta sends is refused (${refusedWhy}), so new comments and DMs are not read as they come. Usually the app secret in setup doesn't match your Meta app's.`,
       people: 0,
       path: "/setup",
+    });
+  }
+
+  // Meta blocks the whole app (MetaError.appBlocked): seen in the reads that run every few minutes, the account's numbers and the check for missed comments.
+  const [, blockedWhy] = (s.last_poll_problem ?? "").split("|");
+  const blocked = [s.account_problem ?? "", blockedWhy ?? ""].some((p) => p.includes(APP_BLOCKED_REASON));
+  if (blocked) {
+    problems.push({
+      key: "blocked",
+      title: "Meta is blocking your app",
+      message: `Meta refuses every call from your Meta app ("API access blocked"), and sends no webhooks, so no comment is answered and no DM goes out. Usually Meta wants your developer account confirmed: open developers.facebook.com/apps and follow "Confirm Account". OwnChats picks up again on its own once Meta lifts it.`,
+      people: 0,
+      path: "/dashboard",
     });
   }
 
@@ -253,7 +269,7 @@ export async function currentProblems(ctx: Ctx, active?: Campaign[]): Promise<Pr
     const young = campaigns.find((c) => c.mediaId && posted.has(c.mediaId) && now - posted.get(c.mediaId)! < YOUNG_POST);
     const lastRun = Number(s.last_poll_at ?? 0);
     const [, pollWhy] = (s.last_poll_problem ?? "").split("|");
-    if (young && (pollWhy || now - lastRun >= POLL_STALE)) {
+    if (young && !blocked && (pollWhy || now - lastRun >= POLL_STALE)) {
       const limit = paused(ctx.load, now) || (currentUsage(ctx.load, now)?.percent ?? 0) >= FULL_PERCENT;
       problems.push({
         key: "poll",
@@ -467,6 +483,7 @@ export function openAlerts(ctx: Ctx): Array<{ key: AlertKey; since: number }> {
 
 /** Each problem's name in Settings' list of open alerts. */
 export const ALERT_NAME: Record<AlertKey, string> = {
+  blocked: "Meta blocking your app",
   comments: "Comments not arriving from Meta",
   poll: "The check for missed comments not running",
   taps: "No taps arriving from Meta",

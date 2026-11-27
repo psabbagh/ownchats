@@ -2,7 +2,7 @@ import { listCampaigns, matchComment, postLabel, type Campaign } from "./campaig
 import type { Ctx } from "./context";
 import { listedStatement } from "./insights";
 import { captionAsksFor } from "./match";
-import { explainError, type Media } from "./meta/client";
+import { problemDetail, type Media } from "./meta/client";
 import { MEDIA_CACHE_TTL, recentMedia } from "./pipeline/poll";
 import { saveSettings, shortcutKeywords } from "./settings";
 import { backgroundAllowed } from "./throttle";
@@ -106,7 +106,7 @@ export async function attachNextPosts(ctx: Ctx, campaigns?: Campaign[]): Promise
   try {
     media = await recentMedia(ctx, (await newPostSeen(ctx)) && backgroundAllowed(ctx.load, ctx.now(), "high"));
   } catch (err) {
-    await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { next_post_problem: `${ctx.now()}|${explainError(err).detail}` });
+    await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { next_post_problem: `${ctx.now()}|${problemDetail(err)}` });
     return false;
   }
   if (ctx.settings.next_post_problem) await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { next_post_problem: "" });

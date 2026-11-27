@@ -53,6 +53,8 @@ export class FakeMeta implements MetaClient {
   instagramPercent: number | null = null;
   lastUsage: MetaUsage | null = null;
   private failures = new Map<string, MetaError[]>();
+  /** Every call fails with this, as when Meta blocks the whole app; null when Meta answers. */
+  failAll: MetaError | null = null;
 
   constructor(private readonly now: () => number) {}
 
@@ -75,7 +77,7 @@ export class FakeMeta implements MetaClient {
     else if (this.instagramPercent !== null) {
       this.lastUsage = { percent: this.instagramPercent, regainMs: null, detail: `instagram ${this.instagramPercent}%`, limits: { instagram: this.instagramPercent } };
     }
-    const err = this.failures.get(method)?.shift();
+    const err = this.failures.get(method)?.shift() ?? this.failAll;
     if (err) throw err;
   }
 

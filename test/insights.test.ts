@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { metaDay, refreshMediaStatsSoon, STATS_EVERY } from "../src/insights";
+import { metaDay, MISSING_PERMISSION, refreshMediaStatsSoon, STATS_EVERY } from "../src/insights";
 import { cleanup } from "../src/cron";
-import { MetaError } from "../src/meta/client";
+import { APP_BLOCKED_REASON, MetaError } from "../src/meta/client";
 import { accountDayWindow, GraphMetaClient } from "../src/meta/graph";
 import { BASE, FAN, OTHER_POST, OWNER, REEL, setupWorld } from "./helpers";
 import { DAY, HOUR, MINUTE, SECOND } from "../src/time";
@@ -18,6 +18,8 @@ beforeEach(async () => {
 const NUMBERS = { views: 12345, reach: 9000, likes: 800, comments: 120, shares: 40, saved: 300 };
 const reads = () => w.meta.calls.filter((c) => c === "mediaInsights").length;
 const NO_PERMISSION = new MetaError("(#10) Application does not have permission for this action", 400, 10);
+/** Meta's answer to every call while it blocks the whole app, as seen on 2026-11-27. */
+const BLOCKED = new MetaError("API access blocked.", 400, 200, 5258005, "OAuthException", "AInventedTrace00000000");
 
 async function pageText(path: string): Promise<string> {
   const cookie = await w.signIn();
@@ -372,6 +374,23 @@ describe("every recent post and the account", () => {
     w.clock.advance(5 * MINUTE);
     await w.cron();
     expect(await api("/api/account")).toMatchObject({ followers: 1200, problem: null });
+  });
+
+  it("says Meta blocked the app, not that a permission is missing, when Meta refuses every call", async () => {
+    post("18000000000000601", 1);
+    await w.campaign({ mediaId: "18000000000000601" });
+    await w.cron();
+    w.meta.failAll = BLOCKED;
+    await env.DB.prepare("UPDATE media_stats SET fetched_at = 0").run();
+    w.clock.advance(5 * MINUTE);
+    await w.cron();
+    const account = await api("/api/account");
+    expect(account).toMatchObject({ followers: 1200 });
+    expect(account.problem).toContain(APP_BLOCKED_REASON);
+    expect(account.problem).toContain("subcode 5258005");
+    const posts = ((await api("/api/posts")) as { posts: Array<Record<string, unknown>> }).posts;
+    expect(posts.find((p) => p.id === "18000000000000601")!.numbers_problem).toBe(APP_BLOCKED_REASON);
+    expect(posts.some((p) => p.numbers_problem === MISSING_PERMISSION)).toBe(false);
   });
 
   it("serve reposts for every post type, with the post's other numbers", async () => {

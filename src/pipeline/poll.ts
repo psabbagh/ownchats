@@ -1,6 +1,6 @@
 import { listCampaigns, onAllPosts, type Campaign } from "../campaigns";
 import type { Ctx } from "../context";
-import { explainError, type Media } from "../meta/client";
+import { problemDetail, type Media } from "../meta/client";
 import { alertStates } from "../alerts";
 import { postTimes, type PostTimes } from "../insights";
 import { saveSettings } from "../settings";
@@ -127,7 +127,7 @@ export async function pollComments(ctx: Ctx, active?: Campaign[], times?: PostTi
       for (const m of (await recentMedia(ctx)).slice(0, RECENT_POSTS)) watched.set(m.id, m.timestamp || null);
     }
   } catch (err) {
-    await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { last_poll_problem: `${ctx.now()}|${explainError(err).detail}` });
+    await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { last_poll_problem: `${ctx.now()}|${problemDetail(err)}` });
   }
   if (!watched.size) return;
 
@@ -163,7 +163,7 @@ export async function pollComments(ctx: Ctx, active?: Campaign[], times?: PostTi
         .map((c) => ({ ...c, mediaId: c.mediaId || mediaId }));
       await receiveComments(ctx, recent, "poll", campaigns);
     } catch (err) {
-      problem = explainError(err).detail;
+      problem = problemDetail(err);
     }
   }
   // Only posts still watched are remembered, so the setting can't grow.
