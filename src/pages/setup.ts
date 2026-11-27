@@ -172,7 +172,7 @@ export async function setupPage(ctx: Ctx, url: URL, message = ""): Promise<Respo
       <p>Choose a keyword, the Reel (or all posts), and the link. <a class="button" href="/dashboard/campaigns/new">New campaign</a></p>`)}
   `;
   return page("Set up OwnChats", body, {
-    nav: true,
+    nav: "setup",
     head: waitingForTest ? html`<meta http-equiv="refresh" content="10">` : undefined,
   });
 }
