@@ -2,7 +2,7 @@ import { listCampaigns, type Campaign } from "./campaigns";
 import type { Ctx } from "./context";
 import { explainError, MetaError, problemDetail, REEL_METRICS, type AccountDay, type Media, type MediaInsights, type ReelMetric } from "./meta/client";
 import { MEDIA_PAGES } from "./meta/graph";
-import { saveSettings } from "./settings";
+import { deleteSettings, saveSettings } from "./settings";
 import { backgroundAllowed } from "./throttle";
 import { DAY, HOUR, MINUTE, SECOND } from "./time";
 
@@ -164,8 +164,10 @@ export async function refreshPostList(ctx: Ctx): Promise<boolean> {
   try {
     const media = await ctx.meta.listMediaSince(now - POST_DAYS * DAY, LIST_MAX);
     if (media.length) await ctx.db.batch(media.map((m) => listedStatement(ctx, m, now)));
+    await readWorked(ctx);
   } catch (err) {
     problem = problemDetail(err);
+    await readRefused(ctx, err, now);
   }
   await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { posts_listed_at: String(now), posts_problem: problem });
   return true;
@@ -279,6 +281,7 @@ async function readOne(ctx: Ctx, mediaId: string, reelType: string | null, now: 
         isReel ? now : null,
       )
       .run();
+    await readWorked(ctx);
   } catch (err) {
     await ctx.db
       .prepare(
@@ -287,6 +290,7 @@ async function readOne(ctx: Ctx, mediaId: string, reelType: string | null, now: 
       )
       .bind(mediaId, now, problemText(err))
       .run();
+    await readRefused(ctx, err, now);
   }
 }
 
@@ -306,14 +310,43 @@ export async function refreshAccountStats(ctx: Ctx): Promise<void> {
       account_stats_at: String(now),
       account_problem: "",
     });
+    await readWorked(ctx);
   } catch (err) {
     await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { account_stats_at: String(now), account_problem: problemDetail(err) });
+    await readRefused(ctx, err, now);
   }
 }
 
 /** After a reconnect the permissions may have changed: every post's numbers and every recent day are due again, from the next Cron run. */
 export async function refreshMediaStatsSoon(ctx: Ctx): Promise<void> {
   await ctx.db.batch([ctx.db.prepare("UPDATE media_stats SET fetched_at = 0, reel_fetched_at = NULL"), ctx.db.prepare("UPDATE account_days SET fetched_at = 0")]);
+}
+
+/**
+ * A read was refused. When Meta blocks the whole app (MetaError.appBlocked), remember when
+ * it started, once per block, so the first read that works afterwards can catch up.
+ */
+async function readRefused(ctx: Ctx, err: unknown, now: number): Promise<void> {
+  if (!(err instanceof MetaError && err.appBlocked) || ctx.settings.app_blocked_at) return;
+  ctx.settings.app_blocked_at = String(now);
+  await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { app_blocked_at: String(now) });
+}
+
+/**
+ * A read worked. If Meta was blocking the whole app until now, the block is over: every
+ * post and day whose last read failed is due again at once, so its failure note clears
+ * within the hour instead of at its next read by age (a day for a post past 30 days). The
+ * Cron reads them at its usual pace, two posts and one day a run, within Meta's limits.
+ * Runs once per block: the setting it clears is set again only by the next block.
+ */
+async function readWorked(ctx: Ctx): Promise<void> {
+  if (!ctx.settings.app_blocked_at) return;
+  delete ctx.settings.app_blocked_at;
+  await ctx.db.batch([
+    ctx.db.prepare("UPDATE media_stats SET fetched_at = 0 WHERE problem IS NOT NULL"),
+    ctx.db.prepare("UPDATE account_days SET fetched_at = 0 WHERE problem IS NOT NULL"),
+  ]);
+  await deleteSettings(ctx.db, ["app_blocked_at"]);
 }
 
 /** Days of account numbers read from Meta, back from yesterday: enough to fill a month of follower history. */
@@ -381,6 +414,7 @@ export async function refreshAccountDays(ctx: Ctx): Promise<void> {
       )
       .bind(due, n.reach, n.reachFollowers, n.reachNonFollowers, n.reachUnknown, n.follows, n.unfollows, now)
       .run();
+    await readWorked(ctx);
   } catch (err) {
     await ctx.db
       .prepare(
@@ -389,6 +423,7 @@ export async function refreshAccountDays(ctx: Ctx): Promise<void> {
       )
       .bind(due, now, problemText(err))
       .run();
+    await readRefused(ctx, err, now);
   }
 }
 
