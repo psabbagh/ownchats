@@ -67,6 +67,7 @@ export type SettingKey =
   | "posts_problem"
   | "account_stats_at"
   | "account_problem"
+  | "app_blocked_at"
   | "followers_count"
   | "follows_count"
   | "media_count";

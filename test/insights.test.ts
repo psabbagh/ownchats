@@ -393,6 +393,88 @@ describe("every recent post and the account", () => {
     expect(posts.some((p) => p.numbers_problem === MISSING_PERMISSION)).toBe(false);
   });
 
+  describe("after Meta blocks the whole app", () => {
+    const OLD_A = "18000000000000701";
+    const OLD_B = "18000000000000702";
+    const NEW_C = "18000000000000703";
+    const problems = async () =>
+      new Map(((await api("/api/posts")) as { posts: Array<{ id: string; numbers_problem: string | null }> }).posts.map((p) => [p.id, p.numbers_problem]));
+    const blockedSince = async () => (await env.DB.prepare("SELECT value FROM settings WHERE key = 'app_blocked_at'").first<{ value: string }>())?.value;
+
+    /** Three posts read once, then the two older ones refused while Meta blocks the app. */
+    async function blockTwoPosts() {
+      post(OLD_A, 40);
+      post(OLD_B, 45);
+      post(NEW_C, 1);
+      await w.cron();
+      await w.cron();
+      expect(reads()).toBe(3);
+      w.meta.failAll = BLOCKED;
+      await env.DB.prepare("UPDATE media_stats SET fetched_at = 0 WHERE media_id IN (?, ?)").bind(OLD_A, OLD_B).run();
+      w.clock.advance(5 * MINUTE);
+      await w.cron();
+      expect(reads()).toBe(5);
+      const p = await problems();
+      expect(p.get(OLD_A)).toBe(APP_BLOCKED_REASON);
+      expect(p.get(OLD_B)).toBe(APP_BLOCKED_REASON);
+      expect(await blockedSince()).toBe(String(w.clock.now()));
+    }
+
+    it("read every post whose read failed again at once when the block ends, not a day later", async () => {
+      await blockTwoPosts();
+      // Meta lifts the block: the account read, 5 minutes on, is the first to work.
+      w.meta.failAll = null;
+      w.clock.advance(5 * MINUTE);
+      await w.cron();
+      expect(await blockedSince()).toBeUndefined();
+      // The next run reads both old posts, though they are not due by their age for a day.
+      w.clock.advance(MINUTE);
+      await w.cron();
+      expect(reads()).toBe(7);
+      const p = await problems();
+      expect(p.get(OLD_A)).toBeNull();
+      expect(p.get(OLD_B)).toBeNull();
+      expect(p.get(NEW_C)).toBeNull();
+    });
+
+    it("catch up once per block, not on every good read after it", async () => {
+      await blockTwoPosts();
+      w.meta.failAll = null;
+      w.clock.advance(5 * MINUTE);
+      await w.cron();
+      w.clock.advance(MINUTE);
+      await w.cron();
+      expect(reads()).toBe(7);
+      // A post fails for another reason; good reads after it make nothing due again.
+      await env.DB.prepare("UPDATE media_stats SET problem = 'Invented other problem' WHERE media_id = ?").bind(OLD_A).run();
+      for (let i = 0; i < 10; i++) {
+        w.clock.advance(MINUTE);
+        await w.cron();
+      }
+      // Only the day-old post, every 15 minutes.
+      expect(reads()).toBe(8);
+      expect((await problems()).get(OLD_A)).toBe("Invented other problem");
+    });
+
+    it("are not set off by a real missing permission", async () => {
+      post(OLD_A, 40);
+      post(NEW_C, 1);
+      w.meta.failNext("mediaInsights", NO_PERMISSION);
+      w.meta.failNext("mediaInsights", NO_PERMISSION);
+      await w.cron();
+      expect(reads()).toBe(2);
+      expect((await problems()).get(OLD_A)).toBe(MISSING_PERMISSION);
+      expect(await blockedSince()).toBeUndefined();
+      // The day-old post reads fine 15 minutes on; the old one waits for its daily read.
+      for (let i = 0; i < 16; i++) {
+        w.clock.advance(MINUTE);
+        await w.cron();
+      }
+      expect(reads()).toBe(3);
+      expect((await problems()).get(OLD_A)).toBe(MISSING_PERMISSION);
+    });
+  });
+
   it("serve reposts for every post type, with the post's other numbers", async () => {
     post("18000000000000501", 1);
     post("18000000000000502", 1, "FEED");
