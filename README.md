@@ -150,6 +150,8 @@ To set it up, in Cloudflare Zero Trust, Access, Applications:
 
 Want the dashboard on an address of its own, say `chats.example.com`, while DM links and Meta keep using the one they know? Add it as a custom domain, add it to both Access apps (with the open paths too), and set `PUBLIC_URL` under `vars` to the public address. Otherwise OwnChats takes the address its pages are opened on as its own, and new DM links would follow the dashboard.
 
+Once your own domain carries everything, you can turn off the `workers.dev` address. First make sure nothing still uses it: in your Meta app, the webhook callback URL (Instagram API, API setup, Configure webhooks) and the Privacy policy, Terms of Service and Data deletion URLs (App settings, Basic) must name your domain, and so must anything that calls `/api` or pulls `/export`, such as a Sheets `IMPORTDATA`. DM links sent before your domain was added keep the old address and stop working. Then set `workers_dev` to `false` in `wrangler.jsonc`, deploy, and remove the old address from both Access apps.
+
 Keep `ADMIN_PASSWORD` even though nobody types it any more: it encrypts the Meta token stored in the database. With either setting empty, the password sign-in works as before; tests and `npm run dev` leave both empty.
 
 ## Costs and privacy
