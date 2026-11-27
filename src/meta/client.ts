@@ -189,6 +189,13 @@ export type Button = { type: "web_url"; title: string; url: string } | { type: "
 export type OutMessage = { kind: "text"; text: string } | { kind: "buttons"; text: string; buttons: Button[] };
 
 /** An error returned by the Graph API, kept whole for the activity log. */
+/** Meta's subcode for "API access blocked": the whole app is blocked (MetaError.appBlocked). */
+export const APP_BLOCKED_SUBCODE = 5258005;
+
+/** The reason shown for MetaError.appBlocked, wherever a Meta refusal is explained. Alerts look for it. */
+export const APP_BLOCKED_REASON =
+  "Meta has blocked every call from your Meta app. Usually Meta wants your developer account confirmed: open developers.facebook.com/apps, follow \"Confirm Account\", and OwnChats picks up again on its own";
+
 export class MetaError extends Error {
   constructor(
     message: string,
@@ -205,6 +212,16 @@ export class MetaError extends Error {
   /** Worth trying again later: rate limits and Meta-side errors. */
   get transient(): boolean {
     return this.status >= 500 || this.status === 429 || [1, 2, 4, 17, 32, 341, 613, 80002].includes(this.code ?? -1);
+  }
+
+  /**
+   * Meta blocks every call the app makes, reads and sends alike, with the app's own token
+   * included: code 200, subcode 5258005, "API access blocked". Seen on 2026-11-27, when
+   * Meta asked the app owner's developer account to confirm itself after "unusual activity".
+   * Not a missing permission and not a rate limit: only the owner can lift it.
+   */
+  get appBlocked(): boolean {
+    return this.subcode === APP_BLOCKED_SUBCODE || (this.code === 200 && this.message.toLowerCase().includes("api access blocked"));
   }
 
   /**
@@ -237,6 +254,12 @@ export function explainError(err: unknown): { reason: string; detail: string } {
   }
   const message = err instanceof Error ? err.message : String(err);
   return { reason: "error", detail: message };
+}
+
+/** What a background read stores as its problem: Meta's own words, after the reason when the whole app is blocked. */
+export function problemDetail(err: unknown): string {
+  const { reason, detail } = explainError(err);
+  return err instanceof MetaError && err.appBlocked ? `${reason}. Meta said: ${detail}` : detail;
 }
 
 /**
@@ -281,6 +304,7 @@ function knownReason(err: MetaError): string | null {
   const sub = err.subcode ?? -1;
   if (err.code === 190) return "token expired or revoked: reconnect Instagram on /setup";
   if (err.transient) return TRANSIENT_REASON;
+  if (err.appBlocked) return APP_BLOCKED_REASON;
   if (sub === 2534025 || sub === 2534023 || err.code === 10900) return "Meta refused a private reply to this comment (already answered, or too old)";
   if (sub === 2534022 || sub === 2018278) return "outside Meta's 24-hour messaging window";
   if (sub === 2534037 || sub === 2018300 || m.includes("thread owner")) return "another app owns this conversation: check Conversation routing in Meta Business Suite";

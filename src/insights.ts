@@ -1,6 +1,6 @@
 import { listCampaigns, type Campaign } from "./campaigns";
 import type { Ctx } from "./context";
-import { explainError, MetaError, REEL_METRICS, type AccountDay, type Media, type MediaInsights, type ReelMetric } from "./meta/client";
+import { explainError, MetaError, problemDetail, REEL_METRICS, type AccountDay, type Media, type MediaInsights, type ReelMetric } from "./meta/client";
 import { MEDIA_PAGES } from "./meta/graph";
 import { saveSettings } from "./settings";
 import { backgroundAllowed } from "./throttle";
@@ -132,6 +132,8 @@ export function reelEvery(postedAt: number | null, now: number): number {
 }
 
 function problemText(err: unknown): string {
+  // Code 200 too, but the whole app is blocked: no permission is missing.
+  if (err instanceof MetaError && err.appBlocked) return explainError(err).reason;
   // Code 10 is Meta's "Application does not have permission for this action"; 200 to 299 are permission errors too.
   if (err instanceof MetaError && !err.transient && (err.code === 10 || (err.code !== undefined && err.code >= 200 && err.code < 300))) {
     return MISSING_PERMISSION;
@@ -163,7 +165,7 @@ export async function refreshPostList(ctx: Ctx): Promise<boolean> {
     const media = await ctx.meta.listMediaSince(now - POST_DAYS * DAY, LIST_MAX);
     if (media.length) await ctx.db.batch(media.map((m) => listedStatement(ctx, m, now)));
   } catch (err) {
-    problem = explainError(err).detail;
+    problem = problemDetail(err);
   }
   await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { posts_listed_at: String(now), posts_problem: problem });
   return true;
@@ -305,7 +307,7 @@ export async function refreshAccountStats(ctx: Ctx): Promise<void> {
       account_problem: "",
     });
   } catch (err) {
-    await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { account_stats_at: String(now), account_problem: explainError(err).detail });
+    await saveSettings(ctx.db, ctx.env.ADMIN_PASSWORD, { account_stats_at: String(now), account_problem: problemDetail(err) });
   }
 }
 
