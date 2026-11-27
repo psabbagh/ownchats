@@ -478,6 +478,64 @@ describe("alerts", () => {
   });
 });
 
+describe("/api/health", () => {
+  async function health(): Promise<any> {
+    const cookie = await w.signIn();
+    const page = await (
+      await w.fetch("/dashboard/settings/api-token", {
+        method: "POST",
+        headers: { cookie, origin: BASE, "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ do: "new" }),
+      })
+    ).text();
+    const token = page.match(/oc_[A-Za-z0-9_-]+/)![0];
+    return (await w.fetch("/api/health", { headers: { authorization: `Bearer ${token}` } })).json();
+  }
+
+  it("needs the API token", async () => {
+    expect((await w.fetch("/api/health")).status).toBe(401);
+  });
+
+  it("names an open problem with what to do, and says ok once it's fixed", async () => {
+    await alertsOn();
+    await w.campaign();
+    await postedAt(REEL, w.clock.now() - DAY);
+    await w.cron();
+    expect(await health()).toMatchObject({ ok: true, problems: [] });
+    w.meta.failAll = BLOCKED();
+    await runs(10, MINUTE);
+    const blocked = await health();
+    expect(blocked.ok).toBe(false);
+    expect(blocked.problems).toEqual([
+      { key: "blocked", name: "Meta blocking your app", title: "Meta is blocking your app", message: expect.stringContaining("Confirm Account"), since: expect.any(String) },
+    ]);
+    expect(Date.parse(blocked.checked_at)).toBeGreaterThan(w.clock.now() - 6 * MINUTE);
+    w.meta.failAll = null;
+    await runs(60, MINUTE);
+    expect(await health()).toMatchObject({ ok: true, problems: [] });
+  });
+
+  it("leaves out a problem still inside its grace period", async () => {
+    await alertsOn();
+    await w.campaign();
+    await postedAt(REEL, w.clock.now() - DAY);
+    await w.cron();
+    w.meta.failAll = LIMIT();
+    await runs(10, MINUTE);
+    expect((await health()).problems.map((p: any) => p.key)).not.toContain("poll");
+  });
+
+  it("checks on the spot when no alert URL is set", async () => {
+    await w.campaign();
+    await postedAt(REEL, w.clock.now() - DAY);
+    w.meta.failAll = BLOCKED();
+    await runs(10, MINUTE);
+    const now = await health();
+    expect(now.ok).toBe(false);
+    expect(now.problems.map((p: any) => p.key)).toContain("blocked");
+  });
+});
+
 describe("alert messages", () => {
   const payload: AlertPayload = { problem: "waiting", status: "open", title: "3 people waiting for a DM", message: "Instagram has refused the DM of 3 people.", people: 3, url: `${BASE}/dashboard#needs-you`, opened_at: 0 };
   const delivery = { id: "d-1", now: Date.parse("2026-11-21T07:35:00Z"), test: false };

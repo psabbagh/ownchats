@@ -1,4 +1,5 @@
 import { peopleCounts } from "./refused";
+import { health } from "./alerts";
 import { apiAuthorized } from "./auth";
 import { getCampaign, listCampaigns, onAllPosts, ownKeywords, saveCampaign, updateCampaignFromApi, validateCampaign, type Campaign } from "./campaigns";
 import { matchesKeyword, parseKeywords } from "./match";
@@ -294,6 +295,7 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
         "GET /api/account": "follower, following and post counts, read from Meta every 5 minutes (less often while Meta's rate limit is near); updated_at is the last read, problem says why it failed",
         "GET /api/account/days?since=YYYY-MM-DD&limit=": "the account's reach (split by followers, non-followers and unknown) and its follows and unfollows for each of Meta's days, which run midnight to midnight Pacific time, newest first; a day can change for 48 hours after it ends",
         "GET /api/stats": "totals and connection health",
+        "GET /api/health": "for a watcher outside OwnChats: ok, the owner alerts open now (key, name, title, message saying what to do, since) and checked_at, when the Cron last checked for them; with no alert URL set it checks on each call instead",
         "POST /api/campaigns": "write token: create a campaign that waits for the next post, from its caption (dry_run: true saves nothing)",
         "POST /api/campaigns/<id>": "write token: change an existing campaign's name, link_title (what the first link leads to) or keywords, and nothing else; send name and link_title as strings, keywords as the whole list, or add_keywords to add spellings to it",
         "POST /api/campaigns/check": "either token: whether a caption would attach a campaign with these keywords (or campaign_id), and what else it would touch",
@@ -377,6 +379,7 @@ export async function handleApi(ctx: Ctx, request: Request, url: URL): Promise<R
       })),
     });
   }
+  if (path === "/api/health") return json(await health(ctx));
   if (path === "/api/account") {
     const s = ctx.settings;
     const count = (v: string | undefined) => (v === undefined || v === "" ? null : Number(v));

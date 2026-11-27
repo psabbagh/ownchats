@@ -125,6 +125,9 @@ interface State {
   told?: boolean;
   /** First seen gone while open. */
   goneSince?: number;
+  /** The problem in words, as last seen present, for /api/health. */
+  title?: string;
+  message?: string;
 }
 
 type States = Partial<Record<AlertKey, State>>;
@@ -408,6 +411,8 @@ export async function checkAlerts(ctx: Ctx, active?: Campaign[]): Promise<void> 
     if (p) {
       delete st.goneSince;
       st.since ??= now;
+      st.title = p.title;
+      st.message = p.message;
       const payload = (status: AlertPayload["status"], title: string, message: string): AlertPayload => ({
         problem: key,
         status,
@@ -479,6 +484,39 @@ async function saveAlertStates(ctx: Ctx, states: States): Promise<void> {
 /** The problems open now, for Settings: which, and since when. */
 export function openAlerts(ctx: Ctx): Array<{ key: AlertKey; since: number }> {
   return Object.entries(alertStates(ctx)).flatMap(([key, st]) => (st?.open && !st.goneSince ? [{ key: key as AlertKey, since: st.openedAt ?? 0 }] : []));
+}
+
+/** One problem in /api/health. */
+export interface HealthProblem {
+  key: AlertKey;
+  name: string;
+  title: string;
+  message: string;
+  /** When it opened (past its grace period), ISO-8601. */
+  since: string;
+}
+
+/**
+ * What an outside watcher reads at GET /api/health: the problems open now, in words, and
+ * when the Cron last checked for them, so a watcher can also tell a Cron that stopped.
+ * With an alert URL set it reads only what the Cron's check remembered (alert_state), no
+ * query; without one nothing is remembered, so it checks now, with no grace period, which
+ * costs the check's dozen queries on each call.
+ */
+export async function health(ctx: Ctx): Promise<{ ok: boolean; checked_at: string | null; problems: HealthProblem[] }> {
+  const iso = (t: number) => new Date(t).toISOString();
+  if (!ctx.settings.alert_url) {
+    const now = ctx.now();
+    const problems = (await currentProblems(ctx)).map((p) => ({ key: p.key, name: ALERT_NAME[p.key], title: p.title, message: p.message, since: iso(now) }));
+    return { ok: problems.length === 0, checked_at: iso(now), problems };
+  }
+  const states = alertStates(ctx);
+  const problems = openAlerts(ctx).map(({ key, since }) => {
+    const st = states[key]!;
+    return { key, name: ALERT_NAME[key], title: st.title ?? ALERT_NAME[key], message: st.message ?? "", since: iso(since) };
+  });
+  const at = Number(ctx.settings.alerts_at ?? 0);
+  return { ok: problems.length === 0, checked_at: at ? iso(at) : null, problems };
 }
 
 /** Each problem's name in Settings' list of open alerts. */
