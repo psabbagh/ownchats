@@ -41,8 +41,13 @@ const STYLE = `
 @media (prefers-color-scheme:dark){:root{--bg:#0c0a09;--fg:#f5f5f4;--muted:#a8a29e;--line:#292524;--card:#1c1917;--accent:#2dd4bf;--ok:#4ade80;--bad:#f87171;--warn:#fbbf24}}
 *{box-sizing:border-box}body{margin:0;font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;background:var(--bg);color:var(--fg)}
 main{max-width:860px;margin:0 auto;padding:24px 16px 64px}
-header.top{display:flex;gap:16px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--line);padding:12px 16px}
-header.top strong{font-size:18px}header.top strong span{font-size:14px;font-weight:400;color:var(--muted)}header.top nav{display:flex;gap:12px;flex-wrap:wrap}
+header.top{display:flex;gap:8px 20px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--line);padding:10px 16px}
+header.top .brand{font-size:18px;font-weight:700;color:var(--fg);text-decoration:none;white-space:nowrap}
+header.top nav{display:flex;gap:2px;flex-wrap:wrap}header.top nav a{padding:4px 10px;border-radius:6px;color:var(--muted);text-decoration:none;font-weight:500}
+header.top nav a:hover{color:var(--fg);background:var(--line)}header.top nav a[aria-current]{color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent);font-weight:600}
+header.top .end{margin-left:auto;display:flex;gap:2px;align-items:center}header.top .end form{margin:0}
+header.top .end button{background:transparent;border:0;color:var(--muted);padding:4px 10px;font-size:14px}header.top .end button:hover{color:var(--fg)}
+header.top .end nav a{font-size:14px}
 a{color:var(--accent)}h1{font-size:26px;margin:8px 0 16px}h2{font-size:20px;margin:28px 0 8px}h3{font-size:17px;margin:0 0 6px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin:12px 0}
 .muted{color:var(--muted)}.small{font-size:14px}
@@ -81,10 +86,28 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}table.figures{m
 
 const COPY_SCRIPT = `document.addEventListener('click',e=>{const b=e.target.closest('[data-copy]');if(!b)return;navigator.clipboard.writeText(b.getAttribute('data-copy')).then(()=>{const t=b.textContent;b.textContent='Copied';setTimeout(()=>b.textContent=t,1200)})});`;
 
-export function page(title: string, body: Html, opts: { nav?: boolean; head?: Html } = {}): Response {
-  const nav = opts.nav
-    ? html`<header class="top"><strong>OwnChats <span>for Instagram</span></strong><nav><a href="/dashboard">Campaigns</a><a href="/dashboard/leads">Leads</a><a href="/dashboard/activity">Activity</a><a href="/dashboard/settings">Settings</a><a href="/setup">Setup</a></nav>
-        <form method="post" action="/logout" style="margin-left:auto"><button class="secondary">Sign out</button></form></header>`
+/** A section of the signed-in pages; the header marks the one being shown. */
+export type Section = "campaigns" | "leads" | "activity" | "settings" | "setup";
+
+const SECTIONS: [Section, string, string][] = [
+  ["campaigns", "/dashboard", "Campaigns"],
+  ["leads", "/dashboard/leads", "Leads"],
+  ["activity", "/dashboard/activity", "Activity"],
+  ["settings", "/dashboard/settings", "Settings"],
+];
+
+function navLink(section: Section, href: string, label: string, current: Section): Html {
+  return section === current ? html`<a aria-current="page" href="${href}">${label}</a>` : html`<a href="${href}">${label}</a>`;
+}
+
+export function page(title: string, body: Html, opts: { nav?: Section; head?: Html } = {}): Response {
+  const current = opts.nav;
+  // Home is "/", which sends the owner to the dashboard, or to setup while nothing is connected.
+  const nav = current
+    ? html`<header class="top"><a class="brand" href="/" title="Home">OwnChats</a>
+        <nav aria-label="Main">${SECTIONS.map(([s, href, label]) => navLink(s, href, label, current))}</nav>
+        <div class="end"><nav aria-label="Account">${navLink("setup", "/setup", "Setup", current)}</nav>
+        <form method="post" action="/logout"><button>Sign out</button></form></div></header>`
     : "";
   const doc = html`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex"><title>${title}</title><style>${raw(STYLE)}</style>${opts.head ?? ""}</head>

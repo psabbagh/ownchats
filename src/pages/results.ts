@@ -434,6 +434,6 @@ export async function campaignResultsPage(ctx: Ctx, id: number, url: URL): Promi
 
       <details style="margin-top:28px"><summary>Activity log for this campaign</summary>
         <div style="overflow-x:auto">${activityTable(activity, new Map([[campaign.id, campaign.name]]), tz)}</div></details>`,
-    { nav: true },
+    { nav: "campaigns" },
   );
 }

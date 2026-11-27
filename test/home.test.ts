@@ -390,10 +390,27 @@ describe("what each campaign row says about its recent days", () => {
 });
 
 describe("which platform this covers", () => {
-  it("says Instagram on every signed-in page", async () => {
+  it("keeps the header to the name, without a platform label", async () => {
     for (const path of ["/dashboard", "/dashboard/leads", "/dashboard/activity", "/dashboard/settings"]) {
       const page = await (await w.fetch(path, { headers: { cookie } })).text();
-      expect(page, path).toContain("OwnChats <span>for Instagram</span>");
+      expect(page, path).toContain('title="Home">OwnChats</a>');
+      expect(page, path).not.toContain("for Instagram");
+    }
+  });
+
+  it("links the name home and marks the page being shown", async () => {
+    const pages: [string, string][] = [
+      ["/dashboard", "/dashboard"],
+      ["/dashboard/leads", "/dashboard/leads"],
+      ["/dashboard/activity", "/dashboard/activity"],
+      ["/dashboard/settings", "/dashboard/settings"],
+      ["/setup", "/setup"],
+    ];
+    for (const [path, href] of pages) {
+      const page = await (await w.fetch(path, { headers: { cookie } })).text();
+      expect(page, path).toContain('<a class="brand" href="/" title="Home">');
+      const current = [...page.matchAll(/<a aria-current="page" href="([^"]+)">/g)].map((m) => m[1]).filter((h) => !h!.includes("?"));
+      expect(current, path).toContain(href);
     }
   });
 

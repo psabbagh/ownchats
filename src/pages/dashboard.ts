@@ -520,7 +520,7 @@ export async function dashboardHome(ctx: Ctx, switched: string | null = null, sh
       ${campaigns.length && !shown.length ? html`<p class="muted">No campaign is ${show === "quiet" ? "quiet: every campaign that is on had a matching comment in the last 7 days" : show}.</p>` : ""}
       ${shown.map(card)}
       <script>${raw(KEEP_SCROLL)}</script>`,
-    { nav: true },
+    { nav: "campaigns" },
   );
 }
 
@@ -663,7 +663,7 @@ async function campaignForm(ctx: Ctx, current: Campaign | null, input?: Campaign
         ? html`<form method="post" action="/dashboard/campaigns/${current.id}/delete" onsubmit="return confirm('Delete this campaign? Its emails stay in Leads.')">
             <button class="danger">Delete campaign</button></form>`
         : ""}`,
-    { nav: true },
+    { nav: "campaigns" },
   );
 }
 
@@ -747,7 +747,7 @@ export async function activityPage(ctx: Ctx, url: URL): Promise<Response> {
       <p class="row">${tab("matched", "Campaign activity")} ${tab("failed", "Failures")} ${tab("all", "Everything, including comments with no keyword")}</p>
       ${activityTable(rows, names, timeZoneOf(ctx.settings))}
       ${rows.length === 100 && last ? html`<p><a href="/dashboard/activity?show=${filter}&before=${last.id}">Older</a></p>` : ""}`,
-    { nav: true },
+    { nav: "activity" },
   );
 }
 
@@ -775,7 +775,7 @@ export async function leadsPage(ctx: Ctx, message = ""): Promise<Response> {
         <p class="hint">Use it when someone asks for their data to be deleted. It first shows what OwnChats stores about them, and deletes nothing until you confirm.</p>
         <p><button class="secondary">Find their data</button></p>
       </form>`,
-    { nav: true },
+    { nav: "leads" },
   );
 }
 
@@ -823,7 +823,7 @@ async function confirmDeletePage(ctx: Ctx, username: string, ids: string[]): Pro
           <a class="button secondary" href="/dashboard/leads">Cancel</a>
         </form>
       </div>`,
-    { nav: true },
+    { nav: "leads" },
   );
 }
 
@@ -1133,7 +1133,7 @@ export async function settingsPage(ctx: Ctx, fresh: { apiToken?: string; apiWrit
           <p class="row"><button>Save</button>${savedNote(fresh.saved, "defaults")}</p>
         </form>
       </div>`,
-    { nav: true },
+    { nav: "settings" },
   );
 }
 
