@@ -384,16 +384,29 @@ export function callsWords(perHour: number): string {
   return `about ${n} Meta ${n === 1 ? "call" : "calls"} an hour`;
 }
 
-/** First DMs per day over the last 14 days, as small bars: the newest day on the right. */
-export function dmChart(days: number[]): Html {
-  const max = Math.max(...days);
-  const total = days.reduce((a, b) => a + b, 0);
-  const label = `First DMs per day, last ${days.length} days: ${days.join(", ")} (${total} in all)`;
-  const bars = days.map((n, i) => {
+/**
+ * First DMs per day over the last 14 days, as small bars: the newest day on the right.
+ * Only the last `live` days are drawn; the ones before the campaign could send anything stay blank,
+ * so a new campaign doesn't read as two weeks of zeros. The width stays the same so rows line up.
+ */
+export function dmChart(days: number[], live = days.length): Html {
+  const shown = days.slice(days.length - Math.max(1, Math.min(live, days.length)));
+  const skip = days.length - shown.length;
+  const max = Math.max(...shown);
+  const total = shown.reduce((a, b) => a + b, 0);
+  const span = shown.length === days.length ? `last ${days.length} days` : shown.length === 1 ? "since it started today" : `since it started ${shown.length} days ago`;
+  const label = `First DMs per day, ${span}: ${shown.join(", ")} (${total} in all)`;
+  const bars = shown.map((n, i) => {
     const h = max ? Math.max(1, Math.round((n / max) * 18)) : 0;
-    return html`<rect x="${i * 6}" y="${20 - h}" width="4" height="${h}" rx="1"></rect>`;
+    return html`<rect x="${(skip + i) * 6}" y="${20 - h}" width="4" height="${h}" rx="1"></rect>`;
   });
-  return html`<svg class="dm-chart" viewBox="0 0 ${days.length * 6 - 2} 20" width="${days.length * 6 - 2}" height="20" role="img" aria-label="${label}"><title>${label}</title><line x1="0" y1="19.5" x2="${days.length * 6 - 2}" y2="19.5"></line>${bars}</svg>`;
+  const w = days.length * 6 - 2;
+  return html`<svg class="dm-chart" viewBox="0 0 ${w} 20" width="${w}" height="20" role="img" aria-label="${label}"><title>${label}</title><line x1="${skip * 6}" y1="19.5" x2="${w}" y2="19.5"></line>${bars}</svg>`;
+}
+
+/** How many of the chart's 24-hour buckets, counted back from now, end after the campaign could first DM. */
+export function liveDays(start: number, now: number): number {
+  return Math.min(CHART_DAYS, Math.max(1, Math.floor((now - start) / DAY) + 1));
 }
 
 /** What the owner needs to decide whether a campaign is still worth having on, in one line. */
@@ -405,7 +418,7 @@ function recentLine(c: Campaign, postedAt: number | null, recent: CampaignRecent
     last
       ? html`<span>Last matching comment <b>${ago(last.at, now)}</b>${text ? html` <span class="muted">"${text}"</span>` : ""}</span>`
       : html`<span>No matching comment ${now - c.createdAt > KEPT_COMMENTS ? "in 30 days" : "yet"}</span>`,
-    html`<span class="dms"><b>${fmtCount(recent?.dmsLastWeek ?? 0)}</b> ${recent?.dmsLastWeek === 1 ? "DM" : "DMs"} in the last 7 days ${dmChart(recent?.dmsByDay ?? new Array<number>(CHART_DAYS).fill(0))}</span>`,
+    html`<span class="dms"><b>${fmtCount(recent?.dmsLastWeek ?? 0)}</b> ${recent?.dmsLastWeek === 1 ? "DM" : "DMs"} in the last 7 days ${dmChart(recent?.dmsByDay ?? new Array<number>(CHART_DAYS).fill(0), liveDays(Math.max(c.createdAt, postedAt ?? 0), now))}</span>`,
   ];
   return html`<p class="small recent">${parts.filter((p) => p !== null)}</p>`;
 }

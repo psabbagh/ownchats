@@ -601,8 +601,17 @@ describe("deciding which campaigns to keep on", () => {
     w.clock.advance(10 * DAY);
     await w.sendComment(w.comment("agents", FAN2, { ago: 30 * MINUTE }));
     const row = rowOf(await home(), id);
-    expect(row).toContain('aria-label="First DMs per day, last 14 days: 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 (2 in all)"');
+    expect(row).toContain('aria-label="First DMs per day, since it started 11 days ago: 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 (2 in all)"');
     expect(row).toContain("<b>1</b> DM in the last 7 days");
+    w.clock.advance(5 * DAY);
+    expect(rowOf(await home(), id)).toContain('aria-label="First DMs per day, last 14 days: 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0 (1 in all)"');
+  });
+
+  it("leaves the days before a campaign started blank in the chart", async () => {
+    const id = await w.campaign();
+    const row = rowOf(await home(), id);
+    expect(row).toContain('aria-label="First DMs per day, since it started today: 0 (0 in all)"');
+    expect(row).toContain('<line x1="78" y1="19.5" x2="82" y2="19.5"></line>');
   });
 });
 
