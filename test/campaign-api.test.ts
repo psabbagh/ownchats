@@ -281,7 +281,7 @@ describe("POST /api/campaigns", () => {
         expect(((await res.json()) as { errors: string[] }).errors.length).toBeGreaterThan(0);
       }
       expect(((await (await rename(id, { link_title: "x".repeat(201) })).json()) as { error: string }).error).toContain("Keep the link's title under 200 characters.");
-      expect(((await (await rename(id, { name: "Fine", active: false })).json()) as { error: string }).error).toContain("Only `name` and `link_title`");
+      expect(((await (await rename(id, { name: "Fine", active: false })).json()) as { error: string }).error).toContain("Only `name`, `link_title`, `keywords` and `add_keywords`");
       expect((await rename(id, { link_title: "x".repeat(200) })).status).toBe(200);
       expect(await row(id)).toEqual({ ...before, link_title: "x".repeat(200), updated_at: expect.any(Number) });
       expect((await w.fetch(`/api/campaigns/${id}`, { method: "POST", headers: write, body: "not json" })).status).toBe(400);
@@ -296,7 +296,93 @@ describe("POST /api/campaigns", () => {
 
     it("is listed in GET /api", async () => {
       const { endpoints } = (await (await w.fetch("/api", auth)).json()) as { endpoints: Record<string, string> };
-      expect(endpoints["POST /api/campaigns/<id>"]).toContain("name and link_title");
+      expect(endpoints["POST /api/campaigns/<id>"]).toContain("add_keywords");
+    });
+
+    describe("keywords", () => {
+      const keywordsOf = async (id: number) => JSON.parse(String((await row(id)).keywords)) as string[];
+      const onPost = (overrides: Record<string, unknown> = {}) =>
+        w.campaign({ name: "New to Claude", keywords: ["SETUP"], mediaId: "post-1", mediaLabel: "Post one", nextPostAfter: null, ...overrides });
+
+      it("adds spellings with add_keywords, keeps the rest of the campaign, and logs old and new", async () => {
+        const id = await onPost();
+        const before = await row(id);
+        w.clock.advance(60_000);
+        const res = await rename(id, { add_keywords: ["SET UP", "SETUPP", "SET-UP", "setup", " SET  UP "] });
+        expect(res.status).toBe(200);
+        expect(((await res.json()) as { campaign: Record<string, unknown> }).campaign).toMatchObject({ id, keywords: ["SETUP", "SET UP", "SETUPP", "SET-UP"] });
+        expect(await row(id)).toEqual({ ...before, keywords: JSON.stringify(["SETUP", "SET UP", "SETUPP", "SET-UP"]), updated_at: w.clock.now() });
+        expect((await w.activity()).at(-1)).toMatchObject({ kind: "api", outcome: "saved", reason: 'Campaign changed through the API: keywords "SETUP" to "SETUP, SET UP, SETUPP, SET-UP"' });
+      });
+
+      it("sets the whole list with keywords, cleaned as the dashboard cleans it", async () => {
+        const id = await onPost({ keywords: ["SETUP", "SET UP"] });
+        expect((await rename(id, { keywords: [" Guide ", "", "GUIDE", "guidee"] })).status).toBe(200);
+        expect(await keywordsOf(id)).toEqual(["Guide", "guidee"]);
+      });
+
+      it("a repeat changes nothing and says so in the log", async () => {
+        const id = await onPost();
+        expect((await rename(id, { add_keywords: ["setup"] })).status).toBe(200);
+        expect(await keywordsOf(id)).toEqual(["SETUP"]);
+        expect((await w.activity()).at(-1)).toMatchObject({ reason: "Campaign change through the API changed nothing" });
+      });
+
+      it("refuses what the dashboard would refuse, and changes nothing", async () => {
+        const id = await onPost();
+        const any = await w.campaign({ name: "Any comment", anyComment: true, keywords: [], mediaId: "post-9", mediaLabel: "Post nine", nextPostAfter: null });
+        for (const [cid, body] of [
+          [id, { keywords: [] }],
+          [id, { keywords: ["", "  "] }],
+          [id, { add_keywords: [] }],
+          [id, { keywords: "SETUP, SET UP" }],
+          [id, { add_keywords: ["SET UP", 3] }],
+          [id, { add_keywords: ["SET UP, SETUPP"] }],
+          [id, { keywords: ["A"], add_keywords: ["B"] }],
+          [any, { add_keywords: ["SETUP"] }],
+        ] as Array<[number, unknown]>) {
+          const res = await rename(cid, body);
+          expect(res.status, JSON.stringify(body)).toBe(422);
+          expect(((await res.json()) as { errors: string[] }).errors.length).toBeGreaterThan(0);
+        }
+        expect(((await (await rename(id, { keywords: [] })).json()) as { error: string }).error).toContain("Add at least one keyword");
+        expect(await keywordsOf(id)).toEqual(["SETUP"]);
+      });
+
+      it("refuses with 409 a keyword another active campaign on the same post answers", async () => {
+        const id = await onPost();
+        const other = await onPost({ name: "Agents guide", keywords: ["AGENTS", "SET UP NOW"] });
+        const res = await rename(id, { add_keywords: ["SETUPP", "set-up now"] });
+        expect(res.status).toBe(409);
+        expect(((await res.json()) as { error: string }).error).toContain(`campaign ${other}`);
+        expect(await keywordsOf(id)).toEqual(["SETUP"]);
+        expect((await rename(id, { add_keywords: ["AGENT"] })).status).toBe(200);
+        expect((await rename(id, { add_keywords: ["agents"] })).status).toBe(409);
+      });
+
+      it("ignores campaigns that are off, on another post, or the shortcuts from Settings", async () => {
+        await saveSettings(env.DB, env.ADMIN_PASSWORD, { shortcut_keywords: "🙌" });
+        const id = await onPost();
+        await onPost({ name: "Off", keywords: ["SET UP"], active: false });
+        await onPost({ name: "Elsewhere", keywords: ["SETUPP"], mediaId: "post-2", mediaLabel: "Post two" });
+        await w.campaign({ name: "Waiting", keywords: ["SET-UP"], mediaId: null, mediaLabel: null, nextPostAfter: w.clock.now() });
+        await onPost({ name: "Shortcut too", keywords: ["OTHER", "🙌"] });
+        expect((await rename(id, { add_keywords: ["SET UP", "SETUPP", "SET-UP", "🙌"] })).status).toBe(200);
+        expect(await keywordsOf(id)).toEqual(["SETUP", "SET UP", "SETUPP", "SET-UP", "🙌"]);
+      });
+
+      it("checks two campaigns waiting for the next post against each other", async () => {
+        const waiting = { mediaId: null, mediaLabel: null, nextPostAfter: w.clock.now() };
+        const id = await onPost(waiting);
+        await onPost({ ...waiting, name: "Also waiting", keywords: ["SET UP"] });
+        expect((await rename(id, { add_keywords: ["SET-UP"] })).status).toBe(409);
+      });
+
+      it("needs the write token", async () => {
+        const id = await onPost();
+        expect((await rename(id, { add_keywords: ["SET UP"] }, { ...auth.headers, "content-type": "application/json" })).status).toBe(401);
+        expect(await keywordsOf(id)).toEqual(["SETUP"]);
+      });
     });
   });
 });
