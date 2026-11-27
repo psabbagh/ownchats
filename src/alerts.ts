@@ -374,6 +374,8 @@ async function sentToday(ctx: Ctx): Promise<{ n: number; oldest: number | null }
 
 /** Queues one alert and tries it at once. Returns false when the daily cap held it back. */
 async function send(ctx: Ctx, payload: AlertPayload, test = false): Promise<{ id: string | null; attempt: Attempt | null }> {
+  // No alert URL: the problem is still remembered, for /api/health, but nothing is sent.
+  if (!ctx.settings.alert_url) return { id: null, attempt: null };
   if (!test) {
     const today = await sentToday(ctx);
     if (today.n >= DAILY_CAP) {
@@ -392,14 +394,11 @@ async function send(ctx: Ctx, payload: AlertPayload, test = false): Promise<{ id
 
 /**
  * The Cron's part, every ALERTS_EVERY: compares the problems present now with those
- * remembered, and sends what changed. Does nothing while no alert URL is set, and
- * forgets every problem then, so setting a URL later starts from what is true then.
+ * remembered, and sends what changed to the alert URL, if one is set. The problems are
+ * remembered either way, for /api/health, so a watcher outside OwnChats can do the telling.
+ * A problem that opened with no URL set was never told, so it sends no "fixed" either.
  */
 export async function checkAlerts(ctx: Ctx, active?: Campaign[]): Promise<void> {
-  if (!ctx.settings.alert_url) {
-    if (ctx.settings.alert_state && ctx.settings.alert_state !== "{}") await saveAlertStates(ctx, {});
-    return;
-  }
   const now = ctx.now();
   const before = alertStates(ctx);
   const states: States = structuredClone(before);
@@ -460,13 +459,8 @@ export async function checkAlerts(ctx: Ctx, active?: Campaign[]): Promise<void> 
   if (JSON.stringify(states) !== JSON.stringify(before)) await saveAlertStates(ctx, states);
 }
 
-/**
- * Runs checkAlerts when ALERTS_EVERY has passed since the last check, and remembers when
- * (alerts_at). With no alert URL it runs every time: that only forgets what was open, with
- * no query.
- */
+/** Runs checkAlerts when ALERTS_EVERY has passed since the last check, and remembers when (alerts_at). */
 export async function checkAlertsWhenDue(ctx: Ctx, active?: Campaign[]): Promise<void> {
-  if (!ctx.settings.alert_url) return checkAlerts(ctx, active);
   const now = ctx.now();
   // The Cron fires on the minute, give or take; half a minute of slack keeps a 5-minute rhythm from slipping to 6.
   if (now - Number(ctx.settings.alerts_at ?? 0) < ALERTS_EVERY - 30 * SECOND) return;
@@ -498,18 +492,12 @@ export interface HealthProblem {
 
 /**
  * What an outside watcher reads at GET /api/health: the problems open now, in words, and
- * when the Cron last checked for them, so a watcher can also tell a Cron that stopped.
- * With an alert URL set it reads only what the Cron's check remembered (alert_state), no
- * query; without one nothing is remembered, so it checks now, with no grace period, which
- * costs the check's dozen queries on each call.
+ * when the Cron last checked for them, so a watcher can also tell a Cron that stopped. It
+ * reads only what the Cron's check remembered (alert_state), with or without an alert URL:
+ * no query, and each problem's grace period respected.
  */
 export async function health(ctx: Ctx): Promise<{ ok: boolean; checked_at: string | null; problems: HealthProblem[] }> {
   const iso = (t: number) => new Date(t).toISOString();
-  if (!ctx.settings.alert_url) {
-    const now = ctx.now();
-    const problems = (await currentProblems(ctx)).map((p) => ({ key: p.key, name: ALERT_NAME[p.key], title: p.title, message: p.message, since: iso(now) }));
-    return { ok: problems.length === 0, checked_at: iso(now), problems };
-  }
   const states = alertStates(ctx);
   const problems = openAlerts(ctx).map(({ key, since }) => {
     const st = states[key]!;
