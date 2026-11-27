@@ -458,12 +458,17 @@ describe("alerts", () => {
     expect(statuses()).toEqual(["gave_up:open"]);
   });
 
-  it("send nothing, and remember nothing, without an alert URL", async () => {
+  it("send nothing without an alert URL, but remember the problem for /api/health, and send no fixed for it later", async () => {
     await TRIGGERS.gave_up!.make();
     await runs(3, MINUTE);
     expect(w.receiver.received).toEqual([]);
-    const state = await env.DB.prepare("SELECT value FROM settings WHERE key = 'alert_state'").first();
-    expect(state).toBeNull();
+    const state = await env.DB.prepare("SELECT value FROM settings WHERE key = 'alert_state'").first<{ value: string }>();
+    expect(JSON.parse(state!.value)).toMatchObject({ gave_up: { open: true, told: false } });
+    // A URL set later: the problem opened untold, so its end sends no "fixed".
+    await alertsOn();
+    await TRIGGERS.gave_up!.fix();
+    await runs(12, 5 * MINUTE);
+    expect(alerts()).toEqual([]);
   });
 
   it("retry a refused alert for about 20 minutes, then give up", async () => {
@@ -525,14 +530,19 @@ describe("/api/health", () => {
     expect((await health()).problems.map((p: any) => p.key)).not.toContain("poll");
   });
 
-  it("checks on the spot when no alert URL is set", async () => {
+  it("works without an alert URL, with each problem's grace period", async () => {
     await w.campaign();
     await postedAt(REEL, w.clock.now() - DAY);
+    await w.cron();
+    w.meta.failAll = LIMIT();
+    await runs(10, MINUTE);
+    expect((await health()).problems.map((p: any) => p.key)).not.toContain("poll");
     w.meta.failAll = BLOCKED();
     await runs(10, MINUTE);
     const now = await health();
     expect(now.ok).toBe(false);
     expect(now.problems.map((p: any) => p.key)).toContain("blocked");
+    expect(w.receiver.received).toEqual([]);
   });
 });
 
